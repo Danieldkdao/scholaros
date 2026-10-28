@@ -1,5 +1,11 @@
+packages:
+  - apps/*
+  - packages/*
+
 allowBuilds:
   electron: true
   electron-winstaller: true
+  sharp: true
+  unrs-resolver: true
 
 nodeLinker: hoisted

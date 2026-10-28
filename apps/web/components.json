@@ -1,0 +1,21 @@
+{
+  "$schema": "https://ui.shadcn.com/schema.json",
+  "style": "base-vega",
+  "rsc": true,
+  "tsx": true,
+  "tailwind": {
+    "config": "",
+    "css": "../../packages/ui/src/styles/globals.css",
+    "baseColor": "neutral",
+    "cssVariables": true,
+    "prefix": ""
+  },
+  "aliases": {
+    "components": "@scholaros/ui/components",
+    "utils": "@scholaros/ui/lib/utils",
+    "ui": "@scholaros/ui/components",
+    "lib": "@scholaros/ui/lib",
+    "hooks": "@scholaros/ui/hooks"
+  },
+  "iconLibrary": "lucide"
+}
