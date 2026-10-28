@@ -1,9 +1,10 @@
+import { Button } from "./components/ui/button";
+
 const App = () => {
   return (
-    <>
-      <h1 className="text-3xl font-semibold text-red-400">💖 Hello World!</h1>
-      <p>Welcome to your Electron application.</p>
-    </>
+    <div>
+      <Button>This is a button from shadcn/ui</Button>
+    </div>
   );
 };
 
