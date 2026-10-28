@@ -1,9 +1,5 @@
-import { Button } from '@scholaros/ui/components/button';
+import { ThemeShowcase } from '@scholaros/ui/components/theme-showcase';
 
 export default function Home() {
-  return (
-    <main className="flex min-h-screen items-center justify-center p-8">
-      <Button>ScholarOS</Button>
-    </main>
-  );
+  return <ThemeShowcase />;
 }

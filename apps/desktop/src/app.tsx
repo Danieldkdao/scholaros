@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Button } from '@scholaros/ui/components/button';
+import { ThemeShowcase } from '@scholaros/ui/components/theme-showcase';
 import { LoadingSwap } from '@scholaros/ui/components/loading-swap';
 
 type DesktopUser = Awaited<ReturnType<Window['getUser']>>;
@@ -86,28 +87,35 @@ const App = () => {
   };
 
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center gap-4 p-8 text-base">
-      <h1 className="text-3xl font-semibold">ScholarOS</h1>
-      {user && (
-        <div className="flex flex-col items-center gap-2">
-          <p className="text-xl font-medium">
-            Welcome back, {user.name.trim() || 'there'}!
-          </p>
-          <p className="text-muted-foreground">{user.email}</p>
+    <ThemeShowcase
+      account={
+        <div className="flex flex-wrap items-center gap-4">
+          {user && (
+            <div className="flex flex-col items-center gap-2">
+              <p className="text-base font-medium">
+                Welcome back, {user.name.trim() || 'there'}!
+              </p>
+              <p className="text-muted-foreground">{user.email}</p>
+            </div>
+          )}
+          {waiting && <p role="status">Finish signing in in your browser.</p>}
+          {error && (
+            <p role="alert" className="text-destructive">
+              {error}
+            </p>
+          )}
+          <Button
+            className="text-base"
+            disabled={busy}
+            onClick={user ? signOut : signIn}
+          >
+            <LoadingSwap isLoading={busy}>
+              {user ? 'Log out' : 'Sign in'}
+            </LoadingSwap>
+          </Button>
         </div>
-      )}
-      {waiting && <p role="status">Finish signing in in your browser.</p>}
-      {error && (
-        <p role="alert" className="text-destructive">
-          {error}
-        </p>
-      )}
-      <Button disabled={busy} onClick={user ? signOut : signIn}>
-        <LoadingSwap isLoading={busy}>
-          {user ? 'Log out' : 'Sign in'}
-        </LoadingSwap>
-      </Button>
-    </main>
+      }
+    />
   );
 };
 

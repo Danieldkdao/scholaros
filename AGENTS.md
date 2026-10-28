@@ -29,6 +29,7 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 ## Working process
 
+- Before making changes, read `docs/SPEC.md` to understand the application's purpose, intended behavior, architecture, and constraints.
 - Work like a practical, efficient senior engineer. Think through each task in steps and choose the simplest implementation that meets the requirements.
 - Before implementing any new feature, always research the latest official documentation for the technologies involved, even when familiar with them. Make sure to also research the best practices, guidelines, and compatability information before continuing. Verify guidance against the versions used by this project. This research is required for every new feature, without exception.
 - If you are going to implement tests to test the feature you are going to build, implement the tests first, before implementing the feature itself. Then test and continue from there.
