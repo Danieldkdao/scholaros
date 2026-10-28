@@ -7,26 +7,36 @@
     "build": "next build",
     "start": "next start --port 3000",
     "typecheck": "next typegen && tsc --noEmit",
-    "auth": "dotenv -e .env.local -e .env -- auth generate --config ../../packages/auth/src/cli.ts --adapter drizzle --dialect postgresql --output ../../packages/cloud-db/src/schema/new-user.ts --yes"
+    "auth": "dotenv -e .env.local -e .env -- auth generate --config ../../packages/auth/src/cli.ts --adapter drizzle --dialect postgresql --output ../../packages/cloud-db/src/schema/new-user.ts --yes",
+    "test": "vitest run"
   },
   "dependencies": {
+    "@hookform/resolvers": "^6.0.1",
+    "@scholaros/auth": "workspace:*",
+    "@scholaros/cloud-db": "workspace:*",
+    "@scholaros/env": "workspace:*",
+    "@scholaros/lib": "workspace:*",
     "@scholaros/ui": "workspace:*",
+    "better-auth": "1.7.14",
+    "drizzle-orm": "^0.45.4",
     "next": "^16.4.3",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
-    "@scholaros/env": "workspace:*",
-    "@scholaros/cloud-db": "workspace:*",
-    "@scholaros/auth": "workspace:*",
-    "better-auth": "1.7.14"
+    "react-hook-form": "^7.91.0",
+    "react-icons": "^5.7.0",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.3.3",
-    "tailwindcss": "^4.3.3",
-    "typescript": "^6.0.3",
+    "@testing-library/react": "^16.3.3",
     "@types/node": "^24.0.0",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "auth": "1.7.14",
-    "dotenv-cli": "^11.0.0"
+    "dotenv-cli": "^11.0.0",
+    "jsdom": "^30.1.3",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^6.0.3",
+    "vitest": "^5.0.5"
   }
 }

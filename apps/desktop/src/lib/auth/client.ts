@@ -8,6 +8,7 @@ import { clientEnv } from '../../data/env/client';
 // This module belongs to the main process; renderer access goes through preload.
 export const authClient = createAuthClient({
   baseURL: clientEnv.VITE_API_URL,
+  fetchOptions: { timeout: 10_000 },
   plugins: [
     emailOTPClient(),
     electronClient({

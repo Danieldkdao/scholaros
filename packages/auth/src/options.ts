@@ -33,10 +33,6 @@ export const authOptions = {
       clientId: serverEnv.GITHUB_CLIENT_ID,
       clientSecret: serverEnv.GITHUB_CLIENT_SECRET,
     },
-    facebook: {
-      clientId: serverEnv.FACEBOOK_CLIENT_ID,
-      clientSecret: serverEnv.FACEBOOK_CLIENT_SECRET,
-    },
   },
   trustedOrigins: [serverEnv.BETTER_AUTH_URL, `${desktopScheme}:/`],
   session: {

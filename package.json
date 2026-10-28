@@ -5,8 +5,8 @@
   "packageManager": "pnpm@12.15.0",
   "scripts": {
     "dev": "turbo run dev",
-    "dev:desktop": "turbo run dev --filter=@scholaros/desktop",
-    "dev:web": "turbo run dev --filter=@scholaros/web",
+    "dev:desktop": "pnpm --filter @scholaros/desktop dev",
+    "dev:web": "pnpm --filter @scholaros/web dev",
     "build": "turbo run build",
     "typecheck": "turbo run typecheck",
     "lint": "oxlint apps packages",

@@ -2,6 +2,7 @@ import { app, BrowserWindow } from 'electron';
 import path from 'node:path';
 import started from 'electron-squirrel-startup';
 import { authClient } from './lib/auth/client';
+import { protectWindowNavigation } from './lib/window-navigation';
 
 // Handle creating/removing shortcuts on Windows when installing/uninstalling.
 if (started) {
@@ -9,7 +10,15 @@ if (started) {
 }
 
 if (!started && !app.commandLine.hasSwitch('migrate-db')) {
-  authClient.setupMain();
+  // Explicit flags retain plugin behavior when supplying a window resolver.
+  authClient.setupMain({
+    csp: true,
+    scheme: true,
+    bridges: true,
+    getWindow: () =>
+      BrowserWindow.getAllWindows()[0] ??
+      (app.isReady() ? createWindow() : null),
+  });
 }
 
 const createWindow = () => {
@@ -25,8 +34,7 @@ const createWindow = () => {
     },
   });
 
-  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-  mainWindow.webContents.on('will-navigate', (event) => event.preventDefault());
+  protectWindowNavigation(mainWindow.webContents);
 
   // and load the index.html of the app.
   if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
@@ -39,6 +47,7 @@ const createWindow = () => {
 
   // Open the DevTools.
   mainWindow.webContents.openDevTools();
+  return mainWindow;
 };
 
 // This method will be called when Electron has finished

@@ -8,6 +8,13 @@
       "when": 1793176863368,
       "tag": "0000_fat_magik",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1793193589501,
+      "tag": "0001_funny_chat",
+      "breakpoints": true
     }
   ]
 }

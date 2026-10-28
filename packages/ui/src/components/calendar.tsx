@@ -9,7 +9,8 @@ import {
   type Locale,
 } from 'react-day-picker';
 
-import { Button, buttonVariants } from '@scholaros/ui/components/button';
+import { Button } from '@scholaros/ui/components/button';
+import { buttonVariants } from '@scholaros/ui/lib/button-variants';
 import {
   ChevronLeftIcon,
   ChevronRightIcon,

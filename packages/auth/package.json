@@ -8,10 +8,12 @@
     "./server": "./src/server.ts",
     "./client": "./src/client.ts",
     "./constants": "./src/constants.ts",
-    "./types": "./src/types.ts"
+    "./types": "./src/types.ts",
+    "./redirects": "./src/redirects.ts"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "@better-auth/drizzle-adapter": "1.7.14",
@@ -27,6 +29,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "vitest": "^5.0.5"
   }
 }
