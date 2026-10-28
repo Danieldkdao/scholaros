@@ -1,8 +1,10 @@
+import './src/data/env/server';
+import './src/data/env/client';
 import type { NextConfig } from 'next';
 import { fileURLToPath } from 'node:url';
 
 const nextConfig: NextConfig = {
-  transpilePackages: ['@scholaros/ui'],
+  transpilePackages: ['@scholaros/ui', '@scholaros/env'],
   turbopack: {
     root: fileURLToPath(new URL('../..', import.meta.url)),
   },

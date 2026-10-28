@@ -3,14 +3,19 @@
   "tasks": {
     "dev": {
       "cache": false,
-      "persistent": true
+      "persistent": true,
+      "env": ["NEXT_PUBLIC_*", "VITE_*", "DATABASE_URL"],
+      "inputs": ["$TURBO_DEFAULT$", ".env*"]
     },
     "build": {
       "dependsOn": ["^build"],
-      "outputs": [".next/**", "!.next/cache/**", ".vite/**", "out/**"]
+      "outputs": [".next/**", "!.next/cache/**", ".vite/**", "out/**"],
+      "env": ["NEXT_PUBLIC_*", "VITE_*", "DATABASE_URL"],
+      "inputs": ["$TURBO_DEFAULT$", ".env*"]
     },
     "typecheck": {
       "dependsOn": ["^typecheck"]
     }
-  }
+  },
+  "globalEnv": ["NODE_ENV"]
 }
