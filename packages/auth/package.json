@@ -1,0 +1,32 @@
+{
+  "name": "@scholaros/auth",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/server.ts",
+    "./server": "./src/server.ts",
+    "./client": "./src/client.ts",
+    "./constants": "./src/constants.ts",
+    "./types": "./src/types.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@better-auth/drizzle-adapter": "1.7.14",
+    "@better-auth/electron": "1.7.14",
+    "@scholaros/cloud-db": "workspace:*",
+    "@scholaros/env": "workspace:*",
+    "better-auth": "1.7.14",
+    "server-only": "^0.0.1",
+    "@scholaros/services": "workspace:*"
+  },
+  "peerDependencies": {
+    "react": "^19.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^6.0.3"
+  }
+}

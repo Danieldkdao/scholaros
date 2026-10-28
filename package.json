@@ -18,7 +18,9 @@
     "release": "pnpm --filter @scholaros/desktop release",
     "db:generate": "turbo run db:generate",
     "db:migrate": "turbo run db:migrate",
-    "db:studio": "turbo run db:studio"
+    "db:studio": "turbo run db:studio",
+    "auth": "pnpm --filter @scholaros/web auth",
+    "test": "turbo run test"
   },
   "devDependencies": {
     "turbo": "^2.11.10",

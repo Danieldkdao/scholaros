@@ -6,7 +6,8 @@
     "dev": "next dev --port 3000",
     "build": "next build",
     "start": "next start --port 3000",
-    "typecheck": "next typegen && tsc --noEmit"
+    "typecheck": "next typegen && tsc --noEmit",
+    "auth": "dotenv -e .env.local -e .env -- auth generate --config ../../packages/auth/src/cli.ts --adapter drizzle --dialect postgresql --output ../../packages/cloud-db/src/schema/new-user.ts --yes"
   },
   "dependencies": {
     "@scholaros/ui": "workspace:*",
@@ -14,7 +15,9 @@
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "@scholaros/env": "workspace:*",
-    "@scholaros/cloud-db": "workspace:*"
+    "@scholaros/cloud-db": "workspace:*",
+    "@scholaros/auth": "workspace:*",
+    "better-auth": "1.7.14"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.3.3",
@@ -22,6 +25,8 @@
     "typescript": "^6.0.3",
     "@types/node": "^24.0.0",
     "@types/react": "^19.3.0",
-    "@types/react-dom": "^19.3.0"
+    "@types/react-dom": "^19.3.0",
+    "auth": "1.7.14",
+    "dotenv-cli": "^11.0.0"
   }
 }

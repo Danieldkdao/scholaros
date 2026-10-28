@@ -16,8 +16,8 @@ sqlite.pragma('foreign_keys = ON');
 export const db = drizzle({ client: sqlite, schema });
 
 const migrationsFolder = app.isPackaged
-  ? path.join(process.resourcesPath, 'drizzle')
-  : path.join(app.getAppPath(), 'drizzle');
+  ? path.join(process.resourcesPath, 'migrations')
+  : path.join(app.getAppPath(), 'src/db/migrations');
 
 try {
   migrate(db, { migrationsFolder });

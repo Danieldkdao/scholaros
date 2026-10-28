@@ -1,3 +1,4 @@
+import { desktopScheme } from '@scholaros/auth/constants';
 import type { ForgeConfig } from '@electron-forge/shared-types';
 import { MakerSquirrel } from '@electron-forge/maker-squirrel';
 import { MakerZIP } from '@electron-forge/maker-zip';
@@ -18,7 +19,8 @@ const sqlitePackage = path.dirname(
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
-    extraResource: [path.resolve('drizzle')],
+    extraResource: [path.resolve('src/db/migrations')],
+    protocols: [{ name: 'ScholarOS', schemes: [desktopScheme] }],
   },
   rebuildConfig: {},
   hooks: {

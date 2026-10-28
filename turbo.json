@@ -4,30 +4,101 @@
     "dev": {
       "cache": false,
       "persistent": true,
-      "env": ["NEXT_PUBLIC_*", "VITE_*", "DATABASE_URL"],
+      "env": [
+        "NEXT_PUBLIC_*",
+        "VITE_*",
+        "DATABASE_URL",
+        "BETTER_AUTH_*",
+        "GOOGLE_CLIENT_*",
+        "GITHUB_CLIENT_*",
+        "FACEBOOK_CLIENT_*",
+        "MAILJET_*",
+        "SENDER_EMAIL"
+      ],
       "inputs": ["$TURBO_DEFAULT$", ".env*"]
     },
     "build": {
       "dependsOn": ["^build"],
       "outputs": [".next/**", "!.next/cache/**", ".vite/**", "out/**"],
-      "env": ["NEXT_PUBLIC_*", "VITE_*", "DATABASE_URL"],
+      "env": [
+        "NEXT_PUBLIC_*",
+        "VITE_*",
+        "DATABASE_URL",
+        "BETTER_AUTH_*",
+        "GOOGLE_CLIENT_*",
+        "GITHUB_CLIENT_*",
+        "FACEBOOK_CLIENT_*",
+        "MAILJET_*",
+        "SENDER_EMAIL"
+      ],
       "inputs": ["$TURBO_DEFAULT$", ".env*"]
     },
     "typecheck": {
       "dependsOn": ["^typecheck"],
-      "env": ["DATABASE_URL", "DATABASE_URL_UNPOOLED"]
+      "env": [
+        "DATABASE_URL",
+        "DATABASE_URL_UNPOOLED",
+        "BETTER_AUTH_*",
+        "GOOGLE_CLIENT_*",
+        "GITHUB_CLIENT_*",
+        "FACEBOOK_CLIENT_*",
+        "MAILJET_*",
+        "SENDER_EMAIL"
+      ]
     },
     "db:generate": {
-      "cache": false
+      "cache": false,
+      "env": [
+        "BETTER_AUTH_*",
+        "GOOGLE_CLIENT_*",
+        "GITHUB_CLIENT_*",
+        "FACEBOOK_CLIENT_*",
+        "MAILJET_*",
+        "SENDER_EMAIL"
+      ]
     },
     "db:migrate": {
       "cache": false,
-      "env": ["DATABASE_URL", "DATABASE_URL_UNPOOLED"]
+      "env": [
+        "DATABASE_URL",
+        "DATABASE_URL_UNPOOLED",
+        "BETTER_AUTH_*",
+        "GOOGLE_CLIENT_*",
+        "GITHUB_CLIENT_*",
+        "FACEBOOK_CLIENT_*",
+        "MAILJET_*",
+        "SENDER_EMAIL"
+      ]
     },
     "db:studio": {
       "cache": false,
       "persistent": true,
-      "env": ["DATABASE_URL", "DATABASE_URL_UNPOOLED"]
+      "env": [
+        "DATABASE_URL",
+        "DATABASE_URL_UNPOOLED",
+        "BETTER_AUTH_*",
+        "GOOGLE_CLIENT_*",
+        "GITHUB_CLIENT_*",
+        "FACEBOOK_CLIENT_*",
+        "MAILJET_*",
+        "SENDER_EMAIL"
+      ]
+    },
+    "auth": {
+      "cache": false,
+      "env": [
+        "DATABASE_URL",
+        "DATABASE_URL_UNPOOLED",
+        "BETTER_AUTH_*",
+        "GOOGLE_CLIENT_*",
+        "GITHUB_CLIENT_*",
+        "FACEBOOK_CLIENT_*",
+        "MAILJET_*",
+        "SENDER_EMAIL"
+      ]
+    },
+    "test": {
+      "cache": false
     }
   },
   "globalEnv": ["NODE_ENV"]

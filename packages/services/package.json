@@ -1,0 +1,23 @@
+{
+  "name": "@scholaros/services",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./mailjet": "./src/mailjet/index.ts",
+    "./mailjet/emails/verification-emails": "./src/mailjet/emails/verification-emails.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@scholaros/env": "workspace:*",
+    "node-mailjet": "6.0.11"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^6.0.3",
+    "vitest": "^5.0.5"
+  }
+}

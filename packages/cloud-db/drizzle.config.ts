@@ -12,6 +12,6 @@ if (new URL(url).hostname.includes("-pooler.")) {
 export default defineConfig({
   dialect: "postgresql",
   schema: "./src/schema/index.ts",
-  out: "./migrations",
+  out: "./src/migrations",
   dbCredentials: { url },
 });
