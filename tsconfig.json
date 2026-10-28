@@ -8,7 +8,14 @@
     "esModuleInterop": true,
     "noImplicitAny": true,
     "sourceMap": true,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    "jsx": "react-jsx",
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "allowUnusedLabels": false,
+    "noUncheckedSideEffectImports": true,
+    "noFallthroughCasesInSwitch": true,
+    "allowUnreachableCode": false,
   },
   "include": ["src/**/*", "*.ts", "*.mts"]
 }
