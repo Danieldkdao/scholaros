@@ -13,7 +13,8 @@
     "next": "^16.4.3",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
-    "@scholaros/env": "workspace:*"
+    "@scholaros/env": "workspace:*",
+    "@scholaros/cloud-db": "workspace:*"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.3.3",

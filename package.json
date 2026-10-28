@@ -15,7 +15,10 @@
     "start": "pnpm --filter @scholaros/desktop start",
     "package": "pnpm --filter @scholaros/desktop package",
     "make": "pnpm --filter @scholaros/desktop make",
-    "release": "pnpm --filter @scholaros/desktop release"
+    "release": "pnpm --filter @scholaros/desktop release",
+    "db:generate": "turbo run db:generate",
+    "db:migrate": "turbo run db:migrate",
+    "db:studio": "turbo run db:studio"
   },
   "devDependencies": {
     "turbo": "^2.11.10",

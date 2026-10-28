@@ -14,7 +14,20 @@
       "inputs": ["$TURBO_DEFAULT$", ".env*"]
     },
     "typecheck": {
-      "dependsOn": ["^typecheck"]
+      "dependsOn": ["^typecheck"],
+      "env": ["DATABASE_URL", "DATABASE_URL_UNPOOLED"]
+    },
+    "db:generate": {
+      "cache": false
+    },
+    "db:migrate": {
+      "cache": false,
+      "env": ["DATABASE_URL", "DATABASE_URL_UNPOOLED"]
+    },
+    "db:studio": {
+      "cache": false,
+      "persistent": true,
+      "env": ["DATABASE_URL", "DATABASE_URL_UNPOOLED"]
     }
   },
   "globalEnv": ["NODE_ENV"]
