@@ -1,0 +1,1 @@
+ALTER TABLE `academic_context` ADD `discovery_coverage` text;

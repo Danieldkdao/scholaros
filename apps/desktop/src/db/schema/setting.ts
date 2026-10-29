@@ -1,0 +1,18 @@
+import { sqliteTable, text, integer } from 'drizzle-orm/sqlite-core';
+import type { OnboardingStep } from '../../features/onboarding/types';
+
+export const SettingTable = sqliteTable('settings', {
+  userId: text('user_id').primaryKey(),
+  step: text('step').$type<OnboardingStep>().notNull().default('welcome'),
+  consent: integer('consent', { mode: 'boolean' }).notNull().default(false),
+  launchAtLogin: integer('launch_at_login', { mode: 'boolean' })
+    .notNull()
+    .default(false),
+  backgroundSync: integer('background_sync', { mode: 'boolean' })
+    .notNull()
+    .default(false),
+  localSetupCompletedAt: text('local_setup_completed_at'),
+  updatedAt: text('updated_at').notNull(),
+});
+export type SettingSelectData = typeof SettingTable.$inferSelect;
+export type SettingInsertData = typeof SettingTable.$inferInsert;
