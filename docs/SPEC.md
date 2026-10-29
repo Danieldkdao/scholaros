@@ -70,7 +70,7 @@ Ground course-specific claims in connected resources. Distinguish teacher-provid
 
 ### Background assistance
 
-Make scheduled syncing and launch at login opt-in and revocable. Show activity and sync status; support pause, cancellation, and manual sync. Background work stays within existing permissions.
+Make scheduled syncing and launch at login opt-in and revocable. Show activity and sync status; support pause, cancellation, and manual sync. Background work starts after onboarding is complete and stays within existing permissions.
 
 ## Architecture and technology
 
