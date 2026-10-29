@@ -95,9 +95,9 @@ Shared packages
 - **UI:** Shared shadcn/Base UI components, Tailwind CSS, and theme tokens. Use React Hook Form and Zod for web forms.
 - **Authentication:** Better Auth and its Electron integration, Google/GitHub OAuth, and email/password with email verification. Mailjet delivers verification emails.
 - **Data:** Drizzle ORM with PostgreSQL/Neon for cloud account data and `better-sqlite3` for local academic data. Keep cloud database credentials on the server and local database access outside the renderer.
+- **AI services:** All model calls use Vercel AI SDK through `packages/services/src/ai/`; provider instances live in `models/baseten.ts` (`baseten`) and `models/typesafe.ts` (`typeSafe`), configured from typed `serverEnv`. Use the official `@ai-sdk/baseten` and `@ai-sdk/typesafe-ai` adapters.
 - **Agent:** Stagehand with Chromium/CDP for semantic navigation and extraction; use ordinary browser/DOM APIs for deterministic operations where appropriate.
 - **Verification:** Vitest for tests, TypeScript checks, Oxlint, and Oxfmt. Build and test commands belong in workspace manifests.
-- **AI services:** All model calls use Vercel AI SDK through `packages/services/src/ai/`; provider instances live in `models/baseten.ts` (`baseten`) and `models/typesafe.ts` (`typeSafe`), configured from typed `serverEnv`. Use the official `@ai-sdk/baseten` and `@ai-sdk/typesafe-ai` adapters.
 
 ## Meta model integration
 
@@ -108,11 +108,11 @@ Meta models must interpret course material, connect concepts, synthesize evidenc
 - Visual analysis can help explain handwritten work and diagrams when it improves the learning experience.
 - Treat SAM as a segmentation tool when supported by its verified API; do not assume it is a general screen classifier or safety decision-maker.
 
-Verify model capabilities in current official documentation. Add models only for concrete learning benefits.
-
 Use `generateText` with schema-validated `Output.object` for Meta academic extraction through Baseten and `import { experimental_decide as decide } from 'ai'` with TypeSafe Jev for bounded navigation choices. Route desktop inference through the authenticated Next.js API; keep provider credentials in the web server environment, never the desktop renderer or distributed app. Preserve cancellation, request limits, source validation, and user permissions; do not replace these with model decisions. Disable content telemetry by default and bound provider calls with deadlines and explicit retry limits.
 
 Server configuration uses `BASETEN_API_KEY`, `TYPESAFE_API_KEY`, and `META_MODEL` (the hackathon Meta model defaults to `meta-models/muse-spark-open-1026`), supplied in the web app environment and read via `@scholaros/env/server`. The TypeSafe SDK receives the existing key explicitly; its default environment variable name is not required.
+
+Verify model capabilities in current official documentation. Add models only for concrete learning benefits.
 
 ## Privacy, permissions, and authentication
 
