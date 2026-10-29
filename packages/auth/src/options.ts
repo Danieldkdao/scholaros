@@ -19,6 +19,15 @@ export const authOptions = {
     sendOnSignUp: true,
     sendOnSignIn: true,
   },
+  user: {
+    additionalFields: {
+      hasCompletedOnboarding: {
+        type: 'boolean',
+        defaultValue: false,
+        input: false,
+      },
+    },
+  },
   advanced: {
     database: {
       generateId: 'uuid',
