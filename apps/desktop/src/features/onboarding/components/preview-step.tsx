@@ -1,33 +1,32 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from 'react';
 import {
   CalendarDays,
   ChevronDownIcon,
   ExternalLink,
-  ShieldCheck,
   Sparkles,
   Square,
-} from "lucide-react";
-import { Button } from "@scholaros/ui/components/button";
-import { LoadingSwap } from "@scholaros/ui/components/loading-swap";
-import { cn } from "@scholaros/ui/lib/utils";
+} from 'lucide-react';
+import { Button } from '@scholaros/ui/components/button';
+import { LoadingSwap } from '@scholaros/ui/components/loading-swap';
+import { cn } from '@scholaros/ui/lib/utils';
 import {
   formatAgentActivity,
   formatCard,
   formatPreviewPrompt,
   formatPreviewStatus,
-} from "../lib/formatters";
-import { watchPreview } from "../lib/preview-channel";
-import { previewPrompts } from "../schemas";
-import type { PreviewPrompt, PreviewState } from "../types";
+} from '../lib/formatters';
+import { watchPreview } from '../lib/preview-channel';
+import { previewPrompts } from '../schemas';
+import type { PreviewPrompt, PreviewState } from '../types';
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
-} from "@scholaros/ui/components/collapsible";
+} from '@scholaros/ui/components/collapsible';
 
 const emptyPreview = (accountId: string): PreviewState => ({
   accountId,
-  status: "idle",
+  status: 'idle',
   events: [],
   cards: [],
   message: null,
@@ -62,7 +61,7 @@ export const PreviewStep = ({
       onSessionExpired: (message) => {
         setPreview((current) => ({
           ...current,
-          status: "blocked",
+          status: 'blocked',
           message,
         }));
         setNotice(message);
@@ -73,18 +72,18 @@ export const PreviewStep = ({
       void window.scholar.cancelPreview(accountId).catch(() => undefined);
     };
   }, [accountId]);
-  const running = preview.status === "running";
+  const running = preview.status === 'running';
   const status = formatPreviewStatus(preview.status);
 
   const counts = useMemo(() => {
     const courseCount = preview.cards.filter(
-      (card) => card.kind === "course",
+      (card) => card.kind === 'course',
     ).length;
     const assignmentCount = preview.cards.filter(
-      (card) => card.kind === "assignment",
+      (card) => card.kind === 'assignment',
     ).length;
     const announcementCount = preview.cards.filter(
-      (card) => card.kind === "announcement",
+      (card) => card.kind === 'announcement',
     ).length;
 
     return {
@@ -138,7 +137,7 @@ export const PreviewStep = ({
           {notice}
         </p>
       )}
-      {preview.status !== "idle" && (
+      {preview.status !== 'idle' && (
         <div
           className="flex flex-col gap-4 rounded-xl border bg-card p-5"
           aria-live="polite"
@@ -146,8 +145,8 @@ export const PreviewStep = ({
           <div className="flex items-center gap-3">
             <status.Icon
               className={cn(
-                "size-5 text-primary",
-                running && "motion-safe:animate-pulse",
+                'size-5 text-primary',
+                running && 'motion-safe:animate-pulse',
               )}
             />
             <p className="flex-1 font-medium">{status.label}</p>
@@ -171,7 +170,7 @@ export const PreviewStep = ({
             const { label, Icon } = formatAgentActivity(event);
             return (
               <div
-                key={`${index}-${event.type}-${event.detail ?? ""}`}
+                key={`${index}-${event.type}-${event.detail ?? ''}`}
                 className="flex items-center gap-3 text-muted-foreground motion-safe:animate-in motion-safe:fade-in"
               >
                 <Icon className="size-5 shrink-0" />
@@ -190,23 +189,23 @@ export const PreviewStep = ({
             <div className="flex items-center gap-2 flex-wrap">
               {counts.courseCount > 0 && (
                 <span className="font-medium">
-                  {counts.courseCount}{" "}
-                  {counts.courseCount === 1 ? "course" : "courses"} found
+                  {counts.courseCount}{' '}
+                  {counts.courseCount === 1 ? 'course' : 'courses'} found
                 </span>
               )}
               {counts.assignmentCount > 0 && (
                 <span className="font-medium">
-                  {counts.assignmentCount}{" "}
-                  {counts.assignmentCount === 1 ? "assignment" : "assignments"}{" "}
+                  {counts.assignmentCount}{' '}
+                  {counts.assignmentCount === 1 ? 'assignment' : 'assignments'}{' '}
                   found
                 </span>
               )}
               {counts.announcementCount > 0 && (
                 <span className="font-medium">
-                  {counts.announcementCount}{" "}
+                  {counts.announcementCount}{' '}
                   {counts.announcementCount === 1
-                    ? "announcement"
-                    : "announcements"}{" "}
+                    ? 'announcement'
+                    : 'announcements'}{' '}
                   found
                 </span>
               )}
@@ -228,7 +227,7 @@ export const PreviewStep = ({
                   <h3 className="text-xl font-semibold">{card.title}</h3>
                   {card.course && (
                     <p>
-                      <span className="font-medium">Course from page:</span>{" "}
+                      <span className="font-medium">Course from page:</span>{' '}
                       {card.course}
                     </p>
                   )}
@@ -236,7 +235,7 @@ export const PreviewStep = ({
                     <p className="flex items-center gap-2">
                       <CalendarDays className="size-4 text-muted-foreground" />
                       <span>
-                        <span className="font-medium">Due date from page:</span>{" "}
+                        <span className="font-medium">Due date from page:</span>{' '}
                         {card.date}
                       </span>
                     </p>
@@ -254,7 +253,7 @@ export const PreviewStep = ({
                               <Sparkles className="mt-0.5 size-4 shrink-0" />
                             </div>
                             <span>
-                              <span className="font-medium">AI summary:</span>{" "}
+                              <span className="font-medium">AI summary:</span>{' '}
                               {card.detail}
                             </span>
                           </p>
@@ -281,7 +280,7 @@ export const PreviewStep = ({
       ) : (
         <p className="text-muted-foreground font-medium">No items found</p>
       )}
-      {preview.status === "complete" && (
+      {preview.status === 'complete' && (
         <p className="text-muted-foreground">
           Preview results are temporary and aren’t saved to your account.
         </p>
