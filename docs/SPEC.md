@@ -16,7 +16,7 @@ ScholarOS is the working name. The experience must suit nontechnical students.
 2. Create an account and sign in through the system browser.
 3. Set up a dedicated academic browser workspace and choose permitted services.
 4. Sign into each academic service directly on its real website, including SSO and MFA.
-5. Review access boundaries, data handling, and optional background activity.
+5. Add optional context in a notes-only step, then review access boundaries, data handling, and optional background activity; course discovery is not a prerequisite or a course-map scan in onboarding.
 6. Open a unified academic home or give the agent a mission.
 
 Example mission: **“I have a biology exam Friday and 30 minutes to study. Get me ready.”**
@@ -38,7 +38,10 @@ The agent finds authorized exam information and materials, connects the concepts
 - Navigate authorized LMS pages, portals, textbook sites, documents, and other connected resources.
 - Support missions such as finding exam material, catching up after an absence, or reviewing the coming week.
 - Show understandable activity updates, discovered sources, and a way to cancel a mission.
+- Pace school navigation, reuse observed rendering dependencies to avoid repeated bootstrap reloads, and respect rate-limit cooldowns across attempts; stop clearly on rate-limit responses instead of treating them as empty course pages.
 - Preserve source links, course context, and retrieval times alongside extracted information.
+- Discover courses from confirmed academic home pages through bounded, protected navigation and Meta classification of observed links; unfamiliar platforms do not require a school-name or course-path allowlist.
+- Treat empty course lists as explicit observed evidence, preserve prior results on cancelled or inconclusive refreshes, and distinguish partial coverage and sign-in requirements from successful discovery.
 
 Browsing gathers context; the learning system decides what to learn next.
 
@@ -46,9 +49,9 @@ Browsing gathers context; the learning system decides what to learn next.
 
 Keep two distinct models:
 
-| Model | Purpose |
-| --- | --- |
-| Course knowledge graph | Concepts, prerequisites, relationships, course expectations, and supporting resources. |
+| Model                  | Purpose                                                                                                             |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| Course knowledge graph | Concepts, prerequisites, relationships, course expectations, and supporting resources.                              |
 | Student learning model | Estimates of understanding supported by practice responses, mistakes, confidence checks, and tutoring interactions. |
 
 Link concepts to supporting course material. Distinguish unknown topics from demonstrated difficulties. Understanding estimates are learning aids, not assessments of intelligence or ability.
@@ -67,7 +70,7 @@ Ground course-specific claims in connected resources. Distinguish teacher-provid
 
 ### Background assistance
 
-Make scheduled syncing and launch at login opt-in and revocable. Show activity and sync status; support pause, cancellation, and manual sync. Background work stays within existing permissions.
+Make scheduled syncing and launch at login opt-in and revocable. Show activity and sync status; support pause, cancellation, and manual sync. Background work starts after onboarding is complete and stays within existing permissions.
 
 ## Architecture and technology
 
@@ -92,6 +95,7 @@ Shared packages
 - **UI:** Shared shadcn/Base UI components, Tailwind CSS, and theme tokens. Use React Hook Form and Zod for web forms.
 - **Authentication:** Better Auth and its Electron integration, Google/GitHub OAuth, and email/password with email verification. Mailjet delivers verification emails.
 - **Data:** Drizzle ORM with PostgreSQL/Neon for cloud account data and `better-sqlite3` for local academic data. Keep cloud database credentials on the server and local database access outside the renderer.
+- **AI services:** All model calls use Vercel AI SDK through `packages/services/src/ai/`; provider instances live in `models/baseten.ts` (`baseten`) and `models/typesafe.ts` (`typeSafe`), configured from typed `serverEnv`. Use the official `@ai-sdk/baseten` and `@ai-sdk/typesafe-ai` adapters.
 - **Agent:** Stagehand with Chromium/CDP for semantic navigation and extraction; use ordinary browser/DOM APIs for deterministic operations where appropriate.
 - **Verification:** Vitest for tests, TypeScript checks, Oxlint, and Oxfmt. Build and test commands belong in workspace manifests.
 
@@ -103,6 +107,10 @@ Meta models must interpret course material, connect concepts, synthesize evidenc
 - Voice transcription can turn a spoken study request into a mission.
 - Visual analysis can help explain handwritten work and diagrams when it improves the learning experience.
 - Treat SAM as a segmentation tool when supported by its verified API; do not assume it is a general screen classifier or safety decision-maker.
+
+Use `generateText` with schema-validated `Output.object` for Meta academic extraction through Baseten and `import { experimental_decide as decide } from 'ai'` with TypeSafe Jev for bounded navigation choices. Route desktop inference through the authenticated Next.js API; keep provider credentials in the web server environment, never the desktop renderer or distributed app. Preserve cancellation, request limits, source validation, and user permissions; do not replace these with model decisions. Disable content telemetry by default and bound provider calls with deadlines and explicit retry limits.
+
+Server configuration uses `BASETEN_API_KEY`, `TYPESAFE_API_KEY`, and `META_MODEL` (the hackathon Meta model defaults to `meta-models/muse-spark-open-1026`), supplied in the web app environment and read via `@scholaros/env/server`. The TypeSafe SDK receives the existing key explicitly; its default environment variable name is not required.
 
 Verify model capabilities in current official documentation. Add models only for concrete learning benefits.
 

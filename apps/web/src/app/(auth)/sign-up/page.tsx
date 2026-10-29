@@ -1,5 +1,5 @@
-import { Suspense } from "react";
-import { AuthForm } from "@/components/auth/auth-form";
+import { Suspense } from 'react';
+import { AuthForm } from '@/components/auth/auth-form';
 
 const Page = () => (
   <Suspense>

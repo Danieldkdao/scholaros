@@ -5,15 +5,24 @@
   "type": "module",
   "exports": {
     "./mailjet": "./src/mailjet/index.ts",
-    "./mailjet/emails/verification-emails": "./src/mailjet/emails/verification-emails.ts"
+    "./mailjet/emails/verification-emails": "./src/mailjet/emails/verification-emails.ts",
+    "./ai/academic": "./src/ai/academic.ts",
+    "./ai/schemas": "./src/ai/schemas.ts",
+    "./ai/models/baseten": "./src/ai/models/baseten.ts",
+    "./ai/models/typesafe": "./src/ai/models/typesafe.ts",
+    "./ai/course-discovery": "./src/ai/course-discovery.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
+    "@ai-sdk/baseten": "2.1.58",
+    "@ai-sdk/typesafe-ai": "3.0.29",
     "@scholaros/env": "workspace:*",
-    "node-mailjet": "6.0.11"
+    "ai": "7.0.156",
+    "node-mailjet": "6.0.11",
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

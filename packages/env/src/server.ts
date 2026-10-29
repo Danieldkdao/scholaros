@@ -21,6 +21,9 @@ export const serverEnv = createEnv({
     MAILJET_API_KEY: z.string().min(1),
     MAILJET_API_SECRET: z.string().min(1),
     SENDER_EMAIL: z.email(),
+    TYPESAFE_API_KEY: z.string().min(1).optional(),
+    BASETEN_API_KEY: z.string().min(1).optional(),
+    META_MODEL: z.string().min(1).default('meta-models/muse-spark-open-1026'),
   },
   runtimeEnvStrict: {
     NODE_ENV: process.env.NODE_ENV,
@@ -35,6 +38,9 @@ export const serverEnv = createEnv({
     MAILJET_API_KEY: process.env.MAILJET_API_KEY,
     MAILJET_API_SECRET: process.env.MAILJET_API_SECRET,
     SENDER_EMAIL: process.env.SENDER_EMAIL,
+    TYPESAFE_API_KEY: process.env.TYPESAFE_API_KEY,
+    BASETEN_API_KEY: process.env.BASETEN_API_KEY,
+    META_MODEL: process.env.META_MODEL,
   },
   emptyStringAsUndefined: true,
 });

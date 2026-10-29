@@ -1,18 +1,18 @@
-"use client";
+'use client';
 
-import { Input } from "./input";
+import { Input } from './input';
 import {
   InputGroup,
   InputGroupAddon,
   InputGroupButton,
   InputGroupInput,
-} from "./input-group";
-import { Tooltip, TooltipContent, TooltipTrigger } from "./tooltip";
-import { cn } from "../lib/utils";
-import { ZxcvbnFactory } from "@zxcvbn-ts/core";
-import * as common from "@zxcvbn-ts/language-common";
-import * as english from "@zxcvbn-ts/language-en";
-import { EyeIcon, EyeOffIcon } from "lucide-react";
+} from './input-group';
+import { Tooltip, TooltipContent, TooltipTrigger } from './tooltip';
+import { cn } from '../lib/utils';
+import { ZxcvbnFactory } from '@zxcvbn-ts/core';
+import * as common from '@zxcvbn-ts/language-common';
+import * as english from '@zxcvbn-ts/language-en';
+import { EyeIcon, EyeOffIcon } from 'lucide-react';
 import {
   createContext,
   useContext,
@@ -22,7 +22,7 @@ import {
   type ChangeEvent,
   type ComponentProps,
   type ReactNode,
-} from "react";
+} from 'react';
 
 const PasswordInputContext = createContext<{ password: string } | null>(null);
 
@@ -33,11 +33,11 @@ export function PasswordInput({
   defaultValue,
   disabled,
   ...props
-}: Omit<ComponentProps<typeof Input>, "type"> & {
+}: Omit<ComponentProps<typeof Input>, 'type'> & {
   children?: ReactNode;
 }) {
   const [showPassword, setShowPassword] = useState(false);
-  const [password, setPassword] = useState(defaultValue ?? "");
+  const [password, setPassword] = useState(defaultValue ?? '');
 
   const Icon = showPassword ? EyeOffIcon : EyeIcon;
   const currentValue = value ?? password;
@@ -56,7 +56,7 @@ export function PasswordInput({
             disabled={disabled}
             value={value}
             defaultValue={defaultValue}
-            type={showPassword ? "text" : "password"}
+            type={showPassword ? 'text' : 'password'}
             onChange={handleChange}
           />
           <InputGroupAddon align="inline-end">
@@ -68,7 +68,7 @@ export function PasswordInput({
             >
               <Icon aria-hidden="true" className="size-4.5" />
               <span className="sr-only">
-                {showPassword ? "Hide password" : "Show password"}
+                {showPassword ? 'Hide password' : 'Show password'}
               </span>
             </InputGroupButton>
           </InputGroupAddon>
@@ -106,19 +106,19 @@ export function PasswordInputStrengthChecker() {
   }, [deferredPassword, zxcvbn]);
 
   function getLabel() {
-    if (deferredPassword.length === 0) return "Password strength";
+    if (deferredPassword.length === 0) return 'Password strength';
 
     const score = strengthResult.score;
     switch (score) {
       case 0:
       case 1:
-        return "Very weak";
+        return 'Very weak';
       case 2:
-        return "Weak";
+        return 'Weak';
       case 3:
-        return "Strong";
+        return 'Strong';
       case 4:
-        return "Very strong";
+        return 'Very strong';
       default:
         throw new Error(`Invalid score: ${score satisfies never}`);
     }
@@ -139,14 +139,14 @@ export function PasswordInputStrengthChecker() {
       >
         {Array.from({ length: 4 }).map((_, i) => {
           const color =
-            strengthResult.score >= 3 ? "bg-primary" : "bg-destructive";
+            strengthResult.score >= 3 ? 'bg-primary' : 'bg-destructive';
 
           return (
             <div
               key={i}
               className={cn(
-                "h-1 flex-1 rounded-full",
-                strengthResult.score > i ? color : "bg-secondary",
+                'h-1 flex-1 rounded-full',
+                strengthResult.score > i ? color : 'bg-secondary',
               )}
             />
           );
@@ -177,7 +177,7 @@ const usePasswordInput = () => {
   const context = useContext(PasswordInputContext);
   if (context == null) {
     throw new Error(
-      "usePasswordInput must be used within a PasswordInputContext",
+      'usePasswordInput must be used within a PasswordInputContext',
     );
   }
   return context;

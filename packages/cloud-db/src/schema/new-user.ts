@@ -21,6 +21,9 @@ export const user = pgTable("user", {
     .defaultNow()
     .$onUpdate(() => /* @__PURE__ */ new Date())
     .notNull(),
+  hasCompletedOnboarding: boolean("has_completed_onboarding")
+    .default(false)
+    .notNull(),
 });
 
 export const session = pgTable(

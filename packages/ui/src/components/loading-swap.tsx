@@ -1,6 +1,6 @@
-import { cn } from "cn";
-import { Loader2Icon } from "lucide-react";
-import type { ReactNode } from "react";
+import { cn } from 'cn';
+import { Loader2Icon } from 'lucide-react';
+import type { ReactNode } from 'react';
 
 export function LoadingSwap({
   isLoading,
@@ -15,8 +15,8 @@ export function LoadingSwap({
     <div className="grid grid-cols-1 items-center justify-items-center">
       <div
         className={cn(
-          "col-start-1 col-end-2 row-start-1 row-end-2 w-full",
-          isLoading ? "invisible" : "visible",
+          'col-start-1 col-end-2 row-start-1 row-end-2 w-full',
+          isLoading ? 'invisible' : 'visible',
           className,
         )}
       >
@@ -24,8 +24,8 @@ export function LoadingSwap({
       </div>
       <div
         className={cn(
-          "col-start-1 col-end-2 row-start-1 row-end-2",
-          isLoading ? "visible" : "invisible",
+          'col-start-1 col-end-2 row-start-1 row-end-2',
+          isLoading ? 'visible' : 'invisible',
           className,
         )}
       >

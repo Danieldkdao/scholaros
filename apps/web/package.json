@@ -16,6 +16,7 @@
     "@scholaros/cloud-db": "workspace:*",
     "@scholaros/env": "workspace:*",
     "@scholaros/lib": "workspace:*",
+    "@scholaros/services": "workspace:*",
     "@scholaros/ui": "workspace:*",
     "better-auth": "1.7.14",
     "drizzle-orm": "^0.45.4",

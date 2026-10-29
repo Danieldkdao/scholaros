@@ -24,8 +24,11 @@ if (!started && !app.commandLine.hasSwitch('migrate-db')) {
 const createWindow = () => {
   // Create the browser window.
   const mainWindow = new BrowserWindow({
-    width: 800,
-    height: 600,
+    width: 1120,
+    height: 780,
+    minWidth: 720,
+    minHeight: 560,
+    title: 'ScholarOS',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -45,8 +48,8 @@ const createWindow = () => {
     );
   }
 
-  // Open the DevTools.
-  mainWindow.webContents.openDevTools();
+  // Keep developer tools out of the packaged consumer application.
+  if (!app.isPackaged) mainWindow.webContents.openDevTools();
   return mainWindow;
 };
 
@@ -63,6 +66,9 @@ app
       app.quit();
       return;
     }
+    const { registerOnboardingIpc } =
+      await import('./features/onboarding/services/ipc');
+    registerOnboardingIpc();
     createWindow();
 
     // On OS X it's common to re-create a window in the app when the
