@@ -48,8 +48,8 @@ const createWindow = () => {
     );
   }
 
-  // Open the DevTools.
-  mainWindow.webContents.openDevTools();
+  // Keep developer tools out of the packaged consumer application.
+  if (!app.isPackaged) mainWindow.webContents.openDevTools();
   return mainWindow;
 };
 
