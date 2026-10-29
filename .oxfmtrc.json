@@ -2,5 +2,11 @@
   "singleQuote": true,
   "printWidth": 80,
   "sortPackageJson": false,
-  "ignorePatterns": ["**/next-env.d.ts"]
+  "ignorePatterns": [
+    "**/next-env.d.ts",
+    "apps/desktop/src/route-tree.gen.ts",
+    "**/migrations/**",
+    "packages/cloud-db/src/schema/new-user.ts",
+    "AGENTS.md"
+  ]
 }

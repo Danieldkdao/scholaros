@@ -46,9 +46,9 @@ Browsing gathers context; the learning system decides what to learn next.
 
 Keep two distinct models:
 
-| Model | Purpose |
-| --- | --- |
-| Course knowledge graph | Concepts, prerequisites, relationships, course expectations, and supporting resources. |
+| Model                  | Purpose                                                                                                             |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| Course knowledge graph | Concepts, prerequisites, relationships, course expectations, and supporting resources.                              |
 | Student learning model | Estimates of understanding supported by practice responses, mistakes, confidence checks, and tutoring interactions. |
 
 Link concepts to supporting course material. Distinguish unknown topics from demonstrated difficulties. Understanding estimates are learning aids, not assessments of intelligence or ability.

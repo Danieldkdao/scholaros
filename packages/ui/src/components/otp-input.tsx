@@ -1,10 +1,10 @@
-import type { ComponentProps } from "react";
-import { REGEXP_ONLY_DIGITS } from "input-otp";
-import { InputOTP, InputOTPGroup, InputOTPSlot } from "./input-otp";
+import type { ComponentProps } from 'react';
+import { REGEXP_ONLY_DIGITS } from 'input-otp';
+import { InputOTP, InputOTPGroup, InputOTPSlot } from './input-otp';
 
 type OTPInputProps = Omit<
   ComponentProps<typeof InputOTP>,
-  "maxLength" | "children" | "render"
+  'maxLength' | 'children' | 'render'
 > & {
   length?: number;
 };
