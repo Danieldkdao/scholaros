@@ -273,6 +273,75 @@ it('does not borrow another assignment’s date from the same page', () => {
   expect(result?.dateVerified).toBe(false);
 });
 
+it('does not borrow a date when the title only differs by whitespace', () => {
+  const pages = [
+    { ...evidence[0]!, text: 'Lab  report. Midterm exam due May 10, 2026.' },
+  ];
+  const [result] = validate(
+    [
+      {
+        ...card,
+        kind: 'assignment',
+        title: 'Lab  report',
+        date: '2026-05-10',
+        detail: null,
+      },
+    ],
+    pages,
+    'assignment',
+  );
+  expect(result?.date).toBeNull();
+  expect(result?.dateVerified).toBe(false);
+});
+
+it.each(['Lab report', 'Lab  report', 'Lab report.'])(
+  'does not borrow a date from a larger word matching %s',
+  (title) => {
+    const pages = [
+      {
+        ...evidence[0]!,
+        text: 'Prelab report due May 10, 2026. Lab report.',
+      },
+    ];
+    const [result] = validate(
+      [
+        {
+          ...card,
+          kind: 'assignment',
+          title,
+          date: 'May 10, 2026',
+          detail: null,
+        },
+      ],
+      pages,
+      'assignment',
+    );
+    expect(result?.date).toBeNull();
+    expect(result?.dateVerified).toBe(false);
+  },
+);
+
+it('keeps the sentence boundary when a generated title ends in punctuation', () => {
+  const pages = [
+    { ...evidence[0]!, text: 'Lab report. Midterm exam due May 10, 2026.' },
+  ];
+  const [result] = validate(
+    [
+      {
+        ...card,
+        kind: 'assignment',
+        title: 'Lab report.',
+        date: 'May 10, 2026',
+        detail: null,
+      },
+    ],
+    pages,
+    'assignment',
+  );
+  expect(result?.date).toBeNull();
+  expect(result?.dateVerified).toBe(false);
+});
+
 it('does not treat May 3 as evidence for May 30 or vice versa', () => {
   const pages = [{ ...evidence[0]!, text: 'Lab report due May 30, 2026.' }];
   const [result] = validate(

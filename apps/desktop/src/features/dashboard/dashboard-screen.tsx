@@ -14,11 +14,13 @@ import { errorMessage } from '../../lib/error-message';
 import { exitAndSignOut } from '../../lib/session-actions';
 import { DeviceSetup } from '../onboarding/components/device-setup';
 import { DiscoverySummary } from '../onboarding/components/discovery-summary';
+import { PreferencesStep } from '../onboarding/components/preferences-step';
 import { ResourcesStep } from '../onboarding/components/resources-step';
 import { useOnboardingState } from '../onboarding/hooks/use-onboarding-state';
 import { formatBrowser } from '../onboarding/lib/formatters';
 import { needsDeviceSetup } from '../onboarding/lib/step-policy';
-import type { CurrentUser } from '../onboarding/types';
+import { BackgroundSyncControls } from './background-sync-controls';
+import type { CurrentUser, OnboardingSettings } from '../onboarding/types';
 
 export const DashboardScreen = () => {
   const router = useRouter();
@@ -44,6 +46,28 @@ export const DashboardScreen = () => {
   const discover = async () => {
     await run(async () => {
       setState(await window.scholar.discoverContext());
+    });
+  };
+
+  const updatePreferences = async (
+    changes: Partial<
+      Pick<OnboardingSettings, 'launchAtLogin' | 'backgroundSync'>
+    >,
+  ) => {
+    await run(async () => {
+      setState(await window.scholar.saveSettings(changes));
+    });
+  };
+
+  const pauseSync = async () => {
+    await run(async () => {
+      setState(await window.scholar.pauseBackgroundSync());
+    });
+  };
+
+  const resumeSync = async () => {
+    await run(async () => {
+      setState(await window.scholar.resumeBackgroundSync());
     });
   };
 
@@ -186,6 +210,25 @@ export const DashboardScreen = () => {
                 </section>
               </>
             )}
+            <section className="flex flex-col gap-4">
+              <div className="flex flex-col gap-1">
+                <h2 className="text-2xl font-semibold">Preferences</h2>
+                <p className="text-muted-foreground">
+                  Change or revoke these choices whenever you want.
+                </p>
+              </div>
+              <PreferencesStep
+                state={state}
+                busy={busy || exiting}
+                onChange={(changes) => void updatePreferences(changes)}
+              />
+              <BackgroundSyncControls
+                state={state}
+                busy={busy || exiting}
+                onPause={pauseSync}
+                onResume={resumeSync}
+              />
+            </section>
           </>
         )}
       </main>

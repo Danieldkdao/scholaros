@@ -1,3 +1,7 @@
+import type { OnboardingStep, PreviewCardKind, PreviewPrompt } from './schemas';
+
+export type { OnboardingStep, PreviewCardKind, PreviewPrompt };
+
 export type CurrentUser = {
   id: string;
   name: string;
@@ -41,6 +45,7 @@ export type BackgroundSyncState = {
 export type BackgroundSyncChange = {
   accountId: string | null;
   state: BackgroundSyncState;
+  discovery: AcademicDiscovery | null;
 };
 export type OnboardingPreferences = {
   launchAtLogin: LaunchAtLoginPreference;
@@ -85,14 +90,6 @@ export type AcademicDiscovery = {
   coverage: Record<string, ConnectionOutcome>;
   entries: AcademicContextEntry[];
 };
-export type OnboardingStep =
-  | 'welcome'
-  | 'browser'
-  | 'resources'
-  | 'context'
-  | 'preferences'
-  | 'preview'
-  | 'review';
 export type OnboardingSettings = {
   step: OnboardingStep;
   consent: boolean;
@@ -132,9 +129,8 @@ export type ActivityType =
   | 'blocked'
   | 'cancelled';
 export type AgentActivity = { type: ActivityType; detail?: string };
-export type PreviewPrompt = 'courses' | 'assignments' | 'announcements';
 export type PreviewCard = {
-  kind: 'course' | 'assignment' | 'announcement';
+  kind: PreviewCardKind;
   title: string;
   course: string | null;
   detail: string | null;
@@ -144,7 +140,6 @@ export type PreviewCard = {
   courseVerified: boolean;
   dateVerified: boolean;
 };
-export type PreviewCardKind = PreviewCard['kind'];
 export type EvidencePage = { url: string; title: string; text: string };
 export type PreviewState = {
   accountId: string | null;

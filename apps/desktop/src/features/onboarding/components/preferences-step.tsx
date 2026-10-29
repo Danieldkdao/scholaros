@@ -2,8 +2,8 @@ import { CircleAlert, MonitorUp, RefreshCw } from 'lucide-react';
 import { Switch } from '@scholaros/ui/components/switch';
 import {
   formatBackgroundSyncStatus,
+  formatLaunchAtLogin,
   formatObservedAt,
-  formatToggle,
 } from '../lib/formatters';
 import type { OnboardingSettings, OnboardingState } from '../types';
 
@@ -22,7 +22,7 @@ export const PreferencesStep = ({
   busy,
   onChange,
 }: PreferencesStepProps) => {
-  const launchAtLogin = formatToggle(state.settings.launchAtLogin);
+  const launchAtLogin = formatLaunchAtLogin(state.settings.launchAtLogin);
   const background = formatBackgroundSyncStatus(
     state.preferences.backgroundSync.status,
   );
@@ -48,7 +48,7 @@ export const PreferencesStep = ({
             </p>
             <p className="flex items-center gap-2 text-muted-foreground">
               <launchAtLogin.Icon className="size-4" />
-              Launch at login: {launchAtLogin.label}
+              {launchAtLogin.label}
             </p>
             {!state.preferences.launchAtLogin.applied && (
               <p

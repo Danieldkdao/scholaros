@@ -7,22 +7,25 @@ type BackgroundSyncConfiguration = {
   isCurrent: () => boolean;
 };
 
-type BackgroundSyncDependencies = {
+type BackgroundSyncDependencies<TResult> = {
   runDiscovery: (
     userId: string,
     isCurrent: () => boolean,
     signal: AbortSignal,
-  ) => Promise<unknown>;
+  ) => Promise<TResult>;
+  // A run that resolved without reading anything must not count as a sync.
+  syncFailure?: (result: TResult) => string | null;
   schedule?: (callback: () => void, delayMs: number) => unknown;
   cancelSchedule?: (handle: unknown) => void;
   now?: () => string;
   intervalMs?: number;
   initialDelayMs?: number;
-  onChange?: (state: BackgroundSyncState) => void;
+  onChange?: (state: BackgroundSyncState, result: TResult | null) => void;
 };
 
-export const createBackgroundSyncController = ({
+export const createBackgroundSyncController = <TResult>({
   runDiscovery,
+  syncFailure,
   schedule = (callback, delayMs) => setTimeout(callback, delayMs),
   cancelSchedule = (handle) =>
     clearTimeout(handle as ReturnType<typeof setTimeout>),
@@ -30,7 +33,7 @@ export const createBackgroundSyncController = ({
   intervalMs = 30 * 60_000,
   initialDelayMs = 60_000,
   onChange,
-}: BackgroundSyncDependencies) => {
+}: BackgroundSyncDependencies<TResult>) => {
   let configuration: BackgroundSyncConfiguration = {
     userId: null,
     enabled: false,
@@ -38,17 +41,25 @@ export const createBackgroundSyncController = ({
   };
   let configurationKey: string | null = null;
   let generation = 0;
-  let paused = false;
+  let userPaused = false;
+  const suspensions = new Set<symbol>();
   let running = false;
   let error: string | null = null;
   let lastSyncedAt: string | null = null;
   let timer: unknown = null;
   let active: AbortController | null = null;
 
+  const isScheduled = () => !!configuration.userId && configuration.enabled;
+
   const getState = (): BackgroundSyncState => {
-    if (!configuration.userId || !configuration.enabled)
-      return { status: 'off', message: null, lastSyncedAt };
-    if (paused)
+    if (!isScheduled()) return { status: 'off', message: null, lastSyncedAt };
+    if (suspensions.size)
+      return {
+        status: 'paused',
+        message: 'Background sync resumes when this action finishes.',
+        lastSyncedAt,
+      };
+    if (userPaused)
       return {
         status: 'paused',
         message: 'Background sync is paused; resume whenever you want.',
@@ -68,9 +79,9 @@ export const createBackgroundSyncController = ({
     };
   };
 
-  const notify = () => {
+  const notify = (result: TResult | null = null) => {
     try {
-      onChange?.(getState());
+      onChange?.(getState(), result);
     } catch {
       // Status reporting must not interrupt background work.
     }
@@ -88,6 +99,12 @@ export const createBackgroundSyncController = ({
     running = false;
   };
 
+  const halt = () => {
+    generation += 1;
+    cancelTimer();
+    abortActive();
+  };
+
   const scheduleTick = (delayMs: number) => {
     cancelTimer();
     timer = schedule(() => {
@@ -97,8 +114,7 @@ export const createBackgroundSyncController = ({
   };
 
   const tick = async () => {
-    if (!configuration.userId || !configuration.enabled || paused || running)
-      return;
+    if (!isScheduled() || suspensions.size || userPaused || running) return;
     if (!configuration.isCurrent()) {
       stop();
       return;
@@ -109,15 +125,22 @@ export const createBackgroundSyncController = ({
     notify();
     const controller = new AbortController();
     active = controller;
+    const isCurrent = configuration.isCurrent;
+    let completedResult: TResult | null = null;
     try {
-      await runDiscovery(
-        configuration.userId,
-        () => configuration.isCurrent() && !controller.signal.aborted,
+      const result = await runDiscovery(
+        configuration.userId!,
+        isCurrent,
         controller.signal,
       );
       if (runGeneration !== generation) return;
-      lastSyncedAt = now();
-      error = null;
+      completedResult = result;
+      const failure = syncFailure?.(result) ?? null;
+      if (failure) error = failure;
+      else {
+        lastSyncedAt = now();
+        error = null;
+      }
     } catch (cause) {
       if (runGeneration !== generation) return;
       error = errorMessage(cause, 'Background sync could not finish.');
@@ -125,53 +148,69 @@ export const createBackgroundSyncController = ({
       if (runGeneration === generation) {
         running = false;
         active = null;
-        if (configuration.userId && configuration.enabled)
+        if (isScheduled() && !suspensions.size && !userPaused)
           scheduleTick(intervalMs);
-        notify();
+        notify(completedResult);
       }
     }
   };
 
   const configure = (next: BackgroundSyncConfiguration) => {
     const key = `${next.userId ?? ''}:${next.enabled ? 1 : 0}`;
-    if (configuration.userId !== next.userId) lastSyncedAt = null;
+    if (configuration.userId !== next.userId) {
+      lastSyncedAt = null;
+      suspensions.clear();
+    }
     configuration = next;
     if (key === configurationKey) return getState();
     configurationKey = key;
-    generation += 1;
-    cancelTimer();
-    abortActive();
+    halt();
     error = null;
-    paused = false;
-    if (next.userId && next.enabled) scheduleTick(initialDelayMs);
+    userPaused = false;
+    if (isScheduled() && !suspensions.size) scheduleTick(initialDelayMs);
     notify();
     return getState();
   };
 
   const pause = () => {
-    if (!configuration.userId || !configuration.enabled) return getState();
-    paused = true;
-    generation += 1;
-    cancelTimer();
-    abortActive();
+    if (!isScheduled()) return getState();
+    userPaused = true;
+    halt();
     notify();
     return getState();
   };
 
   const resume = () => {
-    if (!configuration.userId || !configuration.enabled) return getState();
-    paused = false;
-    generation += 1;
-    scheduleTick(initialDelayMs);
+    if (!isScheduled()) return getState();
+    userPaused = false;
+    halt();
+    if (!suspensions.size) scheduleTick(initialDelayMs);
     notify();
     return getState();
+  };
+
+  // A foreground browser action owns the study browser, so scheduled work waits
+  // for every owner to release it instead of staying paused for the session.
+  const suspend = () => {
+    const token = Symbol();
+    suspensions.add(token);
+    halt();
+    notify();
+    return () => {
+      if (!suspensions.delete(token)) return getState();
+      if (isScheduled() && !suspensions.size && !userPaused)
+        scheduleTick(initialDelayMs);
+      notify();
+      return getState();
+    };
   };
 
   const stop = () => {
     configuration = { userId: null, enabled: false, isCurrent: () => false };
     configurationKey = ':0';
     generation += 1;
-    paused = false;
+    userPaused = false;
+    suspensions.clear();
     error = null;
     lastSyncedAt = null;
     cancelTimer();
@@ -180,9 +219,5 @@ export const createBackgroundSyncController = ({
     return getState();
   };
 
-  return { configure, pause, resume, stop, getState };
+  return { configure, pause, resume, suspend, stop, getState };
 };
-
-export type BackgroundSyncController = ReturnType<
-  typeof createBackgroundSyncController
->;

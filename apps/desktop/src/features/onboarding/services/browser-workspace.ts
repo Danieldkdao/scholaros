@@ -286,15 +286,15 @@ export const getWorkspace = async (
   if (!isCurrent()) throw new Error('Your session changed; sign in again.');
   if (starting) await starting.catch(() => undefined);
   if (!isCurrent()) throw new Error('Your session changed; sign in again.');
-  const workspace = db
+  const existingWorkspace = db
     .select()
     .from(BrowserWorkspaceTable)
     .where(eq(BrowserWorkspaceTable.userId, userId))
     .get();
-  if (!workspace) throw new Error('Choose a study browser first.');
+  if (!existingWorkspace) throw new Error('Choose a study browser first.');
   if (
     active?.userId === userId &&
-    active.executable === workspace.executable &&
+    active.executable === existingWorkspace.executable &&
     !active.browser.closed
   ) {
     try {
@@ -304,8 +304,12 @@ export const getWorkspace = async (
       await closeActiveWorkspace();
     }
   }
-  const started = await startWorkspace(userId, workspace.executable, isCurrent);
-  if (!workspace.verifiedAt)
+  const started = await startWorkspace(
+    userId,
+    existingWorkspace.executable,
+    isCurrent,
+  );
+  if (!existingWorkspace.verifiedAt)
     db.update(BrowserWorkspaceTable)
       .set({ verifiedAt: new Date().toISOString() })
       .where(eq(BrowserWorkspaceTable.userId, userId))

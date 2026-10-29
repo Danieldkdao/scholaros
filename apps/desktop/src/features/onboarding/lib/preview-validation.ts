@@ -25,10 +25,10 @@ const normalize = (value: string) =>
 const stripTitlePunctuation = (value: string) =>
   value.replace(/^[\s"'“”‘’]+|[\s"'“”‘’.,:;!?]+$/g, '');
 
-const phraseAppears = (source: string, phrase: string) => {
+const phraseIndex = (source: string, phrase: string) => {
   const text = normalize(source);
   const needle = normalize(phrase);
-  if (!needle) return false;
+  if (!needle) return -1;
   for (
     let index = text.indexOf(needle);
     index >= 0;
@@ -40,10 +40,13 @@ const phraseAppears = (source: string, phrase: string) => {
       (!before || !/[\p{L}\p{N}]/u.test(before)) &&
       (!after || !/[\p{L}\p{N}]/u.test(after))
     )
-      return true;
+      return index;
   }
-  return false;
+  return -1;
 };
+
+const phraseAppears = (source: string, phrase: string) =>
+  phraseIndex(source, phrase) >= 0;
 
 const titleMatches = (text: string, title: string) => {
   const needle = stripTitlePunctuation(normalize(title));
@@ -170,16 +173,17 @@ const summaryIsSupported = (summary: string, text: string) =>
   phraseAppears(text, summary);
 
 const itemEvidence = (text: string, title: string) => {
-  const source = collapseWhitespace(text);
-  const start = source
-    .toLowerCase()
-    .indexOf(collapseWhitespace(title).toLowerCase());
+  const source = normalize(text);
+  const normalizedTitle = stripTitlePunctuation(normalize(title));
+  const start = phraseIndex(source, normalizedTitle);
   if (start < 0) return '';
-  const tail = source.slice(start + title.length);
+  const tail = source.slice(start + normalizedTitle.length);
   const end = tail.search(/[.!?](?:\s|$)/);
   return source.slice(
     start,
-    start + title.length + (end < 0 ? Math.min(tail.length, 600) : end),
+    start +
+      normalizedTitle.length +
+      (end < 0 ? Math.min(tail.length, 600) : end),
   );
 };
 

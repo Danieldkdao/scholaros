@@ -45,23 +45,27 @@ export const useOnboardingState = () => {
 
   useEffect(
     () =>
-      window.scholar.onBackgroundSyncChange(({ accountId, state: sync }) => {
-        if (!accepting.current) return;
-        setDisplayed((current) => {
-          if (!current || current.accountId !== accountId) return current;
-          return {
-            ...current,
-            preferences: {
-              ...current.preferences,
-              backgroundSync: {
-                ...sync,
-                lastSyncedAt:
-                  sync.lastSyncedAt ?? current.discovery.discoveredAt,
+      window.scholar.onBackgroundSyncChange(
+        ({ accountId, state: sync, discovery }) => {
+          if (!accepting.current) return;
+          setDisplayed((current) => {
+            if (!current || current.accountId !== accountId) return current;
+            // A finished refresh republishes the course map it just saved.
+            const refreshed = discovery ?? current.discovery;
+            return {
+              ...current,
+              discovery: refreshed,
+              preferences: {
+                ...current.preferences,
+                backgroundSync: {
+                  ...sync,
+                  lastSyncedAt: sync.lastSyncedAt ?? refreshed.discoveredAt,
+                },
               },
-            },
-          };
-        });
-      }),
+            };
+          });
+        },
+      ),
     [],
   );
 

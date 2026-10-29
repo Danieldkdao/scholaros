@@ -1,21 +1,27 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createBackgroundSyncController } from '../services/background-sync';
+import type { BackgroundSyncState } from '../types';
+
+type SyncRun = { failure: string | null };
 
 const setup = () => {
   const timers: Array<{ callback: () => void; delayMs: number }> = [];
-  let resolveRun: (() => void) | null = null;
+  const changes: Array<{ state: BackgroundSyncState; result: SyncRun | null }> =
+    [];
+  let resolveRun: ((value: SyncRun) => void) | null = null;
   const runDiscovery = vi.fn(
     (
       _userId: string,
       _isCurrent: () => boolean,
       _signal: AbortSignal,
-    ): Promise<unknown> =>
+    ): Promise<SyncRun> =>
       new Promise((resolve) => {
-        resolveRun = () => resolve(undefined);
+        resolveRun = resolve;
       }),
   );
-  const controller = createBackgroundSyncController({
+  const controller = createBackgroundSyncController<SyncRun>({
     runDiscovery,
+    syncFailure: (result) => result.failure,
     schedule: (callback, delayMs) => {
       timers.push({ callback, delayMs });
       return timers.length;
@@ -24,12 +30,14 @@ const setup = () => {
     now: () => '2026-10-28T12:00:00.000Z',
     intervalMs: 60_000,
     initialDelayMs: 5_000,
+    onChange: (state, result) => changes.push({ state, result }),
   });
   return {
     controller,
     runDiscovery,
     timers,
-    release: () => resolveRun?.(),
+    changes,
+    finishRun: (result: SyncRun = { failure: null }) => resolveRun?.(result),
   };
 };
 
@@ -65,7 +73,7 @@ describe('background sync controller', () => {
     expect(harness.runDiscovery).toHaveBeenCalledOnce();
     expect(harness.runDiscovery.mock.calls[0]![0]).toBe('student-a');
 
-    harness.release();
+    harness.finishRun();
     await vi.waitFor(() =>
       expect(harness.controller.getState().status).toBe('waiting'),
     );
@@ -86,7 +94,9 @@ describe('background sync controller', () => {
     const paused = harness.controller.pause();
     expect(paused.status).toBe('paused');
     expect(signal.aborted).toBe(true);
-    harness.release();
+    // Cancellation must still allow the current account to persist its outcome.
+    expect(harness.runDiscovery.mock.calls[0]![1]()).toBe(true);
+    harness.finishRun();
     await Promise.resolve();
     expect(harness.controller.getState().status).toBe('paused');
 
@@ -106,7 +116,7 @@ describe('background sync controller', () => {
       enabled: true,
       isCurrent: () => true,
     });
-    harness.release();
+    harness.finishRun();
     await Promise.resolve();
 
     expect(harness.controller.getState().status).toBe('waiting');
@@ -146,7 +156,7 @@ it('does not reuse the previous account’s completed sync timestamp', async () 
   const harness = setup();
   enable(harness.controller);
   harness.timers[0]!.callback();
-  harness.release();
+  harness.finishRun();
   await vi.waitFor(() =>
     expect(harness.controller.getState().lastSyncedAt).not.toBeNull(),
   );
@@ -166,4 +176,204 @@ it('does not start a scheduled job after its session has been invalidated', asyn
   });
   harness.timers[0]!.callback();
   expect(harness.runDiscovery).not.toHaveBeenCalled();
+});
+
+describe('honest sync reporting', () => {
+  it('keeps the previous sync time when no resource could be read', async () => {
+    const harness = setup();
+    enable(harness.controller);
+    harness.timers[0]!.callback();
+    await vi.waitFor(() =>
+      expect(harness.controller.getState().status).toBe('syncing'),
+    );
+
+    harness.finishRun({
+      failure: 'Sign in in your study browser, then refresh the course map.',
+    });
+
+    await vi.waitFor(() =>
+      expect(harness.controller.getState()).toMatchObject({
+        status: 'blocked',
+        message: 'Sign in in your study browser, then refresh the course map.',
+        lastSyncedAt: null,
+      }),
+    );
+  });
+
+  it('clears a stale failure once a later sync reads the resources', async () => {
+    const harness = setup();
+    enable(harness.controller);
+    harness.timers[0]!.callback();
+    harness.finishRun({ failure: 'None of your resources could be read.' });
+    await vi.waitFor(() =>
+      expect(harness.controller.getState().status).toBe('blocked'),
+    );
+
+    harness.timers.at(-1)!.callback();
+    harness.finishRun();
+
+    await vi.waitFor(() =>
+      expect(harness.controller.getState()).toMatchObject({
+        status: 'waiting',
+        message: 'Waiting for the next scheduled sync.',
+        lastSyncedAt: '2026-10-28T12:00:00.000Z',
+      }),
+    );
+  });
+
+  it('publishes the refreshed discovery result when the run finishes', async () => {
+    const harness = setup();
+    enable(harness.controller);
+    harness.timers[0]!.callback();
+    await vi.waitFor(() =>
+      expect(harness.controller.getState().status).toBe('syncing'),
+    );
+
+    harness.finishRun();
+
+    await vi.waitFor(() =>
+      expect(harness.changes.at(-1)).toMatchObject({
+        state: { status: 'waiting' },
+        result: { failure: null },
+      }),
+    );
+  });
+
+  it('does not replay a completed result on later status changes', async () => {
+    const harness = setup();
+    enable(harness.controller);
+    harness.timers[0]!.callback();
+    harness.finishRun();
+    await vi.waitFor(() =>
+      expect(harness.changes.at(-1)?.result).not.toBeNull(),
+    );
+
+    harness.controller.pause();
+    expect(harness.changes.at(-1)?.result).toBeNull();
+    harness.controller.resume();
+    expect(harness.changes.at(-1)?.result).toBeNull();
+    harness.timers.at(-1)!.callback();
+    expect(harness.changes.at(-1)?.result).toBeNull();
+    harness.finishRun();
+  });
+});
+
+describe('temporary browser work', () => {
+  it('waits for every foreground action before resuming sync', () => {
+    const harness = setup();
+    enable(harness.controller);
+    const releaseFirst = harness.controller.suspend();
+    const releaseSecond = harness.controller.suspend();
+    const scheduled = harness.timers.length;
+
+    releaseFirst();
+    expect(harness.controller.getState().status).toBe('paused');
+    expect(harness.timers.length).toBe(scheduled);
+    releaseFirst();
+    expect(harness.controller.getState().status).toBe('paused');
+    releaseSecond();
+    expect(harness.controller.getState().status).toBe('waiting');
+    expect(harness.timers.length).toBe(scheduled + 1);
+  });
+
+  it('keeps foreground ownership when sync is enabled during the action', () => {
+    const harness = setup();
+    harness.controller.configure({
+      userId: 'student-a',
+      enabled: false,
+      isCurrent: () => true,
+    });
+    const release = harness.controller.suspend();
+    enable(harness.controller);
+    expect(harness.controller.getState().status).toBe('paused');
+    expect(harness.timers).toHaveLength(0);
+    release();
+    expect(harness.controller.getState().status).toBe('waiting');
+    expect(harness.timers).toHaveLength(1);
+  });
+
+  it('does not let an old account release the new account’s browser action', () => {
+    const harness = setup();
+    enable(harness.controller);
+    const releaseOld = harness.controller.suspend();
+    harness.controller.configure({
+      userId: 'student-b',
+      enabled: true,
+      isCurrent: () => true,
+    });
+    const releaseCurrent = harness.controller.suspend();
+    releaseOld();
+    expect(harness.controller.getState().status).toBe('paused');
+    releaseCurrent();
+    expect(harness.controller.getState().status).toBe('waiting');
+  });
+  it('reschedules syncs after a foreground browser action finishes', async () => {
+    const harness = setup();
+    enable(harness.controller);
+    const release = harness.controller.suspend();
+    expect(harness.controller.getState().status).toBe('paused');
+
+    const scheduled = harness.timers.length;
+    expect(release().status).toBe('waiting');
+    expect(harness.timers.length).toBe(scheduled + 1);
+
+    harness.timers.at(-1)!.callback();
+    await vi.waitFor(() => expect(harness.runDiscovery).toHaveBeenCalledOnce());
+  });
+
+  it('reschedules after configuration is reapplied during the action', () => {
+    const harness = setup();
+    enable(harness.controller);
+    const release = harness.controller.suspend();
+
+    const scheduled = harness.timers.length;
+    harness.controller.configure({
+      userId: 'student-a',
+      enabled: true,
+      isCurrent: () => true,
+    });
+    expect(harness.timers.length).toBe(scheduled);
+
+    expect(release().status).toBe('waiting');
+    expect(harness.timers.length).toBe(scheduled + 1);
+  });
+
+  it('aborts a running sync and waits for the action to finish', async () => {
+    const harness = setup();
+    enable(harness.controller);
+    harness.timers[0]!.callback();
+    await vi.waitFor(() =>
+      expect(harness.controller.getState().status).toBe('syncing'),
+    );
+    const signal = harness.runDiscovery.mock.calls[0]![2];
+
+    const release = harness.controller.suspend();
+    expect(signal.aborted).toBe(true);
+    harness.finishRun();
+    await Promise.resolve();
+    expect(harness.controller.getState().status).toBe('paused');
+
+    expect(release().status).toBe('waiting');
+  });
+
+  it('keeps an explicit user pause after the action finishes', () => {
+    const harness = setup();
+    enable(harness.controller);
+    harness.controller.pause();
+    const release = harness.controller.suspend();
+
+    const scheduled = harness.timers.length;
+    expect(release().status).toBe('paused');
+    expect(harness.timers.length).toBe(scheduled);
+    expect(harness.controller.resume().status).toBe('waiting');
+  });
+
+  it('explains why sync is briefly unavailable during an action', () => {
+    const harness = setup();
+    enable(harness.controller);
+    harness.controller.suspend();
+    expect(harness.controller.getState().message).not.toContain(
+      'resume whenever you want',
+    );
+  });
 });

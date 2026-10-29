@@ -11,8 +11,8 @@ import {
   formatBackgroundSyncStatus,
   formatBrowser,
   formatConnectionStatus,
+  formatLaunchAtLogin,
   formatPreviewStatus,
-  formatToggle,
   formatWorkspaceStatus,
 } from '../lib/formatters';
 import type { OnboardingState, PreviewState } from '../types';
@@ -63,7 +63,7 @@ export const ReviewStep = ({ state }: ReviewStepProps) => {
   const workspaceStatus = state.workspace
     ? formatWorkspaceStatus(state.workspace.status)
     : null;
-  const launchAtLogin = formatToggle(state.settings.launchAtLogin);
+  const launchAtLogin = formatLaunchAtLogin(state.settings.launchAtLogin);
   const backgroundSync = formatBackgroundSyncStatus(
     state.preferences.backgroundSync.status,
   );
@@ -130,7 +130,7 @@ export const ReviewStep = ({ state }: ReviewStepProps) => {
           <p className="font-medium">Preferences</p>
           <p className="flex items-center gap-2 text-muted-foreground">
             <launchAtLogin.Icon className="size-4" />
-            Launch at login: {launchAtLogin.label}
+            {launchAtLogin.label}
           </p>
           {!state.preferences.launchAtLogin.applied && (
             <p className="flex items-center gap-2 text-destructive">

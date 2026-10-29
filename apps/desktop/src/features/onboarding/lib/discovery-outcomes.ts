@@ -1,4 +1,4 @@
-import type { DiscoveryStatus } from '../types';
+import type { AcademicDiscovery, DiscoveryStatus } from '../types';
 
 export type ConnectionOutcome =
   | 'courses'
@@ -121,4 +121,28 @@ export const summarizeDiscovery = ({
     coverage,
     discoveredAt,
   };
+};
+
+// A scheduled sync only counts as successful when the run read a course list,
+// so the persisted outcome decides whether the last-synced time may advance.
+export const syncFailureMessage = (
+  discovery: AcademicDiscovery,
+): string | null => {
+  switch (discovery.status) {
+    case 'complete':
+    case 'partial':
+    case 'empty':
+      return null;
+    case 'inconclusive':
+    case 'pending':
+    case 'running':
+    case 'blocked':
+    case 'needs-sign-in':
+    case 'cancelled':
+    case 'failed':
+      return (
+        discovery.message?.trim() ||
+        'Background sync could not read your course resources.'
+      );
+  }
 };

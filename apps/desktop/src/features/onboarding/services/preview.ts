@@ -245,7 +245,11 @@ const runPreview = async (
   }
 };
 
-export const startPreview = async (userId: string, prompt: PreviewPrompt) => {
+export const startPreview = async (
+  userId: string,
+  prompt: PreviewPrompt,
+  onSettled?: () => void,
+) => {
   if (finishing) throw new Error('A preview is already running.');
   const run = ++activeRun;
   owner = userId;
@@ -282,8 +286,10 @@ export const startPreview = async (userId: string, prompt: PreviewPrompt) => {
       notify();
     })
     .finally(() => {
-      if (activeRun !== run) return;
-      finishing = null;
-      controller = null;
+      if (activeRun === run) {
+        finishing = null;
+        controller = null;
+      }
+      onSettled?.();
     });
 };

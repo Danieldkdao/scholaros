@@ -363,10 +363,10 @@ export const formatWorkspaceStatus = (status: BrowserWorkspaceStatus) => {
   }
 };
 
-export const formatToggle = (enabled: boolean) =>
+export const formatLaunchAtLogin = (enabled: boolean) =>
   enabled
-    ? { label: 'On', Icon: CircleCheck }
-    : { label: 'Off', Icon: CircleStop };
+    ? { label: 'Launch at login on', Icon: CircleCheck }
+    : { label: 'Launch at login off', Icon: CircleStop };
 
 export const formatResourceKind = (
   kind: 'canvas' | 'classroom' | 'resource',

@@ -9,6 +9,7 @@ export const onboardingSteps = [
   'preview',
   'review',
 ] as const;
+export type OnboardingStep = (typeof onboardingSteps)[number];
 export const settingsUpdateSchema = z
   .object({
     step: z.enum(onboardingSteps).optional(),

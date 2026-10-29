@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   outcomeFromExploration,
   summarizeDiscovery,
+  syncFailureMessage,
   type ConnectionResult,
 } from '../lib/discovery-outcomes';
+import type { AcademicDiscovery, DiscoveryStatus } from '../types';
 
 const now = '2026-10-29T12:00:00.000Z';
 const earlier = '2026-10-28T09:00:00.000Z';
@@ -143,4 +145,62 @@ it('reports sign-in needs regardless of connection ordering', () => {
       previous: null,
     }).status,
   ).toBe('needs-sign-in');
+});
+
+describe('background sync reporting', () => {
+  const discoveryFor = (
+    status: DiscoveryStatus,
+    message: string | null = null,
+  ) =>
+    ({
+      status,
+      message,
+      discoveredAt: null,
+      coverage: {},
+      entries: [],
+    }) as AcademicDiscovery;
+
+  it.each([
+    'blocked',
+    'needs-sign-in',
+    'cancelled',
+    'failed',
+    'pending',
+    'inconclusive',
+  ] as const)('treats a %s refresh as an unsuccessful sync', (status) => {
+    expect(
+      syncFailureMessage(discoveryFor(status, 'Nothing could be read.')),
+    ).toBe('Nothing could be read.');
+    expect(syncFailureMessage(discoveryFor(status))).toBeTruthy();
+  });
+
+  it('preserves freshness and reports the limitation when no course list was identified', () => {
+    const summary = summarize({
+      results: [result('a', 'inconclusive'), result('b', 'inconclusive')],
+      previous: { coverage: { a: 'courses' }, discoveredAt: earlier },
+    });
+
+    expect(summary.discoveredAt).toBe(earlier);
+    expect(syncFailureMessage({ ...summary, entries: [] })).toBe(
+      summary.message,
+    );
+  });
+
+  it.each(['', '   '])(
+    'uses a failure message when the stored message is blank',
+    (message) => {
+      expect(
+        syncFailureMessage(discoveryFor('blocked', message))?.trim(),
+      ).toBeTruthy();
+    },
+  );
+
+  it.each(['complete', 'partial', 'empty'] as const)(
+    'treats a %s refresh as a successful sync',
+    (status) => {
+      expect(syncFailureMessage(discoveryFor(status, 'Read everything.'))).toBe(
+        null,
+      );
+    },
+  );
 });

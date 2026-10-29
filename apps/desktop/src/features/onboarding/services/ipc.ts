@@ -21,6 +21,7 @@ import {
   getOnboardingState,
   removeAcademicConnection,
   saveOnboardingSettings,
+  settleLocalSetup,
 } from './store';
 import { chooseBrowser, findBrowsers } from './browser-discovery';
 import {
@@ -38,6 +39,7 @@ import {
   subscribePreview,
 } from './preview';
 import { isAcademicUrl, isReadNavigation } from '../lib/browser-policy';
+import { syncFailureMessage } from '../lib/discovery-outcomes';
 import { applyLaunchAtLogin, getLaunchAtLoginState } from './preferences';
 import { completeOnboarding } from './completion';
 import { discoverAcademicContext } from './discovery';
@@ -53,7 +55,7 @@ let boundOnboardingComplete = false;
 type IpcContext = { userId: string; isCurrent: () => boolean };
 
 let backgroundSyncAccountId: string | null = null;
-const backgroundSync = createBackgroundSyncController({
+const backgroundSync = createBackgroundSyncController<OnboardingState>({
   runDiscovery: async (userId, isCurrent, signal) => {
     if (!isCurrent()) throw new Error('Your session changed; sign in again.');
     const user = await getCurrentUser();
@@ -61,12 +63,14 @@ const backgroundSync = createBackgroundSyncController({
       throw new Error('Please sign in again to resume background sync.');
     return discoverAcademicContext(userId, isCurrent, signal);
   },
-  onChange: (state) => {
+  syncFailure: (discovered) => syncFailureMessage(discovered.discovery),
+  onChange: (syncState, discovered) => {
     for (const window of BrowserWindow.getAllWindows())
       if (!window.isDestroyed())
         window.webContents.send('scholar:backgroundSyncChange', {
           accountId: backgroundSyncAccountId,
-          state,
+          state: syncState,
+          discovery: discovered?.discovery ?? null,
         });
   },
 });
@@ -81,23 +85,26 @@ const prepareState = (
   launchAtLogin?: LaunchAtLoginPreference,
   isCurrent: () => boolean = () => true,
 ) => {
-  backgroundSyncAccountId = state.accountId;
+  const settled = settleLocalSetup(state, {
+    accountCompleted: boundOnboardingComplete,
+  });
+  backgroundSyncAccountId = settled.accountId;
   backgroundSync.configure({
-    userId: state.accountId,
+    userId: settled.accountId,
     enabled:
       boundOnboardingComplete &&
-      !!state.settings.localSetupCompletedAt &&
-      state.settings.backgroundSync &&
-      state.settings.consent &&
-      state.workspace?.ready === true &&
-      state.connections.some(
+      !!settled.settings.localSetupCompletedAt &&
+      settled.settings.backgroundSync &&
+      settled.settings.consent &&
+      settled.workspace?.ready === true &&
+      settled.connections.some(
         (connection) => connection.status !== 'needs-sign-in',
       ),
     isCurrent,
   });
   const backgroundState =
-    (!boundOnboardingComplete || !state.settings.localSetupCompletedAt) &&
-    state.settings.backgroundSync
+    (!boundOnboardingComplete || !settled.settings.localSetupCompletedAt) &&
+    settled.settings.backgroundSync
       ? {
           status: 'waiting' as const,
           message: 'Background sync starts after setup.',
@@ -105,25 +112,40 @@ const prepareState = (
         }
       : backgroundSync.getState();
   return {
-    ...state,
+    ...settled,
     preferences: {
       launchAtLogin:
-        launchAtLogin ?? getLaunchAtLoginState(state.settings.launchAtLogin),
+        launchAtLogin ?? getLaunchAtLoginState(settled.settings.launchAtLogin),
       backgroundSync: {
         ...backgroundState,
         lastSyncedAt:
-          backgroundState.lastSyncedAt ?? state.discovery.discoveredAt,
+          backgroundState.lastSyncedAt ?? settled.discovery.discoveredAt,
       },
     },
   };
 };
 
-const stopBrowserWork = async () => {
-  backgroundSync.pause();
+const cancelBrowserWork = async () => {
   academicTasks.cancel();
   await cancelPreview();
   await academicTasks.cancelAndWait();
 };
+
+// Foreground browser work owns the study browser, so scheduled sync waits for it
+// and picks up again afterwards instead of staying paused for the session.
+const withBrowserWorkStopped = async <TResult>(
+  action: () => Promise<TResult>,
+): Promise<TResult> => {
+  const release = backgroundSync.suspend();
+  try {
+    await cancelBrowserWork();
+    return await action();
+  } finally {
+    release();
+  }
+};
+
+const stopBrowserWork = () => withBrowserWorkStopped(async () => undefined);
 
 const registerQuitCleanup = () => {
   let quitting = false;
@@ -230,7 +252,13 @@ export const registerOnboardingIpc = () => {
         : undefined;
     if (changes.consent === false) {
       backgroundSync.stop();
-      await stopBrowserWork();
+      await cancelBrowserWork();
+    } else if (
+      changes.backgroundSync === false &&
+      backgroundSync.getState().status === 'syncing'
+    ) {
+      backgroundSync.pause();
+      await academicTasks.cancelAndWait();
     }
     if (!isCurrent()) throw new Error('Your session changed; sign in again.');
     return prepareState(
@@ -243,26 +271,30 @@ export const registerOnboardingIpc = () => {
   handle('chooseBrowser', () => chooseBrowser());
   handle('createWorkspace', async ({ userId, isCurrent }, input) => {
     requireConsent(userId);
-    await stopBrowserWork();
-    if (!isCurrent()) throw new Error('Your session changed; sign in again.');
-    await createWorkspace(userId, idSchema.parse(input), isCurrent);
+    const installationId = idSchema.parse(input);
+    await withBrowserWorkStopped(async () => {
+      if (!isCurrent()) throw new Error('Your session changed; sign in again.');
+      await createWorkspace(userId, installationId, isCurrent);
+    });
     return prepareState(getOnboardingState(userId), undefined, isCurrent);
   });
-  handle('openResource', async ({ userId, isCurrent }, input) => {
+  handle('openResource', ({ userId, isCurrent }, input) => {
     requireConsent(userId);
-    await stopBrowserWork();
-    if (!isCurrent()) throw new Error('Your session changed; sign in again.');
     const resource = academicResources.find(
       (item) => item.id === idSchema.parse(input),
     );
     if (!resource) throw new Error('Choose a listed resource.');
-    await openAcademicPage(userId, resource.url, isCurrent);
+    return withBrowserWorkStopped(async () => {
+      if (!isCurrent()) throw new Error('Your session changed; sign in again.');
+      await openAcademicPage(userId, resource.url, isCurrent);
+    });
   });
-  handle('captureResource', async ({ userId, isCurrent }) => {
+  handle('captureResource', ({ userId, isCurrent }) => {
     requireConsent(userId);
-    await stopBrowserWork();
-    if (!isCurrent()) throw new Error('Your session changed; sign in again.');
-    return captureResource(userId, isCurrent);
+    return withBrowserWorkStopped(async () => {
+      if (!isCurrent()) throw new Error('Your session changed; sign in again.');
+      return captureResource(userId, isCurrent);
+    });
   });
   handle('confirmResource', ({ userId, isCurrent }, input) => {
     requireConsent(userId);
@@ -273,13 +305,12 @@ export const registerOnboardingIpc = () => {
     );
   });
   handle('removeResource', async ({ userId, isCurrent }, input) => {
-    await stopBrowserWork();
-    if (!isCurrent()) throw new Error('Your session changed; sign in again.');
-    return prepareState(
-      removeAcademicConnection(userId, idSchema.parse(input)),
-      undefined,
-      isCurrent,
-    );
+    const connectionId = idSchema.parse(input);
+    const state = await withBrowserWorkStopped(async () => {
+      if (!isCurrent()) throw new Error('Your session changed; sign in again.');
+      return removeAcademicConnection(userId, connectionId);
+    });
+    return prepareState(state, undefined, isCurrent);
   });
   handle('setPrimaryLms', ({ userId, isCurrent }, input) => {
     requireConsent(userId);
@@ -298,14 +329,17 @@ export const registerOnboardingIpc = () => {
         'Course discovery is available from your dashboard after setup.',
       );
     requireConsent(userId);
-    return prepareState(
-      await discoverAcademicContext(userId, isCurrent),
-      undefined,
-      isCurrent,
-    );
+    const state = await withBrowserWorkStopped(async () => {
+      if (!isCurrent()) throw new Error('Your session changed; sign in again.');
+      return discoverAcademicContext(userId, isCurrent);
+    });
+    return prepareState(state, undefined, isCurrent);
   });
-  handle('pauseBackgroundSync', ({ userId, isCurrent }) => {
+  handle('pauseBackgroundSync', async ({ userId, isCurrent }) => {
+    const wasSyncing = backgroundSync.getState().status === 'syncing';
     backgroundSync.pause();
+    if (wasSyncing) await academicTasks.cancelAndWait();
+    if (!isCurrent()) throw new Error('Your session changed; sign in again.');
     return prepareState(getOnboardingState(userId), undefined, isCurrent);
   });
   handle('resumeBackgroundSync', ({ userId, isCurrent }) => {
@@ -314,9 +348,17 @@ export const registerOnboardingIpc = () => {
   });
   handle('startPreview', async ({ userId, isCurrent }, input) => {
     requireConsent(userId);
-    await stopBrowserWork();
-    if (!isCurrent()) throw new Error('Your session changed; sign in again.');
-    return startPreview(userId, previewPromptSchema.parse(input));
+    const prompt = previewPromptSchema.parse(input);
+    const release = backgroundSync.suspend();
+    try {
+      await cancelBrowserWork();
+      if (!isCurrent()) throw new Error('Your session changed; sign in again.');
+      // Starting acknowledges immediately; cleanup releases the browser later.
+      await startPreview(userId, prompt, release);
+    } catch (cause) {
+      release();
+      throw cause;
+    }
   });
   handle(
     'getPreview',
@@ -340,7 +382,7 @@ export const registerOnboardingIpc = () => {
     const url = idSchema.parse(input);
     if (!isAcademicUrl(url)) throw new Error('Invalid source.');
     const host = new URL(url).hostname;
-    const connection = db
+    const existingConnection = db
       .select()
       .from(AcademicConnectionTable)
       .where(
@@ -350,12 +392,13 @@ export const registerOnboardingIpc = () => {
         ),
       )
       .get();
-    if (!connection) throw new Error('Connect this resource first.');
+    if (!existingConnection) throw new Error('Connect this resource first.');
     if (!isReadNavigation(url, [host]))
       throw new Error('This source is not a permitted read-only page.');
-    await stopBrowserWork();
-    if (!isCurrent()) throw new Error('Your session changed; sign in again.');
-    await openAcademicPage(userId, url, isCurrent);
+    return withBrowserWorkStopped(async () => {
+      if (!isCurrent()) throw new Error('Your session changed; sign in again.');
+      await openAcademicPage(userId, url, isCurrent);
+    });
   });
   handle('completeOnboarding', ({ userId, isCurrent }) =>
     completeOnboarding(userId, {

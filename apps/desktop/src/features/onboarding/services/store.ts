@@ -31,7 +31,7 @@ export type AcademicDiscoveryResult = {
 const readableOutcomes: ConnectionOutcome[] = ['courses', 'empty'];
 
 const readDiscoveryRow = (userId: string) => {
-  const context = db
+  const existingContext = db
     .select({
       coverage: AcademicContextTable.discoveryCoverage,
       discoveredAt: AcademicContextTable.discoveredAt,
@@ -40,8 +40,8 @@ const readDiscoveryRow = (userId: string) => {
     .where(eq(AcademicContextTable.userId, userId))
     .get()!;
   return {
-    coverage: context.coverage ?? {},
-    discoveredAt: context.discoveredAt,
+    coverage: existingContext.coverage ?? {},
+    discoveredAt: existingContext.discoveredAt,
   };
 };
 
@@ -54,36 +54,36 @@ export const getOnboardingState = (userId: string): OnboardingState => {
     .values({ userId })
     .onConflictDoNothing()
     .run();
-  const settings = db
+  const existingSettings = db
     .select()
     .from(SettingTable)
     .where(eq(SettingTable.userId, userId))
     .get()!;
-  const context = db
+  const existingContext = db
     .select()
     .from(AcademicContextTable)
     .where(eq(AcademicContextTable.userId, userId))
     .get()!;
-  const workspace = db
+  const existingWorkspace = db
     .select()
     .from(BrowserWorkspaceTable)
     .where(eq(BrowserWorkspaceTable.userId, userId))
     .get();
   let workspaceStatus: BrowserWorkspaceStatus | null = null;
-  if (workspace) {
-    const installationAvailable = existsSync(workspace.executable);
+  if (existingWorkspace) {
+    const installationAvailable = existsSync(existingWorkspace.executable);
     const profileProvisioned =
       installationAvailable &&
       existsSync(
         profileDirectoryFor(
           app.getPath('userData'),
           userId,
-          workspace.executable,
+          existingWorkspace.executable,
         ),
       );
     if (!installationAvailable) workspaceStatus = 'browser-missing';
     else if (!profileProvisioned) workspaceStatus = 'profile-missing';
-    else if (!workspace.verifiedAt) workspaceStatus = 'unverified';
+    else if (!existingWorkspace.verifiedAt) workspaceStatus = 'unverified';
     else workspaceStatus = 'ready';
   }
   const connections = db
@@ -99,35 +99,35 @@ export const getOnboardingState = (userId: string): OnboardingState => {
   return {
     accountId: userId,
     settings: {
-      step: settings.step,
-      consent: settings.consent,
-      launchAtLogin: settings.launchAtLogin,
-      backgroundSync: settings.backgroundSync,
-      localSetupCompletedAt: settings.localSetupCompletedAt,
-      notes: context.notes,
+      step: existingSettings.step,
+      consent: existingSettings.consent,
+      launchAtLogin: existingSettings.launchAtLogin,
+      backgroundSync: existingSettings.backgroundSync,
+      localSetupCompletedAt: existingSettings.localSetupCompletedAt,
+      notes: existingContext.notes,
     },
-    workspace: workspace
+    workspace: existingWorkspace
       ? {
-          browser: workspace.browser,
-          browserName: workspace.browserName,
+          browser: existingWorkspace.browser,
+          browserName: existingWorkspace.browserName,
           ready: workspaceStatus === 'ready',
           status: workspaceStatus!,
-          verifiedAt: workspace.verifiedAt || null,
+          verifiedAt: existingWorkspace.verifiedAt || null,
         }
       : null,
     connections: connections.map(
       ({ userId: _userId, ...connection }) => connection,
     ),
-    primaryLms: context.primaryLms,
+    primaryLms: existingContext.primaryLms,
     discovery: {
-      status: context.discoveryStatus,
-      message: context.discoveryMessage,
-      discoveredAt: context.discoveredAt,
-      coverage: context.discoveryCoverage ?? {},
+      status: existingContext.discoveryStatus,
+      message: existingContext.discoveryMessage,
+      discoveredAt: existingContext.discoveredAt,
+      coverage: existingContext.discoveryCoverage ?? {},
       entries: contextEntries.map(({ userId: _userId, ...entry }) => entry),
     },
     preferences: {
-      launchAtLogin: getLaunchAtLoginState(settings.launchAtLogin),
+      launchAtLogin: getLaunchAtLoginState(existingSettings.launchAtLogin),
       backgroundSync: {
         status: 'off',
         message: null,
@@ -155,6 +155,27 @@ export const saveOnboardingSettings = (
         .run();
   });
   return getOnboardingState(userId);
+};
+
+// An account that already finished onboarding elsewhere only has to set up this
+// computer, so the dashboard records local completion as soon as it is ready.
+export const settleLocalSetup = (
+  state: OnboardingState,
+  options: { accountCompleted: boolean },
+): OnboardingState => {
+  if (
+    !options.accountCompleted ||
+    state.settings.localSetupCompletedAt ||
+    !state.settings.consent ||
+    state.workspace?.ready !== true
+  )
+    return state;
+  const now = new Date().toISOString();
+  db.update(SettingTable)
+    .set({ localSetupCompletedAt: now, updatedAt: now })
+    .where(eq(SettingTable.userId, state.accountId))
+    .run();
+  return getOnboardingState(state.accountId);
 };
 
 export const removeAcademicConnection = (userId: string, id: string) => {
@@ -191,7 +212,7 @@ export const removeAcademicConnection = (userId: string, id: string) => {
       .from(AcademicContextEntryTable)
       .where(eq(AcademicContextEntryTable.userId, userId))
       .all();
-    const contextRow = tx
+    const existingContext = tx
       .select({
         coverage: AcademicContextTable.discoveryCoverage,
         discoveredAt: AcademicContextTable.discoveredAt,
@@ -199,7 +220,7 @@ export const removeAcademicConnection = (userId: string, id: string) => {
       .from(AcademicContextTable)
       .where(eq(AcademicContextTable.userId, userId))
       .get()!;
-    const coverage = { ...contextRow.coverage };
+    const coverage = { ...existingContext.coverage };
     delete coverage[id];
     if (!remainingEntries.length)
       tx.update(AcademicContextTable)
@@ -273,7 +294,7 @@ export const applyAcademicDiscovery = (
           )
           .run();
     }
-    const courseRows = tx
+    const courseEntries = tx
       .select({ connectionId: AcademicContextEntryTable.connectionId })
       .from(AcademicContextEntryTable)
       .where(
@@ -287,7 +308,7 @@ export const applyAcademicDiscovery = (
       results: (options.cancelled ? [] : results).map((result) => ({
         connectionId: result.connectionId,
         outcome: result.outcome,
-        courseCount: courseRows.filter(
+        courseCount: courseEntries.filter(
           (course) => course.connectionId === result.connectionId,
         ).length,
       })),

@@ -55,12 +55,12 @@ export const captureResource = async (
     .run();
   getOnboardingState(userId);
   if (captured.kind !== 'resource') {
-    const context = db
+    const existingContext = db
       .select()
       .from(AcademicContextTable)
       .where(eq(AcademicContextTable.userId, userId))
       .get();
-    if (!context?.primaryLms)
+    if (!existingContext?.primaryLms)
       db.update(AcademicContextTable)
         .set({ primaryLms: connection.id })
         .where(eq(AcademicContextTable.userId, userId))

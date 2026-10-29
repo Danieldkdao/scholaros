@@ -39,7 +39,7 @@ export const ContextStep = ({
               onChange={(event) => onNotesChange(event.target.value)}
               onBlur={onNotesBlur}
               placeholder="For example: my biology course uses a separate lab site."
-              className="min-h-28"
+              className="max-h-48 min-h-28 resize-none"
             />
           </div>
         </div>

@@ -25,8 +25,8 @@ export const WelcomeStep = ({
   onConsentChange,
 }: WelcomeStepProps) => (
   <div className="flex flex-col gap-5">
-    <div className="grid gap-4 sm:grid-cols-3">
-      <div className="flex flex-col gap-2 rounded-xl border bg-card p-5">
+    <div className="flex flex-wrap gap-4">
+      <div className="flex min-w-60 flex-1 flex-col gap-2 rounded-xl border bg-card p-5">
         <BookOpen className="size-5 text-primary" />
         <p className="font-medium">Only what you connect</p>
         <p className="text-muted-foreground">
@@ -34,7 +34,7 @@ export const WelcomeStep = ({
           browsing.
         </p>
       </div>
-      <div className="flex flex-col gap-2 rounded-xl border bg-card p-5">
+      <div className="flex min-w-60 flex-1 flex-col gap-2 rounded-xl border bg-card p-5">
         <LockKeyhole className="size-5 text-primary" />
         <p className="font-medium">Your sign-ins stay yours</p>
         <p className="text-muted-foreground">
@@ -42,7 +42,7 @@ export const WelcomeStep = ({
           password.
         </p>
       </div>
-      <div className="flex flex-col gap-2 rounded-xl border bg-card p-5">
+      <div className="flex min-w-60 flex-1 flex-col gap-2 rounded-xl border bg-card p-5">
         <ShieldCheck className="size-5 text-primary" />
         <p className="font-medium">Read-only missions</p>
         <p className="text-muted-foreground">

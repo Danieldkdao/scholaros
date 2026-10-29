@@ -145,4 +145,101 @@ describe('onboarding state loader', () => {
     });
     expect(latest?.state?.accountId).toBe('student-b');
   });
+
+  it('applies courses published by a finished background sync', async () => {
+    bridge.getState.mockResolvedValue(stateFor('student-a'));
+    let emit: ((event: unknown) => void) | null = null;
+    bridge.onBackgroundSyncChange.mockImplementation(
+      (listener: (event: unknown) => void) => {
+        emit = listener;
+        return () => undefined;
+      },
+    );
+    await render();
+
+    act(() => {
+      emit?.({
+        accountId: 'student-a',
+        state: {
+          status: 'waiting',
+          message: null,
+          lastSyncedAt: '2026-10-29T12:00:00.000Z',
+        },
+        discovery: {
+          status: 'complete',
+          message: '1 course entry point found across 1 resource.',
+          discoveredAt: '2026-10-29T12:00:00.000Z',
+          coverage: { 'connection-a': 'courses' },
+          entries: [
+            {
+              id: 'entry-a',
+              connectionId: 'connection-a',
+              label: 'Biology 101',
+              url: 'https://canvas.school.edu/courses/1',
+              role: 'course',
+              evidenceUrl: 'https://canvas.school.edu/courses',
+              observedAt: '2026-10-29T12:00:00.000Z',
+            },
+          ],
+        },
+      });
+    });
+
+    expect(latest?.state?.discovery.status).toBe('complete');
+    expect(latest?.state?.discovery.entries).toHaveLength(1);
+    expect(latest?.state?.preferences.backgroundSync.lastSyncedAt).toBe(
+      '2026-10-29T12:00:00.000Z',
+    );
+  });
+
+  it('keeps the displayed course map when an event carries no discovery', async () => {
+    bridge.getState.mockResolvedValue(stateFor('student-a'));
+    let emit: ((event: unknown) => void) | null = null;
+    bridge.onBackgroundSyncChange.mockImplementation(
+      (listener: (event: unknown) => void) => {
+        emit = listener;
+        return () => undefined;
+      },
+    );
+    await render();
+
+    act(() => {
+      emit?.({
+        accountId: 'student-a',
+        state: { status: 'syncing', message: null, lastSyncedAt: null },
+        discovery: null,
+      });
+    });
+
+    expect(latest?.state?.preferences.backgroundSync.status).toBe('syncing');
+    expect(latest?.state?.discovery.status).toBe('pending');
+  });
+
+  it('ignores discovery published for another account', async () => {
+    bridge.getState.mockResolvedValue(stateFor('student-a'));
+    let emit: ((event: unknown) => void) | null = null;
+    bridge.onBackgroundSyncChange.mockImplementation(
+      (listener: (event: unknown) => void) => {
+        emit = listener;
+        return () => undefined;
+      },
+    );
+    await render();
+
+    act(() => {
+      emit?.({
+        accountId: 'student-b',
+        state: { status: 'waiting', message: null, lastSyncedAt: null },
+        discovery: {
+          status: 'complete',
+          message: null,
+          discoveredAt: '2026-10-29T12:00:00.000Z',
+          coverage: {},
+          entries: [],
+        },
+      });
+    });
+
+    expect(latest?.state?.discovery.status).toBe('pending');
+  });
 });
