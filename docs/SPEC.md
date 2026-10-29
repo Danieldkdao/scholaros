@@ -40,6 +40,8 @@ The agent finds authorized exam information and materials, connects the concepts
 - Show understandable activity updates, discovered sources, and a way to cancel a mission.
 - Pace school navigation, reuse observed rendering dependencies to avoid repeated bootstrap reloads, and respect rate-limit cooldowns across attempts; stop clearly on rate-limit responses instead of treating them as empty course pages.
 - Preserve source links, course context, and retrieval times alongside extracted information.
+- Discover courses from confirmed academic home pages through bounded, protected navigation and Meta classification of observed links; unfamiliar platforms do not require a school-name or course-path allowlist.
+- Treat empty course lists as explicit observed evidence, preserve prior results on cancelled or inconclusive refreshes, and distinguish partial coverage and sign-in requirements from successful discovery.
 
 Browsing gathers context; the learning system decides what to learn next.
 
