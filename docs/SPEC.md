@@ -16,7 +16,7 @@ ScholarOS is the working name. The experience must suit nontechnical students.
 2. Create an account and sign in through the system browser.
 3. Set up a dedicated academic browser workspace and choose permitted services.
 4. Sign into each academic service directly on its real website, including SSO and MFA.
-5. Review access boundaries, data handling, and optional background activity.
+5. Add optional context in a notes-only step, then review access boundaries, data handling, and optional background activity; course discovery is not a prerequisite or a course-map scan in onboarding.
 6. Open a unified academic home or give the agent a mission.
 
 Example mission: **“I have a biology exam Friday and 30 minutes to study. Get me ready.”**
