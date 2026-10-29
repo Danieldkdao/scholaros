@@ -13,10 +13,14 @@
   },
   "dependencies": {
     "@scholaros/env": "workspace:*",
-    "node-mailjet": "6.0.11"
+    "ai": "7.0.156",
+    "node-mailjet": "6.0.11",
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "@ai-sdk/baseten": "2.1.58",
+    "@ai-sdk/typesafe-ai": "3.0.29",
     "typescript": "^6.0.3",
     "vitest": "^5.0.5"
   }
