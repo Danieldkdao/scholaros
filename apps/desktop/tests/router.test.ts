@@ -11,6 +11,7 @@ const unfinishedUser: CurrentUser = {
   id: 'student-a',
   name: 'Student',
   email: 'student@example.com',
+  image: null,
   hasCompletedOnboarding: false,
 };
 const finishedUser: CurrentUser = {
@@ -32,6 +33,17 @@ const loadRoute = async (path: string, user: CurrentUser | null) => {
 
 const allMatchesSucceeded = (router: Awaited<ReturnType<typeof loadRoute>>) =>
   router.state.matches.every((match) => match.status === 'success');
+
+const matchedRouteIds = (router: Awaited<ReturnType<typeof loadRoute>>) =>
+  router.state.matches.map((match) => match.routeId);
+
+const nestedDashboardPaths = [
+  '/dashboard/courses',
+  '/dashboard/study',
+  '/dashboard/planner',
+  '/dashboard/connections',
+  '/dashboard/settings',
+];
 
 beforeEach(() => vi.resetAllMocks());
 
@@ -90,5 +102,44 @@ describe('desktop route access', () => {
         (match) => match.status === 'notFound' || match._notFound,
       ),
     ).toBe(true);
+  });
+});
+
+describe('nested dashboard pages', () => {
+  it.each(nestedDashboardPaths)(
+    'sends signed-out users from %s to sign-in',
+    async (path) => {
+      const router = await loadRoute(path, null);
+      expect(router.state.location.pathname).toBe('/auth');
+    },
+  );
+
+  it.each(nestedDashboardPaths)(
+    'sends unfinished accounts from %s to onboarding',
+    async (path) => {
+      const router = await loadRoute(path, unfinishedUser);
+      expect(router.state.location.pathname).toBe('/onboarding');
+    },
+  );
+
+  it.each(nestedDashboardPaths)(
+    'opens %s for a finished account inside the shared layout',
+    async (path) => {
+      const router = await loadRoute(path, finishedUser);
+      expect(router.state.location.pathname).toBe(path);
+      expect(allMatchesSucceeded(router)).toBe(true);
+      expect(matchedRouteIds(router)).toEqual(['__root__', '/dashboard', path]);
+    },
+  );
+
+  it('matches the Today index only at the dashboard root', async () => {
+    const index = await loadRoute('/dashboard', finishedUser);
+    expect(matchedRouteIds(index)).toEqual([
+      '__root__',
+      '/dashboard',
+      '/dashboard/',
+    ]);
+    const nested = await loadRoute('/dashboard/courses', finishedUser);
+    expect(matchedRouteIds(nested)).not.toContain('/dashboard/');
   });
 });

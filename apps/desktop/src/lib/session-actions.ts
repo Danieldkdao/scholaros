@@ -1,4 +1,4 @@
-type SignOutDependencies = {
+export type SignOutDependencies = {
   signOut: () => Promise<void>;
   clearRendererState: () => void;
   navigateToAuth: () => Promise<void>;

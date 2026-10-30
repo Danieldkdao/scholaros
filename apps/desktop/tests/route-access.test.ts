@@ -7,6 +7,7 @@ const user = {
   id: 'student-a',
   name: 'Student',
   email: 'student@example.com',
+  image: null,
   hasCompletedOnboarding: false,
 };
 beforeEach(() => vi.resetAllMocks());
@@ -15,6 +16,11 @@ describe('route groups', () => {
     ['/auth', 'auth'],
     ['/onboarding', 'onboarding'],
     ['/dashboard', 'dashboard'],
+    ['/dashboard/courses', 'dashboard'],
+    ['/dashboard/study', 'dashboard'],
+    ['/dashboard/planner', 'dashboard'],
+    ['/dashboard/connections', 'dashboard'],
+    ['/dashboard/settings', 'dashboard'],
     ['/', 'dashboard'],
     ['/missing-page', 'dashboard'],
   ] as const)('treats %s as the %s group', (pathname, group) => {
