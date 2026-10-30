@@ -7,7 +7,10 @@ import { Button } from '@scholaros/ui/components/button';
 import { LoadingSwap } from '@scholaros/ui/components/loading-swap';
 import { CircleAlert, Loader2, LogIn } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import logoMarkDark from '@scholaros/assets/images/logo-dark.png';
+import logoMarkLight from '@scholaros/assets/images/logo-light.png';
 import { errorMessage } from '../../lib/error-message';
+import { Image } from '../../components/image';
 
 export const AuthScreen = () => {
   const [busy, setBusy] = useState(false);
@@ -38,8 +41,13 @@ export const AuthScreen = () => {
   return (
     <main className="flex min-h-screen items-center justify-center bg-muted/40 p-6 text-base">
       <div className="w-full max-w-lg flex flex-col gap-4 items-center">
-        <div className="w-full flex flex-col items-center gap-1">
-          <h1 className="font-serif text-3xl font-semibold text-primary">
+        <div className="w-full flex flex-col gap-3 items-center">
+          <h1 className="flex items-center justify-center gap-3 text-4xl font-semibold">
+            <Image
+              src={{ light: logoMarkLight, dark: logoMarkDark }}
+              alt=""
+              className="size-16 shrink-0 object-contain"
+            />
             ScholarOS
           </h1>
           <h2 className="text-3xl font-semibold text-center">

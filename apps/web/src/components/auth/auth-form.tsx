@@ -24,6 +24,9 @@ import {
   AuthFormSchema,
 } from '@/lib/auth/schemas';
 import { Card, CardContent } from '@scholaros/ui/components/card';
+import logoMarkDark from '@scholaros/assets/images/logo-dark.png';
+import logoMarkLight from '@scholaros/assets/images/logo-light.png';
+import { Image } from '@/components/image';
 import { VerifyAccount } from '@/components/auth/verify-account';
 import { toast } from '@scholaros/ui/components/toast';
 import { Separator } from '@scholaros/ui/components/separator';
@@ -142,6 +145,14 @@ export const AuthForm = ({ signup = false }: { signup?: boolean }) => {
     <Card className="w-full max-w-[30rem] rounded-2xl text-base shadow-none">
       <CardContent className="gap-0">
         <div className="mb-6 text-center">
+          <Image
+            src={{ light: logoMarkLight, dark: logoMarkDark }}
+            alt="ScholarOS"
+            width={80}
+            height={80}
+            priority
+            className="mx-auto mb-5 size-20 object-contain"
+          />
           <h1 className="font-sans text-3xl font-semibold">
             {signup ? 'Create your account' : 'Welcome Back'}
           </h1>
