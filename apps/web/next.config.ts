@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 const nextConfig: NextConfig = {
   transpilePackages: [
+    '@scholaros/assets',
     '@scholaros/ui',
     '@scholaros/env',
     '@scholaros/cloud-db',
