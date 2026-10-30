@@ -10,6 +10,8 @@ A bounded local browser agent gathers context so students do not have to manuall
 
 ScholarOS is the working name. The experience must suit nontechnical students.
 
+Build the product experience for desktop only. The web application exists for browser authentication, the authorized inference API, and at most a landing page; it does not mirror the desktop experience, and any broader web surface is deferred to a later decision.
+
 ## Core experience
 
 1. Install one desktop application with normal consumer installation steps.
@@ -91,7 +93,7 @@ Shared packages
 
 - **Workspace:** TypeScript, pnpm workspaces, and Turborepo, with applications under `apps/` and reusable packages under `packages/`.
 - **Desktop:** Electron, Electron Forge, Vite, and React. The renderer uses isolated preload APIs; privileged work belongs in the main process.
-- **Web/API:** Next.js App Router and route handlers for browser authentication, account services, and a web interface sharing application logic.
+- **Web/API:** Next.js App Router and route handlers for browser authentication, account services, and the authorized inference API the desktop app calls. Keep it to those server responsibilities plus an optional landing page; do not rebuild desktop product surfaces for the web.
 - **UI:** Shared shadcn/Base UI components, Tailwind CSS, and theme tokens. Use React Hook Form and Zod for web forms.
 - **Authentication:** Better Auth and its Electron integration, Google/GitHub OAuth, and email/password with email verification. Mailjet delivers verification emails.
 - **Data:** Drizzle ORM with PostgreSQL/Neon for cloud account data and `better-sqlite3` for local academic data. Keep cloud database credentials on the server and local database access outside the renderer.
