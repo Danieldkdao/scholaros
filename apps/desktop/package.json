@@ -57,6 +57,7 @@
   "dependencies": {
     "@better-auth/electron": "1.7.14",
     "@browserbasehq/stagehand": "4.3.0",
+    "@scholaros/assets": "workspace:*",
     "@scholaros/auth": "workspace:*",
     "@scholaros/env": "workspace:*",
     "@scholaros/services": "workspace:*",

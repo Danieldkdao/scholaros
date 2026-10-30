@@ -69,6 +69,7 @@ export const getCurrentUser = async (): Promise<CurrentUser | null> => {
     id: result.user.id,
     name: result.user.name,
     email: result.user.email,
+    image: typeof result.user.image === 'string' ? result.user.image : null,
     hasCompletedOnboarding: result.user.hasCompletedOnboarding === true,
   };
 };

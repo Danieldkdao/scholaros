@@ -5,12 +5,17 @@
   "type": "module",
   "exports": {
     ".": "./src/types.ts",
-    "./types": "./src/types.ts"
+    "./types": "./src/types.ts",
+    "./formatters": "./src/formatters.ts"
+  },
+  "scripts": {
+    "test": "vitest run"
   },
   "peerDependencies": {
     "react": "^19.3.1"
   },
   "devDependencies": {
-    "@types/react": "^19.3.0"
+    "@types/react": "^19.3.0",
+    "vitest": "^5.0.5"
   }
 }

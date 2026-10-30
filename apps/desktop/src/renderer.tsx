@@ -3,7 +3,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { RouterProvider } from '@tanstack/react-router';
 import { router } from './router';
-import { ThemeProvider } from '@scholaros/ui/components/theme-provider';
+import { Providers } from './components/providers';
 import '@scholaros/ui/styles.css';
 
 const root = document.getElementById('root');
@@ -14,8 +14,8 @@ if (!root) {
 
 createRoot(root).render(
   <StrictMode>
-    <ThemeProvider clientOnly>
+    <Providers>
       <RouterProvider router={router} />
-    </ThemeProvider>
+    </Providers>
   </StrictMode>,
 );

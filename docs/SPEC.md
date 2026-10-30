@@ -10,6 +10,8 @@ A bounded local browser agent gathers context so students do not have to manuall
 
 ScholarOS is the working name. The experience must suit nontechnical students.
 
+Build the product experience for desktop only. The web application exists for browser authentication, the authorized inference API, and at most a landing page; it does not mirror the desktop experience, and any broader web surface is deferred to a later decision.
+
 ## Core experience
 
 1. Install one desktop application with normal consumer installation steps.
@@ -91,8 +93,9 @@ Shared packages
 
 - **Workspace:** TypeScript, pnpm workspaces, and Turborepo, with applications under `apps/` and reusable packages under `packages/`.
 - **Desktop:** Electron, Electron Forge, Vite, and React. The renderer uses isolated preload APIs; privileged work belongs in the main process.
-- **Web/API:** Next.js App Router and route handlers for browser authentication, account services, and a web interface sharing application logic.
+- **Web/API:** Next.js App Router and route handlers for browser authentication, account services, and the authorized inference API the desktop app calls. Keep it to those server responsibilities plus an optional landing page; do not rebuild desktop product surfaces for the web.
 - **UI:** Shared shadcn/Base UI components, Tailwind CSS, and theme tokens. Use React Hook Form and Zod for web forms.
+- **Assets:** Shared images, media, and fonts live in `@scholaros/assets` under `src/`, grouped by purpose with lowercase kebab-case names, and are imported by path — `import logo from '@scholaros/assets/images/logo-light.png'`. Each app bundles what it imports, so no build step or public server is involved: Next.js gives that import static image metadata and Vite gives a URL string, which is why image import typing stays in the consuming app instead of the package. Render light/dark artwork through each app's theme-aware `Image` component, which takes `src={{ light, dark? }}` and falls back to `light` when no dark variant is given. Keep files that need fixed public URLs in `apps/web/public`, installer icons in desktop packaging resources, and student uploads or downloads in runtime storage. See `packages/assets/readme.md`.
 - **Authentication:** Better Auth and its Electron integration, Google/GitHub OAuth, and email/password with email verification. Mailjet delivers verification emails.
 - **Data:** Drizzle ORM with PostgreSQL/Neon for cloud account data and `better-sqlite3` for local academic data. Keep cloud database credentials on the server and local database access outside the renderer.
 - **AI services:** All model calls use Vercel AI SDK through `packages/services/src/ai/`; provider instances live in `models/baseten.ts` (`baseten`) and `models/typesafe.ts` (`typeSafe`), configured from typed `serverEnv`. Use the official `@ai-sdk/baseten` and `@ai-sdk/typesafe-ai` adapters.

@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@hookform/resolvers": "^6.0.1",
+    "@scholaros/assets": "workspace:*",
     "@scholaros/auth": "workspace:*",
     "@scholaros/cloud-db": "workspace:*",
     "@scholaros/env": "workspace:*",
