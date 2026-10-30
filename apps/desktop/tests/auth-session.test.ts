@@ -31,6 +31,7 @@ describe('local session reads', () => {
             id: 'student-a',
             name: 'Student',
             email: 'student@example.com',
+            image: 'https://campus.example.edu/student.png',
             hasCompletedOnboarding: true,
           },
         }),
@@ -40,6 +41,7 @@ describe('local session reads', () => {
 
     await expect(getCurrentUser()).resolves.toMatchObject({
       id: 'student-a',
+      image: 'https://campus.example.edu/student.png',
       hasCompletedOnboarding: true,
     });
     expect(fetchMock).toHaveBeenCalledOnce();
