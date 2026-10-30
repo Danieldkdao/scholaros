@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
-const { Providers } = await import('../providers');
+const { Providers } = await import('../src/components/providers');
 const {
   Sidebar,
   SidebarContent,

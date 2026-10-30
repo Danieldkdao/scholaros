@@ -12,7 +12,7 @@ import { ThemeProvider } from '@scholaros/ui/components/theme-provider';
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
-const { Image } = await import('../image');
+const { Image } = await import('../src/components/image');
 
 type TestImageProps = ComponentProps<typeof Image>;
 
