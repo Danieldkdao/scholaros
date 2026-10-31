@@ -38,12 +38,15 @@ const matchedRouteIds = (router: Awaited<ReturnType<typeof loadRoute>>) =>
   router.state.matches.map((match) => match.routeId);
 
 const nestedDashboardPaths = [
-  '/dashboard/courses',
-  '/dashboard/study',
-  '/dashboard/planner',
-  '/dashboard/connections',
-  '/dashboard/settings',
-];
+  { path: '/dashboard/courses', routeId: '/dashboard/courses' },
+  { path: '/dashboard/study', routeId: '/dashboard/study' },
+  { path: '/dashboard/planner', routeId: '/dashboard/planner' },
+  // The list moved into a folder so the add page can nest beside it, which
+  // leaves the list as an index route with a trailing-slash id.
+  { path: '/dashboard/connections', routeId: '/dashboard/connections/' },
+  { path: '/dashboard/connections/add', routeId: '/dashboard/connections/add' },
+  { path: '/dashboard/settings', routeId: '/dashboard/settings' },
+] as const;
 
 beforeEach(() => vi.resetAllMocks());
 
@@ -107,28 +110,32 @@ describe('desktop route access', () => {
 
 describe('nested dashboard pages', () => {
   it.each(nestedDashboardPaths)(
-    'sends signed-out users from %s to sign-in',
-    async (path) => {
+    'sends signed-out users from $path to sign-in',
+    async ({ path }) => {
       const router = await loadRoute(path, null);
       expect(router.state.location.pathname).toBe('/auth');
     },
   );
 
   it.each(nestedDashboardPaths)(
-    'sends unfinished accounts from %s to onboarding',
-    async (path) => {
+    'sends unfinished accounts from $path to onboarding',
+    async ({ path }) => {
       const router = await loadRoute(path, unfinishedUser);
       expect(router.state.location.pathname).toBe('/onboarding');
     },
   );
 
   it.each(nestedDashboardPaths)(
-    'opens %s for a finished account inside the shared layout',
-    async (path) => {
+    'opens $path for a finished account inside the shared layout',
+    async ({ path, routeId }) => {
       const router = await loadRoute(path, finishedUser);
       expect(router.state.location.pathname).toBe(path);
       expect(allMatchesSucceeded(router)).toBe(true);
-      expect(matchedRouteIds(router)).toEqual(['__root__', '/dashboard', path]);
+      expect(matchedRouteIds(router)).toEqual([
+        '__root__',
+        '/dashboard',
+        routeId,
+      ]);
     },
   );
 
