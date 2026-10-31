@@ -178,8 +178,9 @@ export const BrowserStep = ({ state, busy, run, update }: BrowserStepProps) => {
             <li className="flex items-start gap-2">
               <ScanSearchIcon className="mt-0.5 size-4 shrink-0" />
               <span>
-                Let your agent revisit connected courses and read deadlines,
-                announcements, and assigned work without another sign-in.
+                Let your agent revisit connected resources and read study
+                materials, announcements, and assigned work without another
+                sign-in.
               </span>
             </li>
             <li className="flex items-start gap-2">

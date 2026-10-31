@@ -1,6 +1,6 @@
-import { useState } from "react";
-import { Globe, Plus, Trash2 } from "lucide-react";
-import { Button } from "@scholaros/ui/components/button";
+import { useState } from 'react';
+import { Globe, Plus, Trash2 } from 'lucide-react';
+import { Button } from '@scholaros/ui/components/button';
 import {
   Dialog,
   DialogClose,
@@ -9,16 +9,16 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@scholaros/ui/components/dialog";
-import { toast } from "@scholaros/ui/components/toast";
-import { Input } from "@scholaros/ui/components/input";
-import { LoadingSwap } from "@scholaros/ui/components/loading-swap";
-import { Separator } from "@scholaros/ui/components/separator";
-import { Textarea } from "@scholaros/ui/components/textarea";
-import { isAcademicUrl } from "../onboarding/lib/browser-policy";
-import { errorMessage } from "../../lib/error-message";
-import type { ConnectionProposal } from "../onboarding/types";
-import { Card, CardContent } from "@scholaros/ui/components/card";
+} from '@scholaros/ui/components/dialog';
+import { toast } from '@scholaros/ui/components/toast';
+import { Input } from '@scholaros/ui/components/input';
+import { LoadingSwap } from '@scholaros/ui/components/loading-swap';
+import { Separator } from '@scholaros/ui/components/separator';
+import { Textarea } from '@scholaros/ui/components/textarea';
+import { isAcademicUrl } from '../onboarding/lib/browser-policy';
+import { errorMessage } from '../../lib/error-message';
+import type { ConnectionProposal } from '../onboarding/types';
+import { Card, CardContent } from '@scholaros/ui/components/card';
 
 type ReviewEntryProps = {
   Icon: typeof Globe;
@@ -68,12 +68,12 @@ const ReviewEntry = ({
 );
 
 export const ConnectionFinder = () => {
-  const [prompt, setPrompt] = useState("");
+  const [prompt, setPrompt] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [proposal, setProposal] = useState<ConnectionProposal | null>(null);
   const [reviewing, setReviewing] = useState(false);
-  const [site, setSite] = useState("");
+  const [site, setSite] = useState('');
   const [approved, setApproved] = useState(false);
   const perform = async (action: () => Promise<void>) => {
     setBusy(true);
@@ -81,7 +81,7 @@ export const ConnectionFinder = () => {
     try {
       await action();
     } catch (cause) {
-      setError(errorMessage(cause, "Could not update sites; try again."));
+      setError(errorMessage(cause, 'Could not update sites; try again.'));
     } finally {
       setBusy(false);
     }
@@ -94,7 +94,7 @@ export const ConnectionFinder = () => {
       const next = await window.scholar.resolveConnections(prompt);
       if (!next.candidates.length) {
         toast.error(
-          "No sites found; try a more specific subject, learning service, or school.",
+          'No sites found; try a more specific subject, learning service, or school.',
         );
         return;
       }
@@ -111,12 +111,12 @@ export const ConnectionFinder = () => {
     let host: string;
     try {
       const value = site.trim();
-      const url = new URL(value.includes("://") ? value : `https://${value}`);
-      if (!isAcademicUrl(url.href)) throw new Error("Invalid site address");
+      const url = new URL(value.includes('://') ? value : `https://${value}`);
+      if (!isAcademicUrl(url.href)) throw new Error('Invalid site address');
       host = url.hostname;
     } catch {
       setError(
-        "Enter a website address such as school.edu or https://school.edu.",
+        'Enter a website address such as school.edu or https://school.edu.',
       );
       return;
     }
@@ -124,10 +124,10 @@ export const ConnectionFinder = () => {
       ...proposal,
       candidates: [
         ...proposal.candidates,
-        { name: host, url: `https://${host}/`, provider: "unknown" },
+        { name: host, url: `https://${host}/`, provider: 'unknown' },
       ],
     });
-    setSite("");
+    setSite('');
   };
   return (
     <>
@@ -143,14 +143,12 @@ export const ConnectionFinder = () => {
               to an AI provider to suggest sites for you to verify.
             </label>
           </div>
-          {/* The Textarea primitive drops to text-sm at md widths, so both edges
-              need the larger size or the field shrinks inside the app window. */}
           <Textarea
             id="connection-request"
             value={prompt}
             onChange={(event) => setPrompt(event.target.value)}
             placeholder="e.g. Math practice websites, Khan Academy, or my school’s Canvas portal"
-            className="text-base md:text-base"
+            className="text-base"
           />
           <div className="flex flex-wrap gap-2">
             <Button
@@ -256,7 +254,7 @@ export const ConnectionFinder = () => {
                       } catch (cause) {
                         setProposal(null);
                         throw new Error(
-                          `${errorMessage(cause, "Could not start the run.")} Find sites again to retry.`,
+                          `${errorMessage(cause, 'Could not start the run.')} Find sites again to retry.`,
                         );
                       }
                     })

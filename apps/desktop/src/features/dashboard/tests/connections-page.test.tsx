@@ -32,6 +32,7 @@ const connections = [
     verifiedAt: null,
     notes: 'Biology lab',
     favicon: 'data:image/png;base64,icon',
+    isCourseResource: true,
   },
   {
     id: 'b',
@@ -43,6 +44,7 @@ const connections = [
     verifiedAt: null,
     notes: null,
     favicon: null,
+    isCourseResource: true,
   },
 ];
 let root: ReturnType<typeof createRoot>;
@@ -84,6 +86,12 @@ beforeEach(() => {
       connections: [connections[1]],
     })),
     saveConnectionNotes: vi.fn(async () => state),
+    setCourseResource: vi.fn(async (id: string, isCourseResource: boolean) => ({
+      ...state,
+      connections: connections.map((connection) =>
+        connection.id === id ? { ...connection, isCourseResource } : connection,
+      ),
+    })),
   } as unknown as typeof window.scholar;
   window.onAuthenticated = vi.fn(() => () => {});
   window.onUserUpdated = vi.fn(() => () => {});
@@ -206,6 +214,48 @@ it('offers confirmation for connections needing sign in', async () => {
   )!;
   await act(async () => button.click());
   expect(window.scholar.confirmResource).toHaveBeenCalledWith('b');
+});
+
+// The visible control is the switch; the id lands on the input Base UI keeps
+// for form submission, so scope the lookup through the label instead.
+const courseResourceSwitch = (id: string) =>
+  document
+    .querySelector(`label[for="course-resource-${id}"]`)!
+    .closest('[data-slot="connection-card"]')!
+    .querySelector('[role="switch"]')!;
+
+it('saves the course resource setting for the connection that was toggled', async () => {
+  await open('/dashboard/connections');
+  expect(courseResourceSwitch('a').getAttribute('aria-checked')).toBe('true');
+  expect(courseResourceSwitch('b').getAttribute('aria-checked')).toBe('true');
+  await click(courseResourceSwitch('a'));
+  expect(window.scholar.setCourseResource).toHaveBeenCalledWith('a', false);
+  expect(courseResourceSwitch('a').getAttribute('aria-checked')).toBe('false');
+  expect(courseResourceSwitch('b').getAttribute('aria-checked')).toBe('true');
+});
+
+it('explains that a marked site still needs a sign-in', async () => {
+  await open('/dashboard/connections');
+  expect(
+    courseResourceSwitch('b')
+      .closest('[data-slot="connection-card"]')!
+      .textContent?.includes('Sign in here before courses can refresh.'),
+  ).toBe(true);
+  expect(
+    courseResourceSwitch('a')
+      .closest('[data-slot="connection-card"]')!
+      .textContent?.includes('Sign in here before courses can refresh.'),
+  ).toBe(false);
+});
+
+it('reports a rejected course resource change and keeps the saved value', async () => {
+  vi.mocked(window.scholar.setCourseResource).mockRejectedValueOnce(
+    new Error('Choose a connected resource.'),
+  );
+  await open('/dashboard/connections');
+  await click(courseResourceSwitch('a'));
+  expect(document.body.textContent).toContain('Choose a connected resource.');
+  expect(courseResourceSwitch('a').getAttribute('aria-checked')).toBe('true');
 });
 
 it('asks before removing a connection and updates the list after confirmation', async () => {

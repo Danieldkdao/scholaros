@@ -45,8 +45,8 @@ const PreviewSummary = ({ accountId }: { accountId: string }) => {
       {preview.status === 'complete' && (
         <p className="text-muted-foreground">
           {preview.cards.length} result
-          {preview.cards.length === 1 ? '' : 's'} checked against your course
-          pages; preview results stay in this session only.
+          {preview.cards.length === 1 ? '' : 's'} checked against your connected
+          resources; preview results stay in this session only.
         </p>
       )}
       {preview.message && (

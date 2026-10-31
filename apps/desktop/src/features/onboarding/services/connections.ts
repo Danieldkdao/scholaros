@@ -73,6 +73,7 @@ export const captureResourcePage = async (
     notes: existingConnection?.notes ?? null,
     // A recapture that cannot read an icon keeps the last one students saw.
     favicon: favicon ?? existingConnection?.favicon ?? null,
+    isCourseResource: existingConnection?.isCourseResource ?? false,
     verifiedAt:
       captured.status === 'verified' ? new Date().toISOString() : null,
   };
@@ -139,6 +140,34 @@ export const saveConnectionNotes = (
     throw new Error('Notes must be 500 characters or fewer.');
   db.update(AcademicConnectionTable)
     .set({ notes: notes.trim() })
+    .where(
+      and(
+        eq(AcademicConnectionTable.userId, userId),
+        eq(AcademicConnectionTable.id, id),
+      ),
+    )
+    .run();
+  return getOnboardingState(userId);
+};
+
+export const setCourseResource = (
+  userId: string,
+  id: string,
+  isCourseResource: boolean,
+) => {
+  const existingConnection = db
+    .select()
+    .from(AcademicConnectionTable)
+    .where(
+      and(
+        eq(AcademicConnectionTable.userId, userId),
+        eq(AcademicConnectionTable.id, id),
+      ),
+    )
+    .get();
+  if (!existingConnection) throw new Error('Choose a connected resource.');
+  db.update(AcademicConnectionTable)
+    .set({ isCourseResource })
     .where(
       and(
         eq(AcademicConnectionTable.userId, userId),

@@ -58,7 +58,7 @@ const bridge = {
   getState: vi.fn(async () => ({
     accountId: 'student-a',
     connections: [],
-    settings: {},
+    settings: { decisionTimeSeconds: 1, blockedWords: [] },
     discovery: {},
     preferences: {},
   })),
@@ -220,12 +220,11 @@ describe('dashboard shell', () => {
   });
 
   it('keeps every page body down to its title', async () => {
+    // Only the remaining placeholder pages have no content beyond their title.
     for (const path of [
       '/dashboard',
-      '/dashboard/courses',
       '/dashboard/study',
       '/dashboard/planner',
-      '/dashboard/settings',
     ]) {
       await openRoute(path);
       expect(pageRegion()?.children).toHaveLength(1);

@@ -1,17 +1,20 @@
-import { useEffect, useState } from 'react';
-import { createFileRoute, Link } from '@tanstack/react-router';
-import { useDebouncedCallback } from '@tanstack/react-pacer';
+import { useEffect, useState } from "react";
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { useDebouncedCallback } from "@tanstack/react-pacer";
 import {
   Check,
+  CircleAlert,
   FilterIcon,
   Globe,
   Loader2,
   PlusIcon,
   Trash2,
-} from 'lucide-react';
-import { Button } from '@scholaros/ui/components/button';
-import { Input } from '@scholaros/ui/components/input';
-import { Alert, AlertDescription } from '@scholaros/ui/components/alert';
+} from "lucide-react";
+import { Button } from "@scholaros/ui/components/button";
+import { Input } from "@scholaros/ui/components/input";
+import { Switch } from "@scholaros/ui/components/switch";
+import { Card, CardContent } from "@scholaros/ui/components/card";
+import { Alert, AlertDescription } from "@scholaros/ui/components/alert";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -21,20 +24,20 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-} from '@scholaros/ui/components/alert-dialog';
+} from "@scholaros/ui/components/alert-dialog";
 import {
   Popover,
   PopoverTrigger,
   PopoverContent,
-} from '@scholaros/ui/components/popover';
+} from "@scholaros/ui/components/popover";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '@scholaros/ui/components/select';
-import { PageHeading } from '../../../features/dashboard/page-heading';
+} from "@scholaros/ui/components/select";
+import { PageHeading } from "../../../features/dashboard/page-heading";
 import {
   connectionKindFilters,
   connectionSearchSchema,
@@ -42,25 +45,25 @@ import {
   filterConnections,
   type ConnectionKindFilter,
   type ConnectionStatusFilter,
-} from '../../../features/dashboard/lib/connection-filters';
+} from "../../../features/dashboard/lib/connection-filters";
 import {
   formatConnectionKindFilter,
   formatConnectionStatusFilter,
-} from '../../../features/dashboard/lib/formatters';
-import { useOnboardingState } from '../../../features/onboarding/hooks/use-onboarding-state';
-import { useBridgeAction } from '../../../hooks/use-bridge-action';
-import { useConfirm } from '../../../hooks/use-confirm';
-import { ConnectionNotesEditor } from '../../../features/onboarding/components/connection-notes-editor';
+} from "../../../features/dashboard/lib/formatters";
+import { useOnboardingState } from "../../../features/onboarding/hooks/use-onboarding-state";
+import { useBridgeAction } from "../../../hooks/use-bridge-action";
+import { useConfirm } from "../../../hooks/use-confirm";
+import { ConnectionNotesEditor } from "../../../features/onboarding/components/connection-notes-editor";
 import {
   formatConnectionStatus,
   formatResourceKind,
-} from '../../../features/onboarding/lib/formatters';
-import type { AcademicConnection } from '../../../features/onboarding/types';
+} from "../../../features/onboarding/lib/formatters";
+import type { AcademicConnection } from "../../../features/onboarding/types";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
-} from '@scholaros/ui/components/tooltip';
+} from "@scholaros/ui/components/tooltip";
 
 const ConnectionsPage = () => {
   const search = Route.useSearch();
@@ -90,7 +93,7 @@ const ConnectionsPage = () => {
       window.scholar.onConnectChange((run) => {
         if (
           run.accountId === state?.accountId &&
-          ['complete', 'cancelled', 'blocked'].includes(run.status)
+          ["complete", "cancelled", "blocked"].includes(run.status)
         )
           void reload();
       }),
@@ -98,7 +101,7 @@ const ConnectionsPage = () => {
   );
   const filtered = state ? filterConnections(state.connections, search) : [];
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-6 @container">
       <PageHeading page="connections">
         <Button
           nativeButton={false}
@@ -232,79 +235,119 @@ const ConnectionsPage = () => {
               const status = formatConnectionStatus(connection.status);
               const kind = formatResourceKind(connection.kind);
               return (
-                <div
-                  key={connection.id}
-                  data-slot="connection-card"
-                  className="flex flex-col gap-3 rounded-xl border bg-card p-4"
-                >
-                  <div className="flex items-center gap-2">
-                    <div className="size-11 rounded-full bg-muted border flex items-center justify-center">
-                      {connection.favicon ? (
-                        <img
-                          src={connection.favicon}
-                          alt=""
-                          className="size-5 shrink-0 rounded-sm object-contain"
-                        />
-                      ) : (
-                        <Globe className="size-5 shrink-0" />
-                      )}
-                    </div>
-                    <div className="flex flex-1 flex-col">
-                      <div className="flex items-center gap-3">
-                        <p>{connection.name}</p>
-                        <div className="flex items-center gap-2">
-                          <Tooltip>
-                            <TooltipTrigger>
-                              <kind.Icon className="size-4" />
-                            </TooltipTrigger>
-                            <TooltipContent>{kind.label}</TooltipContent>
-                          </Tooltip>
-                          <Tooltip>
-                            <TooltipTrigger>
-                              <status.Icon className="size-4" />
-                            </TooltipTrigger>
-                            <TooltipContent>{status.label}</TooltipContent>
-                          </Tooltip>
-                        </div>
+                <Card key={connection.id} size="sm" className="text-base">
+                  <CardContent data-slot="connection-card">
+                    <div className="flex items-center gap-2">
+                      <div className="size-11 rounded-full bg-muted border flex items-center justify-center">
+                        {connection.favicon ? (
+                          <img
+                            src={connection.favicon}
+                            alt=""
+                            className="size-5 shrink-0 rounded-sm object-contain"
+                          />
+                        ) : (
+                          <Globe className="size-5 shrink-0" />
+                        )}
                       </div>
-                      <p className="text-muted-foreground">{connection.host}</p>
+                      <div className="flex flex-1 flex-col">
+                        <div className="flex items-center gap-3">
+                          <p>{connection.name}</p>
+                          <div className="flex items-center gap-2">
+                            <Tooltip>
+                              <TooltipTrigger>
+                                <kind.Icon className="size-4" />
+                              </TooltipTrigger>
+                              <TooltipContent>{kind.label}</TooltipContent>
+                            </Tooltip>
+                            <Tooltip>
+                              <TooltipTrigger>
+                                <status.Icon className="size-4" />
+                              </TooltipTrigger>
+                              <TooltipContent>{status.label}</TooltipContent>
+                            </Tooltip>
+                          </div>
+                        </div>
+                        <p className="text-muted-foreground">
+                          {connection.host}
+                        </p>
+                      </div>
+
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        title="Remove connection"
+                        aria-label={`Remove ${connection.name}`}
+                        disabled={busy}
+                        onClick={() => requestRemoval(connection)}
+                      >
+                        <Trash2 />
+                      </Button>
                     </div>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      title="Remove connection"
-                      aria-label={`Remove ${connection.name}`}
-                      disabled={busy}
-                      onClick={() => requestRemoval(connection)}
-                    >
-                      <Trash2 />
-                    </Button>
-                  </div>
-                  {connection.status === 'needs-sign-in' && (
-                    <Button
-                      variant="outline"
-                      disabled={busy}
-                      onClick={() =>
-                        void run(async () =>
-                          setState(
-                            await window.scholar.confirmResource(connection.id),
-                          ),
-                        )
-                      }
-                    >
-                      <Check />
-                      I’m signed in
-                    </Button>
-                  )}
-                  <ConnectionNotesEditor
-                    id={connection.id}
-                    notes={connection.notes}
-                    save={async (id, notes) => {
-                      await window.scholar.saveConnectionNotes(id, notes);
-                      updateConnectionNotes(id, notes.trim());
-                    }}
-                  />
-                </div>
+                    {connection.status === "needs-sign-in" && (
+                      <Button
+                        variant="outline"
+                        className="self-start"
+                        disabled={busy}
+                        onClick={() =>
+                          void run(async () =>
+                            setState(
+                              await window.scholar.confirmResource(
+                                connection.id,
+                              ),
+                            ),
+                          )
+                        }
+                      >
+                        <Check />
+                        I’m signed in
+                      </Button>
+                    )}
+                    <ConnectionNotesEditor
+                      id={connection.id}
+                      notes={connection.notes}
+                      save={async (id, notes) => {
+                        await window.scholar.saveConnectionNotes(id, notes);
+                        updateConnectionNotes(id, notes.trim());
+                      }}
+                    />
+                    <div className="flex items-center justify-between @3xl:justify-start gap-4">
+                      <div className="flex flex-col">
+                        <label
+                          htmlFor={`course-resource-${connection.id}`}
+                          className="font-medium cursor-pointer"
+                        >
+                          Course resource
+                        </label>
+                        <p className="text-muted-foreground">
+                          Find courses from this site.
+                        </p>
+                        {connection.isCourseResource &&
+                          connection.status === "needs-sign-in" && (
+                            <p className="flex items-center gap-2 text-muted-foreground">
+                              <CircleAlert className="size-4 shrink-0" />
+                              Sign in here before courses can refresh.
+                            </p>
+                          )}
+                      </div>
+                      <Switch
+                        id={`course-resource-${connection.id}`}
+                        className="shrink-0 cursor-pointer"
+                        checked={connection.isCourseResource === true}
+                        disabled={busy}
+                        onCheckedChange={(checked) =>
+                          void run(async () =>
+                            setState(
+                              await window.scholar.setCourseResource(
+                                connection.id,
+                                checked === true,
+                              ),
+                            ),
+                          )
+                        }
+                      />
+                    </div>
+                  </CardContent>
+                </Card>
               );
             })}
           </div>
@@ -344,7 +387,7 @@ const ConnectionsPage = () => {
   );
 };
 
-export const Route = createFileRoute('/dashboard/connections/')({
+export const Route = createFileRoute("/dashboard/connections/")({
   validateSearch: connectionSearchSchema,
   component: ConnectionsPage,
 });

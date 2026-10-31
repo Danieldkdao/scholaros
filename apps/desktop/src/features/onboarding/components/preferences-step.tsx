@@ -79,8 +79,8 @@ export const PreferencesStep = ({
               Sync course information in the background
             </label>
             <p className="text-muted-foreground">
-              After setup, check connected course resources using your approved
-              AI providers.
+              After setup, check selected course sources using your approved AI
+              providers.
             </p>
             <p className="flex items-center gap-2 text-muted-foreground">
               <background.Icon className="size-4" />
