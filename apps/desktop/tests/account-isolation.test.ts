@@ -21,7 +21,7 @@ const { AcademicConnectionTable, AcademicContextTable, SettingTable } =
   await import('../src/db/schema');
 const { getOnboardingState, removeAcademicConnection, saveOnboardingSettings } =
   await import('../src/features/onboarding/services/store');
-const { confirmResource, setPrimaryLms } =
+const { confirmResource, setPrimaryLms, saveConnectionNotes } =
   await import('../src/features/onboarding/services/connections');
 
 const studentA = 'student-a';
@@ -107,5 +107,21 @@ describe('account isolation on one computer', () => {
     expect(getOnboardingState(studentB).connections[0]?.status).toBe(
       'needs-sign-in',
     );
+  });
+  it('saves notes only for the owning account and rejects oversized input', () => {
+    insertConnection(studentA, 'connection-a');
+    insertConnection(studentB, 'connection-b');
+    expect(
+      saveConnectionNotes(studentA, 'connection-a', '  Biology  ')
+        .connections[0]?.notes,
+    ).toBe('Biology');
+    saveConnectionNotes(studentA, 'connection-b', 'wrong account');
+    expect(getOnboardingState(studentB).connections[0]?.notes).toBeNull();
+    expect(() =>
+      saveConnectionNotes(studentA, 'connection-a', 'x'.repeat(501)),
+    ).toThrow();
+    expect(
+      saveConnectionNotes(studentA, 'connection-a', '').connections[0]?.notes,
+    ).toBe('');
   });
 });

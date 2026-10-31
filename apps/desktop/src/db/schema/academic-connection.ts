@@ -15,6 +15,8 @@ export const AcademicConnectionTable = sqliteTable(
     kind: text('kind').$type<AcademicConnection['kind']>().notNull(),
     status: text('status').$type<ConnectionStatus>().notNull(),
     verifiedAt: text('verified_at'),
+    notes: text('notes'),
+    favicon: text('favicon'),
   },
   (table) => [index('academic_connections_user_idx').on(table.userId)],
 );

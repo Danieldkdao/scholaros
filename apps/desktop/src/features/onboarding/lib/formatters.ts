@@ -1,5 +1,7 @@
 import {
   Ban,
+  Check,
+  Loader2,
   BookOpen,
   Compass,
   ListChecks,
@@ -27,6 +29,7 @@ import type {
   AgentActivity,
   OnboardingStep,
   ConnectionStatus,
+  ConnectionNotesStatus,
   PreviewPrompt,
   BrowserId,
   BrowserWorkspaceStatus,
@@ -36,6 +39,7 @@ import type {
   PreviewCard,
   PreviewState,
 } from '../types';
+import type { ConnectRunResult } from '../services/connect-run';
 
 export const formatAgentActivity = (event: AgentActivity) => {
   switch (event.type) {
@@ -67,7 +71,8 @@ export const formatAgentActivity = (event: AgentActivity) => {
       };
     case 'checking':
       return {
-        label: 'Checking the results against your course materials',
+        label:
+          event.detail ?? 'Checking the results against your course materials',
         Icon: ListChecks,
       };
     case 'complete':
@@ -151,6 +156,27 @@ export const formatConnectionStatus = (status: ConnectionStatus) => {
       return { label: 'Confirmed by you', Icon: CircleCheck };
     case 'needs-sign-in':
       return { label: 'Needs confirmation', Icon: CircleAlert };
+  }
+};
+
+// One entry per site the agent tried, so the run panel can show what happened
+// without re-deciding the wording for each state.
+export const formatConnectRunResult = (status: ConnectRunResult['status']) => {
+  switch (status) {
+    case 'connected':
+      return {
+        label: 'Connected',
+        Icon: CircleCheck,
+        className: 'text-primary',
+      };
+    case 'needs-sign-in':
+      return {
+        label: 'Needs confirmation',
+        Icon: CircleAlert,
+        className: 'text-muted-foreground',
+      };
+    case 'blocked':
+      return { label: 'Blocked', Icon: Ban, className: 'text-destructive' };
   }
 };
 
@@ -378,5 +404,19 @@ export const formatResourceKind = (
       return { label: 'Google Classroom', Icon: Monitor };
     case 'resource':
       return { label: 'Academic resource', Icon: LinkIcon };
+  }
+};
+
+export const formatConnectionNotesStatus = (status: ConnectionNotesStatus) => {
+  switch (status) {
+    case 'saved':
+      return { label: 'Saved', Icon: Check };
+    case 'saving':
+      return { label: 'Saving', Icon: Loader2 };
+    case 'error':
+      return {
+        label: 'Could not save; edit or leave the field to retry',
+        Icon: CircleAlert,
+      };
   }
 };

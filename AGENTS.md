@@ -62,7 +62,6 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 - Use exactly one blank line between imports and main code, between functions, and between unrelated definitions. Keep each Zod schema directly adjacent to its inferred type. Never add multiple blank lines; run formatting on changed authored files.
 - Use flex layouts with gap utilities for spacing in authored application UI; never use Tailwind `space-*` utilities.
-- Preserve generated shadcn/ui primitives by default. The shared Button ghost variant is an intentional project customization: transparent resting backgrounds and theme-muted hover backgrounds, with important background utilities to preserve this behavior in composed triggers. Preserve this customization when regenerating Button; keep other generated variants unchanged.
 - Use `LoadingSwap` for button loading states and `useConfirm` for confirmation dialogs.
 - Prefer icon buttons with tooltips over full text buttons whenever they make the design cleaner and simpler, even when space is available. Use full text buttons only when they have ample room and fit the layout without clutter. Give icon buttons accessible labels.
 - Present visible metadata with consistent icons and values or separate labels and values, keeping colons for code, keys, values, and tooltips.

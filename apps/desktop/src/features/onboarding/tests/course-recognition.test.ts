@@ -18,6 +18,8 @@ const connection = (
   kind: 'resource',
   status: 'confirmed',
   verifiedAt: null,
+  notes: null,
+  favicon: null,
   ...overrides,
 });
 

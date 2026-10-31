@@ -55,6 +55,16 @@ const finishedUser: CurrentUser = {
 
 const bridge = {
   getCurrentUser: vi.fn(),
+  getState: vi.fn(async () => ({
+    accountId: 'student-a',
+    connections: [],
+    settings: {},
+    discovery: {},
+    preferences: {},
+  })),
+  onBackgroundSyncChange: vi.fn(() => () => undefined),
+  onConnectChange: vi.fn(() => () => undefined),
+  getConnectRun: vi.fn(async () => ({ status: 'idle', accountId: null })),
   signOut: vi.fn(async () => undefined),
 } as unknown as typeof window.scholar;
 
@@ -215,7 +225,6 @@ describe('dashboard shell', () => {
       '/dashboard/courses',
       '/dashboard/study',
       '/dashboard/planner',
-      '/dashboard/connections',
       '/dashboard/settings',
     ]) {
       await openRoute(path);
@@ -237,6 +246,22 @@ describe('dashboard shell', () => {
       expect(document.body.textContent).not.toContain(retired);
   });
 
+  it('keeps connection activity off the rest of the dashboard', async () => {
+    const previous = bridge.getConnectRun;
+    bridge.getConnectRun = vi.fn(async () => ({
+      accountId: 'student-a',
+      status: 'running' as const,
+      awaiting: null,
+      events: [],
+      results: [],
+    }));
+    await openRoute('/dashboard');
+    expect(
+      document.querySelector('[aria-label="Connection activity"]'),
+    ).toBeNull();
+    bridge.getConnectRun = previous;
+  });
+
   it('collapses and expands the sidebar from the header toggle', async () => {
     await openRoute('/dashboard');
     const sidebar = document.querySelector('[data-slot="sidebar"]');
@@ -249,5 +274,50 @@ describe('dashboard shell', () => {
       document.querySelector('[data-slot="sidebar-trigger"]')!,
     );
     expect(sidebar?.getAttribute('data-state')).toBe('expanded');
+  });
+});
+
+describe('account outage screen', () => {
+  it('states which service could not be reached', async () => {
+    vi.mocked(getCurrentUser).mockRejectedValue(
+      new Error(
+        "Error invoking remote method 'scholar:getCurrentUser': Error: ScholarOS could not reach its services at http://localhost:3000.",
+      ),
+    );
+    await openRoute('/dashboard');
+    expect(document.body.textContent).toContain(
+      'ScholarOS could not reach its services at http://localhost:3000.',
+    );
+    expect(document.body.textContent).not.toContain(
+      'Error invoking remote method',
+    );
+  });
+
+  it('recovers to the shell once the account service answers again', async () => {
+    let offline = true;
+    vi.mocked(getCurrentUser).mockImplementation(async () => {
+      if (offline)
+        throw new Error(
+          "Error invoking remote method 'scholar:getCurrentUser': Error: ScholarOS could not reach its services at http://localhost:3000.",
+        );
+      return finishedUser;
+    });
+    await openRoute('/dashboard');
+    expect(document.body.textContent).toContain('This screen could not load');
+    offline = false;
+    await dispatchPointerClick(
+      [...document.querySelectorAll('button')].find((button) =>
+        button.textContent?.includes('Try again'),
+      )!,
+    );
+    // The reload settles after several awaited passes, so wait on the screen
+    // rather than guessing a duration.
+    await act(async () => {
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        if (heading()?.textContent === 'Today') break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    });
+    expect(heading()?.textContent).toBe('Today');
   });
 });

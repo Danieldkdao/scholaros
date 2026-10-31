@@ -13,7 +13,7 @@ export type CapturedPageEvidence = {
 };
 
 const signInPathPattern =
-  /(?:login|signin|sign-in|oauth|sso|saml|authorize|callback)/i;
+  /(?:^|[/._-])(?:login|signin|sign-in|oauth|sso|saml|authorize|callback)(?:$|[/._-])/i;
 const signInHostPattern =
   /(?:accounts\.google|login\.microsoftonline|okta|auth0)\./i;
 const canvasHostPattern = /canvas|instructure|bcourses/;
@@ -21,8 +21,20 @@ const canvasHostPattern = /canvas|instructure|bcourses/;
 const refuseUnreadablePage =
   'Finish signing in, then open your course dashboard before connecting this site.';
 
-export const isSignInPage = (host: string, pathname: string) =>
-  signInPathPattern.test(pathname) || signInHostPattern.test(host);
+export const isSignInPage = (host: string, pathname: string) => {
+  let decoded = pathname;
+  for (let pass = 0; pass < 6; pass += 1) {
+    try {
+      const next = decodeURIComponent(decoded);
+      if (next === decoded)
+        return signInPathPattern.test(decoded) || signInHostPattern.test(host);
+      decoded = next;
+    } catch {
+      return true;
+    }
+  }
+  return true;
+};
 
 export const classifyCapturedPage = (
   evidence: CapturedPageEvidence,

@@ -1,3 +1,4 @@
+import { composeAgentNotes } from '../lib/agent-notes';
 import { createMissionNavigator } from './mission-navigation';
 import {
   protectMissionPage,
@@ -116,6 +117,16 @@ const runPreview = async (
     connections.find((item) => item.id === state.primaryLms) ?? connections[0];
   if (!connection)
     throw new Error('Connect and verify an academic resource first.');
+  const composedNotes = composeAgentNotes(
+    connection.host,
+    connection.notes,
+    state.settings.notes,
+  );
+  if (composedNotes.omitted)
+    addActivity({
+      type: 'checking',
+      detail: 'Some general notes were omitted because they were too long.',
+    });
   const hosts = connections.map((item) => item.host);
   const missionEntry = resolveMissionEntry(connection, hosts);
   if (missionEntry.kind === 'unsupported')
@@ -170,7 +181,7 @@ const runPreview = async (
           {
             kind: 'choose',
             goal,
-            notes: state.settings.notes,
+            notes: composedNotes.notes,
             pages,
             targets,
           },
@@ -193,7 +204,7 @@ const runPreview = async (
       {
         kind: 'extract',
         goal,
-        notes: state.settings.notes,
+        notes: composedNotes.notes,
         pages: mission.evidence,
       },
       signal,

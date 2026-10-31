@@ -58,7 +58,21 @@ describe('local session reads', () => {
     cookieMock.mockReturnValue('better-auth.session_token=token');
     fetchMock.mockRejectedValue(new Error('Network unavailable'));
 
-    await expect(getCurrentUser()).rejects.toThrow('Network unavailable');
+    // The original failure stays attached so the console keeps its detail.
+    await expect(getCurrentUser()).rejects.toThrow(
+      expect.objectContaining({
+        cause: new Error('Network unavailable'),
+      }),
+    );
+  });
+
+  it('names the service address that refused the account request', async () => {
+    cookieMock.mockReturnValue('unreachable-cookie');
+    fetchMock.mockRejectedValue(new Error('net::ERR_CONNECTION_REFUSED'));
+
+    await expect(getCurrentUser()).rejects.toThrow(
+      'ScholarOS could not reach its services at http://localhost:3000.',
+    );
   });
 
   it('stays locally signed out until a new credential appears', async () => {

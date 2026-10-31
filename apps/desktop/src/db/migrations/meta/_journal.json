@@ -22,6 +22,20 @@
       "when": 1793260743108,
       "tag": "0002_flawless_sauron",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1793332953816,
+      "tag": "0003_strong_paibok",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1793379934881,
+      "tag": "0004_mysterious_mach_iv",
+      "breakpoints": true
     }
   ]
 }

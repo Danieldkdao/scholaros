@@ -1,3 +1,4 @@
+import type { ConnectRunState } from './features/onboarding/services/connect-run';
 import { setupRenderer } from '@better-auth/electron/preload';
 import { contextBridge, ipcRenderer } from 'electron';
 import type {
@@ -9,6 +10,22 @@ import type {
 setupRenderer();
 const bridge: ScholarBridge = {
   getCurrentUser: () => ipcRenderer.invoke('scholar:getCurrentUser'),
+  resolveConnections: (prompt) =>
+    ipcRenderer.invoke('scholar:resolveConnections', prompt),
+  reviseConnectionProposal: (proposal) =>
+    ipcRenderer.invoke('scholar:reviseConnectionProposal', proposal),
+  approveConnectionProposal: (proposal) =>
+    ipcRenderer.invoke('scholar:approveConnectionProposal', proposal),
+  startConnectRun: (id) => ipcRenderer.invoke('scholar:startConnectRun', id),
+  getConnectRun: () => ipcRenderer.invoke('scholar:getConnectRun'),
+  resumeConnectRun: () => ipcRenderer.invoke('scholar:resumeConnectRun'),
+  cancelConnectRun: () => ipcRenderer.invoke('scholar:cancelConnectRun'),
+  onConnectChange: (listener) => {
+    const handler = (_event: unknown, state: ConnectRunState) =>
+      listener(state);
+    ipcRenderer.on('scholar:connectChange', handler);
+    return () => ipcRenderer.removeListener('scholar:connectChange', handler);
+  },
   getState: () => ipcRenderer.invoke('scholar:getState'),
   saveSettings: (changes) =>
     ipcRenderer.invoke('scholar:saveSettings', changes),
@@ -17,6 +34,9 @@ const bridge: ScholarBridge = {
   createWorkspace: (id) => ipcRenderer.invoke('scholar:createWorkspace', id),
   openResource: (id) => ipcRenderer.invoke('scholar:openResource', id),
   captureResource: () => ipcRenderer.invoke('scholar:captureResource'),
+  previewResource: () => ipcRenderer.invoke('scholar:previewResource'),
+  saveConnectionNotes: (id, notes) =>
+    ipcRenderer.invoke('scholar:saveConnectionNotes', { id, notes }),
   confirmResource: (id) => ipcRenderer.invoke('scholar:confirmResource', id),
   removeResource: (id) => ipcRenderer.invoke('scholar:removeResource', id),
   setPrimaryLms: (id) => ipcRenderer.invoke('scholar:setPrimaryLms', id),

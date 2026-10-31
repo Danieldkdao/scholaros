@@ -12,6 +12,8 @@ const connection: AcademicConnection = {
   kind: 'canvas',
   status: 'verified',
   verifiedAt: null,
+  notes: null,
+  favicon: null,
 };
 
 type PageState = {

@@ -23,6 +23,7 @@
     "build": "electron-forge package",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "electron-forge start -- --migrate-db",
+    "db:studio": "drizzle-kit studio",
     "test": "vitest run"
   },
   "peerDependencies": {
@@ -62,6 +63,7 @@
     "@scholaros/env": "workspace:*",
     "@scholaros/services": "workspace:*",
     "@scholaros/ui": "workspace:*",
+    "@tanstack/react-pacer": "^0.24.1",
     "@tanstack/react-router": "1.170.46",
     "better-auth": "1.7.14",
     "better-sqlite3": "^13.0.3",

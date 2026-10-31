@@ -7,9 +7,16 @@ const mocks = vi.hoisted(() => ({
     (event: unknown, input?: unknown) => Promise<unknown>
   >(),
   getCurrentUser: vi.fn(),
+  getCookie: vi.fn(() => 'initial-cookie'),
+  capturePage: vi.fn(async (_id, _page, check) => {
+    if (!check()) throw new Error('Session changed');
+  }),
   startPreview: vi.fn(),
   getPreview: vi.fn(),
   discoverAcademicContext: vi.fn(),
+  resolveConnections: vi.fn(),
+  connectWorkspace: vi.fn(),
+  workspace: vi.fn(),
   invalidate: vi.fn(),
   state: { settings: { consent: true, localSetupCompletedAt: null } },
 }));
@@ -24,7 +31,10 @@ vi.mock('electron', () => ({
   },
 }));
 vi.mock('../src/lib/auth/client', () => ({
-  authClient: { signOut: vi.fn(async () => undefined) },
+  authClient: {
+    signOut: vi.fn(async () => undefined),
+    getCookie: mocks.getCookie,
+  },
 }));
 vi.mock('../src/lib/auth/main', () => ({
   getCurrentUser: mocks.getCurrentUser,
@@ -66,10 +76,13 @@ vi.mock('../src/features/onboarding/services/browser-workspace', () => ({
   createWorkspace: vi.fn(),
   openAcademicPage: vi.fn(),
   waitForWorkspaceStops: vi.fn(),
+  getWorkspace: mocks.workspace,
 }));
 vi.mock('../src/features/onboarding/services/connections', () => ({
   captureResource: vi.fn(),
+  captureResourcePage: mocks.capturePage,
   confirmResource: vi.fn(),
+  previewResource: vi.fn(async () => null),
   setPrimaryLms: vi.fn(),
 }));
 vi.mock('../src/features/onboarding/services/preview', () => ({
@@ -82,6 +95,12 @@ vi.mock('../src/features/onboarding/services/preview', () => ({
 vi.mock('../src/features/onboarding/services/preferences', () => ({
   applyLaunchAtLogin: vi.fn(),
   getLaunchAtLoginState: vi.fn(),
+}));
+vi.mock('../src/features/onboarding/services/connect-workspace', () => ({
+  createConnectWorkspace: mocks.connectWorkspace,
+}));
+vi.mock('../src/features/onboarding/services/connection-resolver', () => ({
+  resolveConnectionCandidates: mocks.resolveConnections,
 }));
 vi.mock('../src/features/onboarding/services/discovery', () => ({
   discoverAcademicContext: mocks.discoverAcademicContext,
@@ -138,6 +157,7 @@ const readyState = () =>
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  mocks.getCookie.mockReturnValue('initial-cookie');
   mocks.state = { settings: { consent: true, localSetupCompletedAt: null } };
   if (!mocks.handlers.size) registerOnboardingIpc();
   await invoke('signOut');
@@ -307,4 +327,204 @@ describe('foreground browser work and background sync', () => {
       preferences: { backgroundSync: { status: 'paused' } },
     });
   });
+});
+
+it('requires consent and an authenticated account to resolve sites', async () => {
+  mocks.getCurrentUser.mockResolvedValue({ id: 'student-a' });
+  mocks.resolveConnections.mockResolvedValue([
+    { name: 'School', url: 'https://school.edu/', provider: 'unknown' },
+  ]);
+  const proposal = (await invoke('resolveConnections', 'My school')) as {
+    candidates: unknown[];
+  };
+  expect(proposal.candidates).toHaveLength(1);
+  mocks.state.settings.consent = false;
+  await expect(invoke('resolveConnections', 'My school')).rejects.toThrow();
+  expect(mocks.resolveConnections).toHaveBeenCalledOnce();
+});
+
+it('binds edited connection proposals and approvals to the active account', async () => {
+  mocks.getCurrentUser.mockResolvedValue({ id: 'student-a' });
+  mocks.resolveConnections.mockResolvedValue([
+    { name: 'School', url: 'https://school.edu/', provider: 'unknown' },
+  ]);
+  const proposed = (await invoke('resolveConnections', 'My school')) as {
+    id: string;
+    candidates: unknown[];
+  };
+  const revised = (await invoke('reviseConnectionProposal', {
+    id: proposed.id,
+    candidates: proposed.candidates,
+  })) as typeof proposed;
+  await expect(
+    invoke('approveConnectionProposal', { ...proposed }),
+  ).rejects.toThrow();
+  await expect(
+    invoke('approveConnectionProposal', { ...revised, candidates: [] }),
+  ).rejects.toThrow();
+  await expect(
+    invoke('approveConnectionProposal', revised),
+  ).resolves.toBeUndefined();
+  mocks.getCurrentUser.mockResolvedValue({ id: 'student-b' });
+  await expect(invoke('approveConnectionProposal', revised)).rejects.toThrow();
+});
+
+it('invalidates an old proposal when a new resolution fails', async () => {
+  mocks.getCurrentUser.mockResolvedValue({ id: 'student-a' });
+  mocks.resolveConnections
+    .mockResolvedValueOnce([
+      { name: 'School', url: 'https://school.edu/', provider: 'unknown' },
+    ])
+    .mockRejectedValueOnce(new Error('offline'));
+  const proposal = await invoke('resolveConnections', 'School');
+  await invoke('approveConnectionProposal', proposal);
+  await expect(invoke('resolveConnections', 'Another school')).rejects.toThrow(
+    'offline',
+  );
+  await expect(invoke('approveConnectionProposal', proposal)).rejects.toThrow();
+});
+
+it('discards an older resolution that finishes after a newer request', async () => {
+  mocks.getCurrentUser.mockResolvedValue({ id: 'student-a' });
+  let finishOld!: (value: unknown) => void;
+  mocks.resolveConnections
+    .mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishOld = resolve;
+        }),
+    )
+    .mockResolvedValueOnce([
+      { name: 'New', url: 'https://new.edu/', provider: 'unknown' },
+    ]);
+  const old = invoke('resolveConnections', 'Old');
+  await vi.waitFor(() => expect(finishOld).toBeTypeOf('function'));
+  const latest = await invoke('resolveConnections', 'New');
+  finishOld([{ name: 'Old', url: 'https://old.edu/', provider: 'unknown' }]);
+  await expect(old).rejects.toThrow();
+  await expect(
+    invoke('approveConnectionProposal', latest),
+  ).resolves.toBeUndefined();
+});
+
+it('starts only a main-process approved run and allows a human handoff', async () => {
+  mocks.getCurrentUser.mockResolvedValue({
+    id: 'student-a',
+    hasCompletedOnboarding: true,
+  });
+  mocks.state = readyState();
+  mocks.resolveConnections.mockResolvedValue([
+    { name: 'School', url: 'https://school.edu/', provider: 'unknown' },
+  ]);
+  mocks.workspace.mockResolvedValue({
+    browser: { context: {} },
+    cdpUrl: 'http://127.0.0.1:1',
+  });
+  const inspect = vi
+    .fn()
+    .mockResolvedValueOnce({ status: 'sign-in', host: 'school.edu' })
+    .mockResolvedValueOnce({ status: 'readable', host: 'school.edu' });
+  const capture = vi.fn(async () => undefined);
+  const close = vi.fn(async () => undefined);
+  mocks.connectWorkspace.mockResolvedValue({ inspect, capture, close });
+  const proposal = await invoke('resolveConnections', 'School');
+  await expect(
+    invoke('startConnectRun', (proposal as { id: string }).id),
+  ).rejects.toThrow();
+  await invoke('approveConnectionProposal', proposal);
+  await invoke('startConnectRun', (proposal as { id: string }).id);
+  await vi.waitFor(async () =>
+    expect(((await invoke('getConnectRun')) as { status: string }).status).toBe(
+      'awaiting-user',
+    ),
+  );
+  expect(capture).not.toHaveBeenCalled();
+  await invoke('resumeConnectRun');
+  await vi.waitFor(() => expect(capture).toHaveBeenCalledOnce());
+  await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+  await expect(
+    invoke('startConnectRun', (proposal as { id: string }).id),
+  ).rejects.toThrow();
+});
+
+it('cancels a paused connection run if the signed-in account changes', async () => {
+  mocks.getCurrentUser.mockResolvedValue({
+    id: 'student-a',
+    hasCompletedOnboarding: true,
+  });
+  mocks.state = readyState();
+  mocks.resolveConnections.mockResolvedValue([
+    { name: 'School', url: 'https://school.edu/', provider: 'unknown' },
+  ]);
+  mocks.workspace.mockResolvedValue({
+    browser: { context: {} },
+    cdpUrl: 'http://127.0.0.1:1',
+  });
+  const close = vi.fn(async () => undefined);
+  mocks.connectWorkspace.mockResolvedValue({
+    inspect: vi.fn(async () => ({ status: 'sign-in', host: 'school.edu' })),
+    capture: vi.fn(),
+    close,
+  });
+  const proposal = (await invoke('resolveConnections', 'School')) as {
+    id: string;
+  };
+  await invoke('approveConnectionProposal', proposal);
+  await invoke('startConnectRun', proposal.id);
+  await vi.waitFor(async () =>
+    expect(((await invoke('getConnectRun')) as { status: string }).status).toBe(
+      'awaiting-user',
+    ),
+  );
+  mocks.getCurrentUser.mockResolvedValue({
+    id: 'student-b',
+    hasCompletedOnboarding: true,
+  });
+  await invoke('getCurrentUser');
+  await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+  expect(((await invoke('getConnectRun')) as { status: string }).status).toBe(
+    'idle',
+  );
+});
+
+it('does not capture for the previous account when its cookie changes during a run', async () => {
+  const { authClient } = await import('../src/lib/auth/client');
+  mocks.getCurrentUser.mockResolvedValue({
+    id: 'student-a',
+    hasCompletedOnboarding: true,
+  });
+  mocks.state = readyState();
+  mocks.resolveConnections.mockResolvedValue([
+    { name: 'School', url: 'https://school.edu/', provider: 'unknown' },
+  ]);
+  mocks.workspace.mockResolvedValue({
+    browser: { context: {} },
+    cdpUrl: 'http://127.0.0.1:1',
+  });
+  let completeInspection!: (value: unknown) => void;
+  const capture = vi.fn(async () => undefined);
+  const close = vi.fn(async () => undefined);
+  mocks.connectWorkspace.mockImplementation(async (options) => ({
+    inspect: () =>
+      new Promise((resolve) => {
+        completeInspection = resolve;
+      }),
+    capture: async () => {
+      await (
+        options as { capture: (...args: unknown[]) => Promise<unknown> }
+      ).capture('student-a', {}, () => true, 'school.edu');
+      await capture();
+    },
+    close,
+  }));
+  const proposal = (await invoke('resolveConnections', 'School')) as {
+    id: string;
+  };
+  await invoke('approveConnectionProposal', proposal);
+  await invoke('startConnectRun', proposal.id);
+  await vi.waitFor(() => expect(completeInspection).toBeTypeOf('function'));
+  vi.mocked(authClient.getCookie).mockReturnValue('different-cookie');
+  completeInspection({ status: 'readable', host: 'school.edu' });
+  await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+  expect(capture).not.toHaveBeenCalled();
 });

@@ -1,3 +1,5 @@
+import { isInferenceConfigured } from '@scholaros/services/ai/models/inference';
+import { resolveConnectionRequests } from '@scholaros/services/ai/connection-resolver';
 import { classifyCourseTargets } from '@scholaros/services/ai/course-discovery';
 import {
   chooseAcademicTarget,
@@ -5,6 +7,7 @@ import {
 } from '@scholaros/services/ai/academic';
 import {
   agentRequestSchema,
+  connectionResolveRequestSchema,
   type RequestKind,
 } from '@scholaros/services/ai/schemas';
 import { getCurrentUser } from '@/lib/auth/helpers';
@@ -64,6 +67,7 @@ export const POST = async (request: Request) => {
     since: budget.since,
     count: budget.count + 1,
   });
+  let requestKind = 'unrecognized';
   try {
     const text = await readBoundedText(request, requestBodyLimit);
     if (text === null)
@@ -80,6 +84,26 @@ export const POST = async (request: Request) => {
         { status: 400 },
       );
     }
+    const resolution = connectionResolveRequestSchema.safeParse(body);
+    if (resolution.success) {
+      requestKind = 'resolve';
+      if (!isInferenceConfigured())
+        return Response.json(
+          { error: 'The connection assistant is unavailable.' },
+          { status: 503 },
+        );
+      const signal = AbortSignal.any([
+        request.signal,
+        AbortSignal.timeout(25_000),
+      ]);
+      const result = await resolveConnectionRequests(
+        resolution.data.prompt,
+        signal,
+      );
+      return Response.json(result, {
+        headers: { 'Cache-Control': 'no-store' },
+      });
+    }
     const parsed = agentRequestSchema.safeParse(body);
     if (!parsed.success)
       return Response.json(
@@ -91,20 +115,10 @@ export const POST = async (request: Request) => {
       AbortSignal.timeout(25_000),
     ]);
     const kind: RequestKind = parsed.data.kind;
-    if (kind === 'choose' && !serverEnv.TYPESAFE_API_KEY)
+    requestKind = kind;
+    if (!isInferenceConfigured())
       return Response.json(
-        {
-          error:
-            'The AI preview needs a TypeSafe connection; you can skip this step for now.',
-        },
-        { status: 503 },
-      );
-    if (kind !== 'choose' && !serverEnv.BASETEN_API_KEY)
-      return Response.json(
-        {
-          error:
-            'The AI preview needs a Meta connection; you can skip this step for now.',
-        },
+        { error: 'The AI assistant is unavailable.' },
         { status: 503 },
       );
     const result =
@@ -114,9 +128,12 @@ export const POST = async (request: Request) => {
           ? await classifyCourseTargets(parsed.data, signal)
           : await extractAcademicEvidence(parsed.data, signal);
     return Response.json(result, { headers: { 'Cache-Control': 'no-store' } });
-  } catch {
+  } catch (error) {
+    // The provider's own failure text stays out of the response, so it has to
+    // reach the server log or nothing is diagnosable.
+    console.error('[api/agent] request failed', { kind: requestKind, error });
     return Response.json(
-      { error: 'The AI preview could not finish; retry or skip this step.' },
+      { error: 'The AI request could not finish. Try again.' },
       { status: 502 },
     );
   }

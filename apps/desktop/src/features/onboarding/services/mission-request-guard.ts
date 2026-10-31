@@ -20,6 +20,7 @@ export type BlockedRequest = {
   host: string;
   resourceType: string;
   signInWall: boolean;
+  mainFrame?: boolean;
 };
 
 const passiveResourceTypes = ['Script', 'Stylesheet', 'Image', 'Font', 'Media'];
@@ -179,6 +180,7 @@ export const protectMissionPage = async (
         void handleMissionRequest(send, hosts, message.params, (blocked) => {
           onBlocked?.({
             ...blocked,
+            mainFrame: message.params.frameId === mainFrameId,
             signInWall:
               blocked.signInWall && message.params.frameId === mainFrameId,
           });

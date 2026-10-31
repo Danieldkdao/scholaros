@@ -1,4 +1,10 @@
 import { academicTasks } from './academic-tasks';
+import { createConnectRuntime } from './connect-runtime';
+import { createConnectWorkspace } from './connect-workspace';
+import { acquireConnectOwnership } from './connect-ownership';
+import { protectMissionPage } from './mission-request-guard';
+import { createConnectionApprovalStore } from './connection-approval';
+import { resolveConnectionCandidates } from './connection-resolver';
 import { app, BrowserWindow, ipcMain } from 'electron';
 import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
@@ -29,8 +35,16 @@ import {
   createWorkspace,
   openAcademicPage,
   waitForWorkspaceStops,
+  getWorkspace,
 } from './browser-workspace';
-import { captureResource, confirmResource, setPrimaryLms } from './connections';
+import {
+  captureResource,
+  captureResourcePage,
+  confirmResource,
+  previewResource,
+  saveConnectionNotes,
+  setPrimaryLms,
+} from './connections';
 import {
   cancelPreview,
   getPreview,
@@ -48,6 +62,8 @@ import type { LaunchAtLoginPreference, OnboardingState } from '../types';
 
 const idSchema = z.string().min(1).max(300);
 const sessionGuard = createSessionGuard();
+const connectionApprovals = createConnectionApprovalStore();
+let resolutionEpoch = 0;
 let broadcastingPreview = false;
 let boundAccountId: string | null = null;
 let boundOnboardingComplete = false;
@@ -145,6 +161,62 @@ const withBrowserWorkStopped = async <TResult>(
   }
 };
 
+let connectIsCurrent: () => boolean = () => false;
+const connectRuntime = createConnectRuntime({
+  approvals: connectionApprovals,
+  noteForHost: (userId, host) =>
+    getOnboardingState(userId).connections.find(
+      (connection) => connection.host === host,
+    )?.notes ?? null,
+  acquire: async (userId) => {
+    const release = backgroundSync.suspend();
+    try {
+      await cancelBrowserWork();
+      if (!connectIsCurrent())
+        throw new Error('Your session changed; sign in again.');
+      return await acquireConnectOwnership(
+        userId,
+        academicTasks,
+        () => release,
+      );
+    } catch (error) {
+      release();
+      throw error;
+    }
+  },
+  browser: async (userId, sites) => {
+    const workspace = await getWorkspace(userId, connectIsCurrent);
+    if (!connectIsCurrent())
+      throw new Error('Your session changed; sign in again.');
+    return createConnectWorkspace({
+      context: workspace.browser.context,
+      cdpUrl: workspace.cdpUrl,
+      accountId: userId,
+      sites,
+      protect: protectMissionPage,
+      terminateWorkspace: closeWorkspace,
+      capture: (id, page, check, host, signal) =>
+        captureResourcePage(
+          id,
+          page,
+          () => connectIsCurrent() && check(),
+          host,
+          signal,
+        ),
+    });
+  },
+});
+
+const bindAccount = (accountId: string | null) => {
+  if (boundAccountId && boundAccountId !== accountId) {
+    resolutionEpoch += 1;
+    connectionApprovals.reset();
+    connectRuntime.reset();
+    academicTasks.cancel();
+  }
+  boundAccountId = accountId;
+};
+
 const stopBrowserWork = () => withBrowserWorkStopped(async () => undefined);
 
 const registerQuitCleanup = () => {
@@ -155,9 +227,12 @@ const registerQuitCleanup = () => {
     quitting = true;
     void (async () => {
       sessionGuard.invalidate();
+      resolutionEpoch += 1;
+      connectionApprovals.reset();
       backgroundSyncAccountId = null;
       backgroundSync.stop();
       resetPreview();
+      connectRuntime.reset();
       academicTasks.cancel();
       await closeWorkspace();
       await waitForWorkspaceStops();
@@ -183,13 +258,18 @@ export const registerOnboardingIpc = () => {
         if (!isCurrent())
           throw new Error('Your session changed; sign in again.');
         if (!user) throw new Error('Please sign in to ScholarOS.');
-        boundAccountId = user.id;
+        bindAccount(user.id);
         boundOnboardingComplete = user.hasCompletedOnboarding === true;
         return action({ userId: user.id, isCurrent }, input);
       });
     });
   };
   if (!broadcastingPreview) {
+    connectRuntime.subscribe((state) => {
+      for (const window of BrowserWindow.getAllWindows())
+        if (!window.isDestroyed())
+          window.webContents.send('scholar:connectChange', state);
+    });
     broadcastingPreview = true;
     subscribePreview((state) => {
       for (const window of BrowserWindow.getAllWindows())
@@ -204,7 +284,7 @@ export const registerOnboardingIpc = () => {
         const user = await getCurrentUser();
         if (!isCurrent())
           throw new Error('Your session changed; sign in again.');
-        boundAccountId = user?.id ?? null;
+        bindAccount(user?.id ?? null);
         boundOnboardingComplete = user?.hasCompletedOnboarding === true;
         return user;
       }),
@@ -216,12 +296,15 @@ export const registerOnboardingIpc = () => {
       boundAccountId = null;
       boundOnboardingComplete = false;
       markLocalSignOut();
+      resolutionEpoch += 1;
+      connectionApprovals.reset();
       await tearDownSession({
         invalidateSession: sessionGuard.invalidate,
         stopMissions: () => {
           backgroundSyncAccountId = null;
           backgroundSync.stop();
           resetPreview();
+          connectRuntime.reset();
           academicTasks.cancel();
         },
         // The electron client clears its stored cookie before the request.
@@ -251,6 +334,8 @@ export const registerOnboardingIpc = () => {
         ? applyLaunchAtLogin(changes.launchAtLogin)
         : undefined;
     if (changes.consent === false) {
+      resolutionEpoch += 1;
+      connectionApprovals.reset();
       backgroundSync.stop();
       await cancelBrowserWork();
     } else if (
@@ -278,6 +363,65 @@ export const registerOnboardingIpc = () => {
     });
     return prepareState(getOnboardingState(userId), undefined, isCurrent);
   });
+  handle('resolveConnections', async ({ userId, isCurrent }, input) => {
+    requireConsent(userId);
+    const prompt = z.string().trim().min(1).max(500).parse(input);
+    connectionApprovals.reset();
+    const generation = ++resolutionEpoch;
+    const candidates = await resolveConnectionCandidates(
+      prompt,
+      AbortSignal.timeout(25_000),
+    );
+    if (!isCurrent() || generation !== resolutionEpoch)
+      throw new Error('Your connection request has changed; try again.');
+    requireConsent(userId);
+    return connectionApprovals.propose(userId, candidates);
+  });
+  handle('reviseConnectionProposal', ({ userId }, input) => {
+    requireConsent(userId);
+    const value = z
+      .object({
+        id: idSchema,
+        candidates: z.unknown(),
+      })
+      .parse(input);
+    return connectionApprovals.revise(userId, value.id, value.candidates);
+  });
+  handle('approveConnectionProposal', ({ userId }, input) => {
+    requireConsent(userId);
+    const value = z
+      .object({
+        id: idSchema,
+        candidates: z.unknown(),
+      })
+      .parse(input);
+    connectionApprovals.approve(userId, value.id, value.candidates);
+  });
+  handle('startConnectRun', async ({ userId, isCurrent }, input) => {
+    requireConsent(userId);
+    if (connectRuntime.isBusy())
+      throw new Error('A connection run is already active.');
+    const proposalId = idSchema.parse(input);
+    const cookie = authClient.getCookie();
+    connectIsCurrent = () => {
+      try {
+        return (
+          isCurrent() &&
+          boundAccountId === userId &&
+          cookie === authClient.getCookie()
+        );
+      } catch {
+        return false;
+      }
+    };
+    await connectRuntime.start(userId, proposalId);
+  });
+  handle('getConnectRun', ({ userId }) => connectRuntime.getState(userId));
+  handle('resumeConnectRun', ({ userId }) => {
+    requireConsent(userId);
+    connectRuntime.resume(userId);
+  });
+  handle('cancelConnectRun', ({ userId }) => connectRuntime.cancel(userId));
   handle('openResource', ({ userId, isCurrent }, input) => {
     requireConsent(userId);
     const resource = academicResources.find(
@@ -295,6 +439,23 @@ export const registerOnboardingIpc = () => {
       if (!isCurrent()) throw new Error('Your session changed; sign in again.');
       return captureResource(userId, isCurrent);
     });
+  });
+  // Read-only peek at the open tab so the button can name the site first. It
+  // never starts the study browser, so it stays outside the browser-work lock.
+  handle('previewResource', ({ userId, isCurrent }) => {
+    requireConsent(userId);
+    if (!isCurrent()) throw new Error('Your session changed; sign in again.');
+    return previewResource(userId);
+  });
+  handle('saveConnectionNotes', ({ userId, isCurrent }, input) => {
+    const data = z
+      .object({ id: idSchema, notes: z.string().max(500) })
+      .parse(input);
+    return prepareState(
+      saveConnectionNotes(userId, data.id, data.notes),
+      undefined,
+      isCurrent,
+    );
   });
   handle('confirmResource', ({ userId, isCurrent }, input) => {
     requireConsent(userId);

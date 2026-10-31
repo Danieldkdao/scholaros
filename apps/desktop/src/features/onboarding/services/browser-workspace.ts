@@ -42,13 +42,15 @@ const profileDirectory = (userId: string, executable: string) =>
 const wait = (milliseconds: number) =>
   new Promise((resolve) => setTimeout(resolve, milliseconds));
 const closeBoundMs = 1500;
-const pendingStops = new Set<Promise<void>>();
+const pendingStops = new Set<Promise<unknown>>();
 
+// A close that reports failure is not a close that finished: the browser can
+// still be alive holding the profile lock, so callers must stop what we own.
 const settledWithin = async (task: Promise<unknown>, milliseconds: number) => {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const settled = task.then(
     () => true,
-    () => true,
+    () => false,
   );
   const result = await Promise.race([
     settled,
@@ -60,16 +62,20 @@ const settledWithin = async (task: Promise<unknown>, milliseconds: number) => {
   return result;
 };
 
+const closeEvery = (tasks: readonly unknown[]) =>
+  Promise.allSettled(tasks).then((results) => {
+    const failed = results.find((result) => result.status === 'rejected');
+    if (failed && failed.status === 'rejected') throw failed.reason;
+  });
+
 const closeResources = (workspace: ActiveWorkspace) =>
-  Promise.allSettled([
-    workspace.stagehand.close(),
-    workspace.browser.close(),
-  ]).then(() => undefined);
+  closeEvery([workspace.stagehand.close(), workspace.browser.close()]);
 
 const stopWorkspace = (workspace: ActiveWorkspace) => {
   const task = closeResources(workspace);
   pendingStops.add(task);
-  void task.then(() => pendingStops.delete(task));
+  const forget = () => pendingStops.delete(task);
+  void task.then(forget, forget);
   return task;
 };
 
@@ -177,7 +183,7 @@ const launchWorkspace = async (
     active = workspace;
     return workspace;
   } catch (error) {
-    const closing = Promise.allSettled([stagehand?.close(), browser?.close()]);
+    const closing = closeEvery([stagehand?.close(), browser?.close()]);
     if (!(await settledWithin(closing, closeBoundMs)))
       await stopOwnedBrowserProcesses(directory, executable);
     if (!tracker.isCurrent(attempt))
@@ -343,4 +349,14 @@ export const getAcademicPage = async (
   if (!isAcademicUrl(url))
     throw new Error('Open a secure academic website in the study browser.');
   return page;
+};
+
+// Read-only look at the tab the student is on. Unlike getAcademicPage this never
+// starts the study browser, so previewing a connection cannot launch Chrome.
+export const peekAcademicPage = async (userId: string) => {
+  const workspace = active;
+  if (!workspace || workspace.userId !== userId) return null;
+  const page = await workspace.browser.context.activePage();
+  if (!page) return null;
+  return isAcademicUrl(await page.url()) ? page : null;
 };

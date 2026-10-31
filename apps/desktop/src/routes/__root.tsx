@@ -54,10 +54,19 @@ const RootPending = () => (
   </main>
 );
 
-const RootErrorComponent = ({ reset }: { reset: () => void }) => {
+const RootErrorComponent = ({ error: reason }: { error: unknown }) => {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The boundary's own reset re-renders the same failed match, so retrying has
+  // to reload the route and let the fresh match state retire this screen.
+  const retry = async () => {
+    try {
+      await router.invalidate();
+    } catch {
+      // An unsettled reload stays reported on the match, which this screen shows.
+    }
+  };
   const exit = async () => {
     setBusy(true);
     setError(null);
@@ -80,9 +89,13 @@ const RootErrorComponent = ({ reset }: { reset: () => void }) => {
     <main className="flex min-h-screen flex-col items-center justify-center gap-5 p-8 text-base">
       <CircleAlert className="size-8 text-destructive" />
       <h1 className="text-3xl font-semibold">This screen could not load</h1>
+      {/* The account layer already phrases its failures for students, and a bare
+          'could not load' hides the one detail that makes an outage fixable. */}
       <p className="max-w-md text-center text-muted-foreground">
-        ScholarOS could not confirm your account. Check your connection and try
-        again.
+        {errorMessage(
+          reason,
+          'ScholarOS could not confirm your account. Check your connection and try again.',
+        )}
       </p>
       {error && (
         <p role="alert" className="text-destructive">
@@ -90,7 +103,7 @@ const RootErrorComponent = ({ reset }: { reset: () => void }) => {
         </p>
       )}
       <div className="flex flex-wrap items-center justify-center gap-3">
-        <Button className="text-base" onClick={reset}>
+        <Button className="text-base" onClick={() => void retry()}>
           <RefreshCw className="size-5" />
           Try again
         </Button>

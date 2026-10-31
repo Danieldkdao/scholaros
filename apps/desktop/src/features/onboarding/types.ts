@@ -1,3 +1,5 @@
+import type { ConnectRunState } from './services/connect-run';
+import type { ConnectionCandidateSchema } from '@scholaros/services/ai/schemas';
 import type { OnboardingStep, PreviewCardKind, PreviewPrompt } from './schemas';
 
 export type { OnboardingStep, PreviewCardKind, PreviewPrompt };
@@ -18,6 +20,9 @@ export type BrowserInstallation = {
   icon: string | null;
 };
 export type ConnectionStatus = 'verified' | 'confirmed' | 'needs-sign-in';
+
+export type ConnectionNotesStatus = 'saved' | 'saving' | 'error';
+
 export type AcademicConnection = {
   id: string;
   name: string;
@@ -26,7 +31,14 @@ export type AcademicConnection = {
   kind: 'canvas' | 'classroom' | 'resource';
   status: ConnectionStatus;
   verifiedAt: string | null;
+  notes: string | null;
+  favicon: string | null;
 };
+// What the study browser is showing right now, before anything is stored.
+export type PreviewedConnection = Pick<
+  AcademicConnection,
+  'name' | 'url' | 'host' | 'kind' | 'status'
+>;
 export type LaunchAtLoginPreference = {
   requested: boolean;
   applied: boolean;
@@ -149,8 +161,22 @@ export type PreviewState = {
   cards: PreviewCard[];
   message: string | null;
 };
+export type ConnectionProposal = {
+  id: string;
+  candidates: ConnectionCandidateSchema[];
+};
 export type ScholarBridge = {
   getCurrentUser: () => Promise<CurrentUser | null>;
+  resolveConnections: (prompt: string) => Promise<ConnectionProposal>;
+  reviseConnectionProposal: (
+    proposal: ConnectionProposal,
+  ) => Promise<ConnectionProposal>;
+  approveConnectionProposal: (proposal: ConnectionProposal) => Promise<void>;
+  startConnectRun: (proposalId: string) => Promise<void>;
+  getConnectRun: () => Promise<ConnectRunState>;
+  resumeConnectRun: () => Promise<void>;
+  cancelConnectRun: () => Promise<void>;
+  onConnectChange: (listener: (state: ConnectRunState) => void) => () => void;
   getState: () => Promise<OnboardingState>;
   saveSettings: (
     changes: Partial<
@@ -165,6 +191,11 @@ export type ScholarBridge = {
   createWorkspace: (installationId: string) => Promise<OnboardingState>;
   openResource: (resourceId: string) => Promise<void>;
   captureResource: () => Promise<AcademicConnection>;
+  previewResource: () => Promise<PreviewedConnection | null>;
+  saveConnectionNotes: (
+    connectionId: string,
+    notes: string,
+  ) => Promise<OnboardingState>;
   confirmResource: (connectionId: string) => Promise<OnboardingState>;
   removeResource: (connectionId: string) => Promise<OnboardingState>;
   setPrimaryLms: (connectionId: string) => Promise<OnboardingState>;

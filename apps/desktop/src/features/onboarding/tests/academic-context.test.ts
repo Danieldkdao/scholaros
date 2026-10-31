@@ -91,6 +91,21 @@ describe('durable academic context', () => {
     });
   });
 
+  it('reports when general notes were omitted from a discovery request', () => {
+    insertConnection(studentA, 'connection-a');
+    const result = applyAcademicDiscovery(
+      studentA,
+      [discovered('connection-a')],
+      { notesOmitted: true },
+    );
+    expect(result.discovery.message).toContain(
+      'Some general notes were omitted',
+    );
+    expect(getOnboardingState(studentA).discovery.message).toContain(
+      'Some general notes were omitted',
+    );
+  });
+
   it('persists observed course and resource entry points', () => {
     insertConnection(studentA, 'connection-a');
     applyAcademicDiscovery(studentA, [discovered('connection-a')]);
@@ -254,6 +269,8 @@ describe('durable academic context', () => {
         kind: 'canvas',
         status: 'verified',
         verifiedAt: null,
+        notes: null,
+        favicon: null,
       },
       {
         url: 'https://canvas.school.edu/courses',

@@ -1,12 +1,17 @@
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { classifyCourseTargets } from '../course-discovery';
 
-vi.mock('@scholaros/env/server', () => ({
-  serverEnv: {
-    BASETEN_API_KEY: 'test-key',
-    META_MODEL: 'meta-models/muse-spark-open-1026',
-  },
+const env = vi.hoisted(() => ({
+  INFERENCE_PROVIDER: 'baseten' as 'baseten' | 'meta',
+  BASETEN_API_KEY: 'test-baseten-key',
+  META_API_KEY: 'test-meta-key',
+  BASETEN_MODEL: 'test-baseten-model',
+  META_MODEL: 'muse-spark-1.3-contributor',
 }));
+vi.mock('@scholaros/env/server', () => ({ serverEnv: env }));
+beforeEach(() => {
+  env.INFERENCE_PROVIDER = 'baseten';
+});
 const input = {
   kind: 'discover' as const,
   goal: 'Find current courses',
@@ -44,14 +49,32 @@ const response = (courseTargetIds: string[]) =>
     ],
     usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 },
   });
-it('classifies observed course links through Meta structured output', async () => {
-  const fetchMock = vi.fn(async () => response(['1']));
-  vi.stubGlobal('fetch', fetchMock);
-  expect(
-    await classifyCourseTargets(input, new AbortController().signal),
-  ).toEqual({ courseTargetIds: ['1'] });
-  expect(fetchMock).toHaveBeenCalledOnce();
-});
+it.each(['baseten', 'meta'] as const)(
+  'classifies observed course links through %s',
+  async (provider) => {
+    env.INFERENCE_PROVIDER = provider;
+    const fetchMock = vi.fn(async (_url: string, _init: RequestInit) =>
+      response(['1']),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    expect(
+      await classifyCourseTargets(input, new AbortController().signal),
+    ).toEqual({ courseTargetIds: ['1'] });
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [url, options] = fetchMock.mock.calls[0]!;
+    expect(url).toBe(
+      provider === 'meta'
+        ? 'https://api.meta.ai/v1/chat/completions'
+        : 'https://inference.baseten.co/v1/chat/completions',
+    );
+    expect(new Headers(options.headers).get('authorization')).toBe(
+      provider === 'meta' ? 'Bearer test-meta-key' : 'Bearer test-baseten-key',
+    );
+    expect(JSON.parse(String(options.body)).model).toBe(
+      provider === 'meta' ? env.META_MODEL : env.BASETEN_MODEL,
+    );
+  },
+);
 it('rejects an invented candidate id', async () => {
   vi.stubGlobal(
     'fetch',

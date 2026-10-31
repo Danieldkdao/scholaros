@@ -308,6 +308,38 @@ describe('browser workspace ownership', () => {
     }
   });
 
+  it('stops the ScholarOS-owned browser when its session close reports failure', async () => {
+    await createWorkspace(accounts.first, 'chrome-install');
+    const profileDirectory = browserMocks.launch.mock.calls[0]![0]
+      .userDataDir as string;
+    browserMocks.closeStagehand.mockRejectedValueOnce(
+      new Error('CDP connection closed'),
+    );
+
+    await closeWorkspace();
+
+    expect(browserMocks.stopOwnedProcesses).toHaveBeenCalledWith(
+      profileDirectory,
+      installations.get('chrome-install')!.executable,
+    );
+  });
+
+  it('stops the ScholarOS-owned browser when its browser close reports failure', async () => {
+    await createWorkspace(accounts.first, 'chrome-install');
+    const profileDirectory = browserMocks.launch.mock.calls[0]![0]
+      .userDataDir as string;
+    browserMocks.closeBrowser.mockRejectedValueOnce(
+      new Error('Browser already disconnected'),
+    );
+
+    await closeWorkspace();
+
+    expect(browserMocks.stopOwnedProcesses).toHaveBeenCalledWith(
+      profileDirectory,
+      installations.get('chrome-install')!.executable,
+    );
+  });
+
   it('does not stop browser processes when close answers in time', async () => {
     await createWorkspace(accounts.first, 'chrome-install');
     await closeWorkspace();

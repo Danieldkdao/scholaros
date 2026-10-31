@@ -15,6 +15,20 @@ export const useOnboardingState = () => {
     setDisplayed(next);
   }, []);
 
+  const updateConnectionNotes = useCallback((id: string, notes: string) => {
+    if (!accepting.current) return;
+    setDisplayed((current) =>
+      current
+        ? {
+            ...current,
+            connections: current.connections.map((connection) =>
+              connection.id === id ? { ...connection, notes } : connection,
+            ),
+          }
+        : current,
+    );
+  }, []);
+
   const load = useCallback(async () => {
     accepting.current = true;
     setLoading(true);
@@ -72,6 +86,7 @@ export const useOnboardingState = () => {
   return {
     state: displayed,
     setState,
+    updateConnectionNotes,
     loading,
     loadError,
     reload: load,
