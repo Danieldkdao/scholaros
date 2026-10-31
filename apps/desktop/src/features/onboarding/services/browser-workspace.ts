@@ -344,3 +344,13 @@ export const getAcademicPage = async (
     throw new Error('Open a secure academic website in the study browser.');
   return page;
 };
+
+// Read-only look at the tab the student is on. Unlike getAcademicPage this never
+// starts the study browser, so previewing a connection cannot launch Chrome.
+export const peekAcademicPage = async (userId: string) => {
+  const workspace = active;
+  if (!workspace || workspace.userId !== userId) return null;
+  const page = await workspace.browser.context.activePage();
+  if (!page) return null;
+  return isAcademicUrl(await page.url()) ? page : null;
+};
