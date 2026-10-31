@@ -1,5 +1,6 @@
 import type { Page } from '@browserbasehq/stagehand';
 import type { AcademicConnection } from '../types';
+import { readPageEvidence } from './page-evidence';
 
 type PageReadiness = {
   ready: boolean;
@@ -108,16 +109,26 @@ const boundedProbe = (
       return;
     }
     signal.addEventListener('abort', cancel, { once: true });
-    void page.evaluate(probeReadiness, kind).then(
-      (result) => {
-        cleanup();
-        resolve(result);
-      },
-      (error) => {
-        cleanup();
-        reject(error);
-      },
-    );
+    void page
+      .evaluate(probeReadiness, kind)
+      .then(async (result) =>
+        result.signIn
+          ? {
+              ...result,
+              signIn: (await readPageEvidence(page)).hasPasswordField,
+            }
+          : result,
+      )
+      .then(
+        (result) => {
+          cleanup();
+          resolve(result);
+        },
+        (error) => {
+          cleanup();
+          reject(error);
+        },
+      );
   });
 
 export const waitForMissionPage = async (

@@ -1,3 +1,4 @@
+import { errorMessage } from '../../../lib/error-message';
 import type { AcademicDiscovery, DiscoveryStatus } from '../types';
 
 export type ConnectionOutcome =
@@ -40,6 +41,12 @@ export const outcomeFromExploration = (
 
 const readableOutcomes: ConnectionOutcome[] = ['courses', 'empty'];
 const signInOutcomes: ConnectionOutcome[] = ['needs-sign-in'];
+
+// Both outcome vocabularies share these two words, so one reader serves them.
+export const outcomeFromError = (error: unknown): 'needs-sign-in' | 'blocked' =>
+  /sign in|password/i.test(errorMessage(error, ''))
+    ? 'needs-sign-in'
+    : 'blocked';
 
 // A finished attempt is not the same as an up-to-date course map: freshness and
 // success follow only the resources that were actually read.
@@ -142,7 +149,7 @@ export const syncFailureMessage = (
     case 'failed':
       return (
         discovery.message?.trim() ||
-        'Background sync could not read your course resources.'
+        'Background sync could not read your selected course sources.'
       );
   }
 };

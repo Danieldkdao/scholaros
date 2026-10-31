@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   order: [] as string[],
   page: {
     goto: vi.fn(),
+    waitForLoadState: vi.fn(async () => undefined),
     close: vi.fn(),
     url: vi.fn(async () => 'https://school.example/'),
   },
@@ -33,6 +34,9 @@ vi.mock('../services/browser-workspace', () => ({
 }));
 vi.mock('../services/mission-request-guard', () => ({
   protectMissionPage: async () => async () => undefined,
+}));
+vi.mock('../services/background-page', () => ({
+  openBackgroundPage: async () => mocks.page,
 }));
 vi.mock('../services/page-content', () => ({
   readPage: mocks.read,

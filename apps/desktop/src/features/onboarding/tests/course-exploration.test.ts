@@ -19,6 +19,7 @@ const connection = (
   verifiedAt: null,
   notes: null,
   favicon: null,
+  isCourseResource: false,
   ...overrides,
 });
 
@@ -68,6 +69,46 @@ const sequenceRead = (pages: Array<typeof homePage>) => {
 };
 
 describe('bounded course exploration', () => {
+  it('opens the course menu after a dashboard redirect restores the sign-in fragment', async () => {
+    const url = `https://${schoology}/home/course-dashboard#identifier=`;
+    let opened = false;
+    const setup = fixtures({
+      read: vi.fn(async () =>
+        opened
+          ? { ...listPage, url }
+          : {
+              url,
+              title: 'Home',
+              links: [link('Course dashboard', '/home/course-dashboard')],
+            },
+      ),
+      disclose: vi.fn(async () => {
+        opened = true;
+        return 'opened' as const;
+      }),
+    });
+    const result = await exploreForCourses(setup);
+    expect(result.status).toBe('courses');
+    expect(setup.navigate).toHaveBeenCalledExactlyOnceWith(
+      `https://${schoology}/home/course-dashboard`,
+    );
+    expect(setup.disclose).toHaveBeenCalledOnce();
+  });
+  it('can navigate from a hash route to its fragment-free course dashboard', async () => {
+    const dashboard = { ...listPage, url: `https://${schoology}/app` };
+    const setup = fixtures({
+      read: sequenceRead([
+        {
+          url: `${dashboard.url}#/lesson/1`,
+          title: 'Lesson',
+          links: [link('Courses', '/app')],
+        },
+        dashboard,
+      ]),
+    });
+    expect((await exploreForCourses(setup)).status).toBe('courses');
+    expect(setup.navigate).toHaveBeenCalledExactlyOnceWith(dashboard.url);
+  });
   it('stops without navigating when the connected page already lists courses', async () => {
     const result = await exploreForCourses(
       fixtures({
@@ -322,4 +363,28 @@ it('does not mistake an empty catalog search for no enrolled courses', async () 
     (await exploreForCourses(fixtures({ read: vi.fn(async () => observed) })))
       .status,
   ).toBe('inconclusive');
+});
+
+it('retains every observed course and follows list pagination in a deep refresh', async () => {
+  const first = {
+    ...listPage,
+    links: [
+      ...Array.from({ length: 35 }, (_, index) =>
+        link(`Biology ${100 + index}`, `/course/${index}`),
+      ),
+      link('Next', '/courses?page=2'),
+    ],
+  };
+  const second = {
+    ...listPage,
+    url: `https://${schoology}/courses?page=2`,
+    links: [link('History 200', '/course/99'), link('Previous', '/courses')],
+  };
+  const result = await exploreForCourses(
+    fixtures({ read: sequenceRead([first, second]), maxPages: Infinity }),
+  );
+  expect(
+    result.entries.filter((entry) => entry.role === 'course'),
+  ).toHaveLength(36);
+  expect(result.visited).toHaveLength(2);
 });

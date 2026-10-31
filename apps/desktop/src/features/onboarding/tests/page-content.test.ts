@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from 'vitest';
+import { configureBrowserPolicy } from '../lib/browser-policy';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { readPage } from '../services/page-content';
 
 const snapshotFor = (url: string) => ({
@@ -78,3 +79,5 @@ it('rejects a rate-limit page before it can be treated as academic evidence', as
   });
   await expect(readPage(page as never)).rejects.toThrow('slow down');
 });
+
+beforeEach(() => configureBrowserPolicy(['logout']));
