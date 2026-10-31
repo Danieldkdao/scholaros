@@ -98,3 +98,32 @@ it('reloads persisted outcomes after a refresh is cancelled or fails', async () 
   expect(catalog.snapshot?.sources[0].connectionId).toBe('cancelled');
   expect(catalog.refreshing).toBe(false);
 });
+
+it('reattaches to a running refresh after navigation without starting another job', async () => {
+  let complete!: (value: CoursesSnapshot) => void;
+  vi.mocked(window.scholar.refreshCourses).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        complete = resolve;
+      }),
+  );
+  await act(async () =>
+    root.render(createElement(catalogProbe, { id: 'current' })),
+  );
+  let running!: Promise<void>;
+  await act(async () => {
+    running = catalog.refresh();
+  });
+  await act(async () => root.render(null));
+  await act(async () =>
+    root.render(createElement(catalogProbe, { id: 'current' })),
+  );
+  expect(catalog.refreshing).toBe(true);
+  expect(window.scholar.refreshCourses).toHaveBeenCalledTimes(1);
+  await act(async () => {
+    complete(snapshot('finished'));
+    await running;
+  });
+  expect(catalog.refreshing).toBe(false);
+  expect(catalog.snapshot?.sources[0].connectionId).toBe('finished');
+});

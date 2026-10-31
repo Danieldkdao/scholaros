@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { errorMessage } from '../../../lib/error-message';
 import type { CoursesSnapshot } from '../types';
 
+const pendingRefreshes = new Map<string, Promise<CoursesSnapshot>>();
+
 export const useCourses = (accountId: string | null) => {
   const [snapshot, setSnapshot] = useState<CoursesSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
@@ -30,17 +32,6 @@ export const useCourses = (accountId: string | null) => {
     }
   }, [accountId]);
 
-  useEffect(() => {
-    setSnapshot(null);
-    setRefreshing(false);
-    setRefreshError(null);
-    void load();
-    return () => {
-      scope.current += 1;
-      request.current += 1;
-    };
-  }, [load]);
-
   // A scheduled refresh finishes without this page asking, so its completion
   // event is what brings the saved catalog back up to date.
   useEffect(() => {
@@ -61,7 +52,14 @@ export const useCourses = (accountId: string | null) => {
     setRefreshing(true);
     setRefreshError(null);
     try {
-      const refreshed = await window.scholar.refreshCourses();
+      let pending = pendingRefreshes.get(accountId);
+      if (!pending) {
+        pending = window.scholar.refreshCourses().finally(() => {
+          pendingRefreshes.delete(accountId);
+        });
+        pendingRefreshes.set(accountId, pending);
+      }
+      const refreshed = await pending;
       if (attempt === request.current) setSnapshot(refreshed);
     } catch (cause) {
       if (generation === scope.current) {
@@ -72,6 +70,18 @@ export const useCourses = (accountId: string | null) => {
       if (generation === scope.current) setRefreshing(false);
     }
   }, [accountId, load]);
+
+  useEffect(() => {
+    setSnapshot(null);
+    setRefreshing(false);
+    setRefreshError(null);
+    if (accountId && pendingRefreshes.has(accountId)) void refresh();
+    else void load();
+    return () => {
+      scope.current += 1;
+      request.current += 1;
+    };
+  }, [accountId, load, refresh]);
 
   const cancel = useCallback(async () => {
     // Stopping is best effort; the run reports its own outcome.
