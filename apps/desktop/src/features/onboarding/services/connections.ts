@@ -40,13 +40,20 @@ export const captureResourcePage = async (
   page: Page,
   isCurrent: () => boolean,
   expectedHost?: string,
+  signal?: AbortSignal,
 ): Promise<AcademicConnection> => {
+  signal?.throwIfAborted();
   const evidence = await readPageEvidence(page);
   if (!isCurrent()) throw new Error('Your session changed; sign in again.');
   const captured = classifyCapturedPage(evidence);
   if (expectedHost && captured.host !== expectedHost)
     throw new Error('This page left the approved site.');
-  const favicon = await fetchSiteIcon(captured.host, evidence.icon ?? null);
+  const favicon = await fetchSiteIcon(
+    captured.host,
+    evidence.icon ?? null,
+    signal,
+  );
+  signal?.throwIfAborted();
   if (!isCurrent()) throw new Error('Your session changed; sign in again.');
   // Read editable fields after the network request so recapture cannot replace
   // notes saved while the icon was loading.

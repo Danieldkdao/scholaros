@@ -20,6 +20,9 @@ export type BrowserInstallation = {
   icon: string | null;
 };
 export type ConnectionStatus = 'verified' | 'confirmed' | 'needs-sign-in';
+
+export type ConnectionNotesStatus = 'saved' | 'saving' | 'error';
+
 export type AcademicConnection = {
   id: string;
   name: string;

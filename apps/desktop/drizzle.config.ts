@@ -2,9 +2,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { defineConfig } from 'drizzle-kit';
 
-// Studio has to reach the same file the app opens, but a drizzle-kit config runs
-// in plain Node, so it cannot use Electron's app.getPath('userData'). The folder
-// names here mirror productName in package.json and src/db/index.ts.
+// Studio runs outside Electron, so derive the database path using the same
+// platform locations and product name as src/db/index.ts.
 const localDatabasePath = () => {
   const home = os.homedir();
   const applicationData =

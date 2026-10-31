@@ -127,6 +127,7 @@ it('stores the site icon declared by the captured page', async () => {
   expect(iconMock).toHaveBeenCalledWith(
     'icons.edu',
     'https://icons.edu/brand.png',
+    undefined,
   );
   expect(result.favicon).toBe('data:image/png;base64,icon');
   const stored = db
@@ -228,4 +229,39 @@ it('does not overwrite notes edited while a recapture is fetching the icon', asy
       .where(eq(AcademicConnectionTable.id, 'a'))
       .get()?.notes,
   ).toBe('Latest note');
+});
+
+it('passes cancellation to icon loading and does not save an aborted capture', async () => {
+  const { captureResourcePage } = await import('../services/connections');
+  const controller = new AbortController();
+  iconMock.mockImplementationOnce(async () => {
+    controller.abort();
+    return null;
+  });
+  const page = openPage({
+    host: 'cancelled.edu',
+    href: 'https://cancelled.edu/',
+    origin: 'https://cancelled.edu',
+  });
+  await expect(
+    captureResourcePage(
+      'student',
+      page as never,
+      () => true,
+      'cancelled.edu',
+      controller.signal,
+    ),
+  ).rejects.toThrow();
+  expect(iconMock).toHaveBeenLastCalledWith(
+    'cancelled.edu',
+    null,
+    controller.signal,
+  );
+  expect(
+    db
+      .select()
+      .from(AcademicConnectionTable)
+      .where(eq(AcademicConnectionTable.host, 'cancelled.edu'))
+      .get(),
+  ).toBeUndefined();
 });

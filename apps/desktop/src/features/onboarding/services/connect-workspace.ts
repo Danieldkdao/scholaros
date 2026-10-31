@@ -7,6 +7,7 @@ import { isAcademicUrl } from '../lib/browser-policy';
 import type { ConnectionCandidateSchema } from '@scholaros/services/ai/schemas';
 
 type Workspace = Awaited<ReturnType<typeof getWorkspace>>;
+
 type Options = {
   context: Workspace['browser']['context'];
   cdpUrl: string;
@@ -19,8 +20,10 @@ type Options = {
     page: Page,
     isCurrent: () => boolean,
     host: string,
+    signal: AbortSignal,
   ) => Promise<AcademicConnection | void>;
 };
+
 export const createConnectWorkspace = async ({
   context,
   cdpUrl,
@@ -69,6 +72,7 @@ export const createConnectWorkspace = async ({
             return true;
           },
           host,
+          signal,
         );
         return captured?.status === 'needs-sign-in'
           ? 'needs-sign-in'

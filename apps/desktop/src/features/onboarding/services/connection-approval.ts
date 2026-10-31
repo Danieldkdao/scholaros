@@ -9,6 +9,7 @@ type Proposal = {
   id: string;
   candidates: ConnectionCandidateSchema[];
 };
+
 type StoredProposal = Proposal & {
   accountId: string;
   expiresAt: number;

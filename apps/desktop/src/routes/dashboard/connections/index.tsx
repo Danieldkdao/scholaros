@@ -88,7 +88,10 @@ const ConnectionsPage = () => {
   useEffect(
     () =>
       window.scholar.onConnectChange((run) => {
-        if (run.accountId === state?.accountId && run.status === 'complete')
+        if (
+          run.accountId === state?.accountId &&
+          ['complete', 'cancelled', 'blocked'].includes(run.status)
+        )
           void reload();
       }),
     [state?.accountId, reload],

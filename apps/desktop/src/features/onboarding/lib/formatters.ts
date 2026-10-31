@@ -1,5 +1,7 @@
 import {
   Ban,
+  Check,
+  Loader2,
   BookOpen,
   Compass,
   ListChecks,
@@ -27,6 +29,7 @@ import type {
   AgentActivity,
   OnboardingStep,
   ConnectionStatus,
+  ConnectionNotesStatus,
   PreviewPrompt,
   BrowserId,
   BrowserWorkspaceStatus,
@@ -401,5 +404,19 @@ export const formatResourceKind = (
       return { label: 'Google Classroom', Icon: Monitor };
     case 'resource':
       return { label: 'Academic resource', Icon: LinkIcon };
+  }
+};
+
+export const formatConnectionNotesStatus = (status: ConnectionNotesStatus) => {
+  switch (status) {
+    case 'saved':
+      return { label: 'Saved', Icon: Check };
+    case 'saving':
+      return { label: 'Saving', Icon: Loader2 };
+    case 'error':
+      return {
+        label: 'Could not save; edit or leave the field to retry',
+        Icon: CircleAlert,
+      };
   }
 };

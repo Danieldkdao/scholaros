@@ -5,12 +5,14 @@ import type { createConnectBrowser } from './connect-browser';
 type ApprovedSites = {
   candidates: ConnectionCandidateSchema[];
 };
+
 type ConnectBrowser = Omit<
   ReturnType<typeof createConnectBrowser>,
   'prepareHandoff'
 > & {
   prepareHandoff?: (destination: string, signal: AbortSignal) => Promise<void>;
 };
+
 type Dependencies = {
   noteForHost?: (accountId: string, host: string) => string | null;
   acquire: (
@@ -18,6 +20,7 @@ type Dependencies = {
   ) => Promise<{ release: () => void; signal: AbortSignal }>;
   browser: (accountId: string, sites: ApprovedSites) => Promise<ConnectBrowser>;
 };
+
 export const createConnectCoordinator = (dependencies: Dependencies) => {
   let busy = false;
   let generation = 0;

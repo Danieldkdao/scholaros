@@ -16,7 +16,9 @@ const response = (body: number[], contentType = 'image/png', status = 200) =>
 
 const fetchedUrls = () => fetchMock.mock.calls.map(([url]) => String(url));
 
-beforeEach(() => fetchMock.mockReset());
+beforeEach(() => {
+  fetchMock.mockReset();
+});
 
 describe('site icons', () => {
   it('encodes the declared icon as a data url', async () => {
@@ -98,13 +100,133 @@ describe('site icons', () => {
   it('reports no icon instead of failing the connection', async () => {
     // A connection can drop after the headers arrive, so the body read is the
     // failure a connect run has to survive.
-    fetchMock.mockResolvedValue({
-      ok: true,
-      headers: new Headers({ 'content-type': 'image/png' }),
-      arrayBuffer: () =>
-        Promise.reject(new Error('net::ERR_CONNECTION_CLOSED')),
-    } as unknown as Response);
+    fetchMock.mockResolvedValue(
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.error(new Error('net::ERR_CONNECTION_CLOSED'));
+          },
+        }),
+        { headers: { 'content-type': 'image/png' } },
+      ),
+    );
 
     await expect(fetchSiteIcon('school.edu', null)).resolves.toBeNull();
   });
+});
+
+it('cancels an oversized icon stream without consuming its remaining chunks', async () => {
+  let pulls = 0;
+  const cancel = vi.fn();
+  const stream = new ReadableStream<Uint8Array>(
+    {
+      pull(controller) {
+        pulls += 1;
+        controller.enqueue(new Uint8Array(4096));
+        if (pulls === 100) controller.close();
+      },
+      cancel,
+    },
+    { highWaterMark: 0 },
+  );
+  fetchMock
+    .mockResolvedValueOnce(
+      new Response(stream, { headers: { 'content-type': 'image/png' } }),
+    )
+    .mockResolvedValueOnce(response([], 'image/png', 404));
+  await expect(
+    fetchSiteIcon('school.edu', 'https://cdn.school.edu/icon.png'),
+  ).resolves.toBeNull();
+  expect(cancel).toHaveBeenCalledOnce();
+  expect(pulls).toBe(17);
+});
+
+it('rejects redirects before they can reach an unchecked destination', async () => {
+  fetchMock.mockResolvedValue(
+    new Response(null, {
+      status: 302,
+      headers: {
+        location: 'http://127.0.0.1/private',
+        'content-type': 'image/png',
+      },
+    }),
+  );
+  await expect(fetchSiteIcon('school.edu', null)).resolves.toBeNull();
+  expect(fetchMock).toHaveBeenCalledWith(
+    'https://school.edu/favicon.ico',
+    expect.objectContaining({ redirect: 'error', credentials: 'omit' }),
+  );
+});
+
+it.each([0, 1])(
+  'aborts a stalled icon request without starting another fallback: %s',
+  async (fallback) => {
+    const controller = new AbortController();
+    if (fallback)
+      fetchMock.mockResolvedValueOnce(response([], 'image/png', 404));
+    fetchMock.mockImplementation(
+      (_url: string, options: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          const signal = options.signal!;
+          signal.addEventListener('abort', () => reject(signal.reason), {
+            once: true,
+          });
+        }),
+    );
+    const pending = fetchSiteIcon(
+      'school.edu',
+      'https://cdn.school.edu/icon.png',
+      controller.signal,
+    );
+    const rejected = expect(pending).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+    await vi.waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledTimes(fallback + 1),
+    );
+    const signal = fetchMock.mock.calls.at(-1)![1].signal as AbortSignal;
+    controller.abort();
+    await rejected;
+    expect(signal.aborted).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(fallback + 1);
+  },
+);
+
+it('releases connection ownership promptly when a stalled icon fetch is cancelled', async () => {
+  const { createConnectCoordinator } =
+    await import('../services/connect-coordinator');
+  fetchMock.mockImplementation(
+    (_url: string, options: RequestInit) =>
+      new Promise((_resolve, reject) => {
+        options.signal!.addEventListener(
+          'abort',
+          () => reject(options.signal!.reason),
+          { once: true },
+        );
+      }),
+  );
+  const release = vi.fn();
+  const coordinator = createConnectCoordinator({
+    acquire: async () => ({ release, signal: new AbortController().signal }),
+    browser: async () => ({
+      inspect: async () => ({
+        status: 'readable' as const,
+        host: 'school.edu',
+      }),
+      capture: async (_candidate, signal) => {
+        await fetchSiteIcon('school.edu', null, signal);
+      },
+      close: async () => undefined,
+    }),
+  });
+  await coordinator.start('student', {
+    candidates: [
+      { name: 'School', url: 'https://school.edu/', provider: 'unknown' },
+    ],
+  });
+  await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+  await coordinator.cancel('student');
+  expect(coordinator.getState('student').status).toBe('cancelled');
+  expect(release).toHaveBeenCalledOnce();
+  expect(coordinator.isBusy()).toBe(false);
 });

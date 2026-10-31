@@ -6,6 +6,7 @@ export type ConnectRunResult = {
   host: string;
   status: 'connected' | 'needs-sign-in' | 'blocked';
 };
+
 export type ConnectRunState = {
   accountId: string | null;
   status:
@@ -19,7 +20,9 @@ export type ConnectRunState = {
   awaiting: { host: string; destination: string; note: string | null } | null;
   results: ConnectRunResult[];
 };
+
 type Inspection = { status: 'readable' | 'sign-in' | 'blocked'; host: string };
+
 type Dependencies = {
   prepareHandoff?: (destination: string, signal: AbortSignal) => Promise<void>;
   noteForHost?: (accountId: string, host: string) => string | null;
@@ -32,6 +35,7 @@ type Dependencies = {
     signal: AbortSignal,
   ) => Promise<void | 'connected' | 'needs-sign-in'>;
 };
+
 const emptyState = (): ConnectRunState => ({
   accountId: null,
   status: 'idle',

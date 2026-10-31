@@ -223,38 +223,61 @@ it('asks before removing a connection and updates the list after confirmation', 
   expect(document.body.textContent).not.toContain('school.edu');
 });
 
-it('refreshes saved connections when the active connection run completes', async () => {
+it.each(['complete', 'cancelled', 'blocked'] as const)(
+  'refreshes saved connections when the active connection run is %s',
+  async (status) => {
+    let publish!: (state: unknown) => void;
+    window.scholar.onConnectChange = vi.fn((listener) => {
+      publish = listener as (state: unknown) => void;
+      return () => {};
+    });
+    await open('/dashboard/connections');
+    const refreshed = {
+      ...state,
+      connections: [
+        ...connections,
+        {
+          id: 'c',
+          name: 'New library',
+          host: 'library.edu',
+          url: 'https://library.edu/',
+          kind: 'resource',
+          status: 'confirmed',
+          verifiedAt: null,
+          notes: null,
+        },
+      ],
+    };
+    vi.mocked(window.scholar.getState).mockResolvedValue(refreshed as never);
+    await act(async () =>
+      publish({
+        accountId: 'student',
+        status,
+        events: [],
+        awaiting: null,
+        results: [],
+      }),
+    );
+    expect(document.body.textContent).toContain('library.edu');
+  },
+);
+
+it('ignores terminal connection events from another account', async () => {
   let publish!: (state: unknown) => void;
   window.scholar.onConnectChange = vi.fn((listener) => {
     publish = listener as (state: unknown) => void;
     return () => {};
   });
   await open('/dashboard/connections');
-  const refreshed = {
-    ...state,
-    connections: [
-      ...connections,
-      {
-        id: 'c',
-        name: 'New library',
-        host: 'library.edu',
-        url: 'https://library.edu/',
-        kind: 'resource',
-        status: 'confirmed',
-        verifiedAt: null,
-        notes: null,
-      },
-    ],
-  };
-  vi.mocked(window.scholar.getState).mockResolvedValue(refreshed as never);
+  vi.mocked(window.scholar.getState).mockClear();
   await act(async () =>
     publish({
-      accountId: 'student',
-      status: 'complete',
+      accountId: 'other-student',
+      status: 'cancelled',
       events: [],
       awaiting: null,
       results: [],
     }),
   );
-  expect(document.body.textContent).toContain('library.edu');
+  expect(window.scholar.getState).not.toHaveBeenCalled();
 });

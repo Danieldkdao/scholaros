@@ -8,9 +8,8 @@ export const readPageEvidence = (page: Page) =>
     pathname: location.pathname,
     href: location.href,
     title: document.title,
-    // Only a sign-in field the student can actually see means they are still
-    // signed out: password managers and pre-rendered auth modals leave hidden
-    // zero-size inputs behind on signed-in dashboards.
+    // Hidden sign-in fields can remain on authenticated dashboards; only
+    // visible password inputs indicate that sign-in is still needed.
     hasPasswordField: [
       ...document.querySelectorAll<HTMLInputElement>('input[type="password"]'),
     ].some((field) => {

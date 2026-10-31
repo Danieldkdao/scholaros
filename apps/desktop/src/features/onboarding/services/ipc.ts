@@ -195,12 +195,13 @@ const connectRuntime = createConnectRuntime({
       sites,
       protect: protectMissionPage,
       terminateWorkspace: closeWorkspace,
-      capture: (id, page, check, host) =>
+      capture: (id, page, check, host, signal) =>
         captureResourcePage(
           id,
           page,
           () => connectIsCurrent() && check(),
           host,
+          signal,
         ),
     });
   },

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useDebouncer } from '@tanstack/react-pacer';
-import { Check, CircleAlert, Loader2 } from 'lucide-react';
+import { formatConnectionNotesStatus } from '../lib/formatters';
+import type { ConnectionNotesStatus } from '../types';
 import { Textarea } from '@scholaros/ui/components/textarea';
 
 type ConnectionNotesEditorProps = {
@@ -15,7 +16,7 @@ export const ConnectionNotesEditor = ({
   save,
 }: ConnectionNotesEditorProps) => {
   const [value, setValue] = useState(notes ?? '');
-  const [status, setStatus] = useState<'saved' | 'saving' | 'error'>('saved');
+  const [status, setStatus] = useState<ConnectionNotesStatus>('saved');
   const latest = useRef(value);
   const saved = useRef(value);
   const queue = useRef(Promise.resolve());
@@ -51,8 +52,7 @@ export const ConnectionNotesEditor = ({
     // before leaving still has to reach the store.
     onUnmount: (instance) => instance.flush(),
   });
-  const Icon =
-    status === 'saved' ? Check : status === 'saving' ? Loader2 : CircleAlert;
+  const { label, Icon } = formatConnectionNotesStatus(status);
   return (
     <div className="flex flex-col gap-2">
       <label htmlFor={`notes-${id}`} className="text-muted-foreground">
@@ -79,12 +79,7 @@ export const ConnectionNotesEditor = ({
       <div className="flex items-center gap-2 text-muted-foreground">
         <Icon className="size-4" />
         <span>
-          {value.length}/500{' '}
-          {status === 'error'
-            ? 'Could not save; edit or leave the field to retry'
-            : status === 'saving'
-              ? 'Saving'
-              : 'Saved'}
+          {value.length}/500 {label}
         </span>
       </div>
     </div>

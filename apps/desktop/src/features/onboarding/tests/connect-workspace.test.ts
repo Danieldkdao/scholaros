@@ -61,6 +61,13 @@ it('sets the approved host policy and protects every automated page', async () =
   expect(context.setDomainPolicy).toHaveBeenLastCalledWith(null);
   await workspace.inspect(candidate, signal);
   await workspace.capture(candidate, signal);
+  expect(capture).toHaveBeenCalledWith(
+    'student',
+    page,
+    expect.any(Function),
+    'school.edu',
+    signal,
+  );
   expect(protect).toHaveBeenCalledWith(
     page,
     'http://127.0.0.1:1',
