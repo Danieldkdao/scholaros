@@ -64,3 +64,27 @@ export const courseDiscoverySchema = z.object({
   courseTargetIds: z.array(z.string().min(1).max(20)).max(30),
 });
 export type CourseDiscoverySchema = z.infer<typeof courseDiscoverySchema>;
+
+export const connectionProviders = ['google', 'microsoft', 'unknown'] as const;
+export type ConnectionProvider = (typeof connectionProviders)[number];
+export const connectionCandidateSchema = z.object({
+  name: z.string().trim().min(1).max(140),
+  url: z.url().max(2048),
+  provider: z.enum(connectionProviders),
+});
+export type ConnectionCandidateSchema = z.infer<
+  typeof connectionCandidateSchema
+>;
+export const connectionSuggestionsSchema = z.object({
+  candidates: z.array(connectionCandidateSchema).max(8),
+});
+export type ConnectionSuggestionsSchema = z.infer<
+  typeof connectionSuggestionsSchema
+>;
+export const connectionResolveRequestSchema = z.object({
+  kind: z.literal('resolve'),
+  prompt: z.string().trim().min(1).max(500),
+});
+export type ConnectionResolveRequestSchema = z.infer<
+  typeof connectionResolveRequestSchema
+>;
