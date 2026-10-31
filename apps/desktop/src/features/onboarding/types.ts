@@ -108,6 +108,8 @@ export type OnboardingSettings = {
   consent: boolean;
   launchAtLogin: boolean;
   backgroundSync: boolean;
+  decisionTimeSeconds: number;
+  blockedWords: string[];
   notes: string;
   localSetupCompletedAt: string | null;
 };
