@@ -148,7 +148,7 @@ export const sendVerificationOtp = async ({
               style="
                 margin: 0;
                 color: #404040;
-                font-size: 15px;
+                font-size: 16px;
                 line-height: 1.7;
                 text-align: center;
               "
@@ -161,7 +161,7 @@ export const sendVerificationOtp = async ({
               style="
                 margin: 16px 0 0 0;
                 color: #737373;
-                font-size: 14px;
+                font-size: 16px;
                 line-height: 1.7;
                 text-align: center;
               "
@@ -188,7 +188,7 @@ export const sendVerificationOtp = async ({
               style="
                 margin: 0;
                 color: #737373;
-                font-size: 13px;
+                font-size: 16px;
                 line-height: 1.6;
               "
             >
@@ -199,7 +199,7 @@ export const sendVerificationOtp = async ({
               style="
                 margin: 8px 0 0 0;
                 color: #737373;
-                font-size: 12px;
+                font-size: 16px;
                 line-height: 1.6;
               "
             >
@@ -210,7 +210,7 @@ export const sendVerificationOtp = async ({
               style="
                 margin: 8px 0 0 0;
                 color: #737373;
-                font-size: 12px;
+                font-size: 16px;
                 line-height: 1.6;
               "
             >

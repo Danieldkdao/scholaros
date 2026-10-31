@@ -212,7 +212,7 @@
     @apply font-serif;
   }
   body {
-    @apply bg-background font-sans text-foreground antialiased;
+    @apply bg-background font-sans text-base text-foreground antialiased;
     letter-spacing: var(--letter-spacing);
   }
 }
