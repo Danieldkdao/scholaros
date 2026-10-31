@@ -90,8 +90,6 @@ const unsafeActionTokens = new Set([
   'post',
   'posts',
   'preferences',
-  'profile',
-  'profiles',
   'publish',
   'purchase',
   'purge',
