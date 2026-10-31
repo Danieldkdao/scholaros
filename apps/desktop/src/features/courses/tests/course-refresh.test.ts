@@ -1,0 +1,709 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('electron', async () => {
+  const { mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const userData = mkdtempSync(join(tmpdir(), 'scholaros-refresh-'));
+  return {
+    app: {
+      getPath: () => userData,
+      getAppPath: () => process.cwd(),
+      isPackaged: false,
+      once: vi.fn(),
+      on: vi.fn(),
+      getLoginItemSettings: () => ({ openAtLogin: false }),
+    },
+  };
+});
+
+const mocks = vi.hoisted(() => ({
+  getState: vi.fn(),
+  applyDiscovery: vi.fn(),
+  scan: vi.fn(),
+  policy: vi.fn(),
+  agent: vi.fn(),
+  opened: [] as string[],
+  workers: vi.fn(),
+}));
+vi.mock('../../onboarding/services/store', () => ({
+  getOnboardingState: mocks.getState,
+  applyAcademicDiscovery: mocks.applyDiscovery,
+}));
+vi.mock('../../onboarding/services/browser-workspace', () => ({
+  getWorkspace: async () => ({
+    cdpUrl: 'http://127.0.0.1:9222',
+    browser: {
+      context: { setDomainPolicy: mocks.policy, newPage: async () => ({}) },
+    },
+  }),
+}));
+vi.mock('../../onboarding/services/connection-scan', () => ({
+  scanConnection: mocks.scan,
+}));
+vi.mock('../../onboarding/services/mission-navigation', () => ({
+  createMissionNavigator: () => async () => undefined,
+}));
+vi.mock('../../../lib/auth/main', () => ({
+  accountRequest: mocks.agent,
+}));
+
+const { db } = await import('../../../db');
+const {
+  AcademicConnectionTable,
+  CourseAnnouncementTable,
+  CourseAssignmentTable,
+  CourseSourceTable,
+  CourseTable,
+} = await import('../../../db/schema');
+const { getCoursesSnapshot } = await import('../services/store');
+const { cancelCourseRefresh, startCourseRefresh } =
+  await import('../services/refresh');
+import type { ObservedPage } from '../../onboarding/lib/academic-discovery';
+
+const student = 'student';
+const host = 'canvas.school.edu';
+const listUrl = `https://${host}/courses`;
+const biologyUrl = `https://${host}/courses/1`;
+const announcementsUrl = `${biologyUrl}/announcements`;
+const assignmentsUrl = `${biologyUrl}/assignments`;
+
+type ScanFixture = {
+  outcome: 'courses' | 'empty' | 'inconclusive' | 'blocked' | 'needs-sign-in';
+  entries: Array<{ label: string; url: string }>;
+  listPage: ObservedPage;
+  pages: Record<string, ObservedPage>;
+  errors?: Record<string, string>;
+};
+const fixtures = new Map<string, ScanFixture>();
+
+const observedPage = (
+  url: string,
+  overrides: Partial<ObservedPage> = {},
+): ObservedPage => ({ url, title: url, text: '', links: [], ...overrides });
+
+const listFixture = (overrides: Partial<ScanFixture> = {}): ScanFixture => ({
+  outcome: 'courses',
+  entries: [{ label: 'Biology 101', url: biologyUrl }],
+  listPage: observedPage(listUrl, {
+    title: 'Courses',
+    links: [{ label: 'Biology 101', url: biologyUrl }],
+  }),
+  pages: {
+    [biologyUrl]: observedPage(biologyUrl, {
+      title: 'Biology 101',
+      links: [
+        { label: 'Announcements', url: announcementsUrl },
+        { label: 'Assignments', url: assignmentsUrl },
+      ],
+    }),
+    [announcementsUrl]: observedPage(announcementsUrl, {
+      title: 'Announcements',
+    }),
+    [assignmentsUrl]: observedPage(assignmentsUrl, { title: 'Assignments' }),
+  },
+  ...overrides,
+});
+
+const insertConnection = (
+  id: string,
+  connectionHost: string,
+  overrides: Partial<typeof AcademicConnectionTable.$inferInsert> = {},
+) =>
+  db
+    .insert(AcademicConnectionTable)
+    .values({
+      id,
+      userId: student,
+      name: id,
+      url: `https://${connectionHost}/`,
+      host: connectionHost,
+      kind: 'canvas',
+      status: 'verified',
+      verifiedAt: null,
+      isCourseResource: true,
+      ...overrides,
+    })
+    .run();
+
+const stateFrom = () => ({
+  accountId: student,
+  settings: { consent: true, notes: '', backgroundSync: true },
+  workspace: { ready: true },
+  connections: db
+    .select()
+    .from(AcademicConnectionTable)
+    .all()
+    .map(
+      ({
+        id,
+        name,
+        url,
+        host: connectionHost,
+        kind,
+        status,
+        verifiedAt,
+        notes,
+        favicon,
+        isCourseResource,
+      }) => ({
+        id,
+        name,
+        url,
+        host: connectionHost,
+        kind,
+        status,
+        verifiedAt,
+        notes,
+        favicon,
+        isCourseResource,
+      }),
+    ),
+  discovery: {
+    status: 'pending',
+    message: null,
+    discoveredAt: null,
+    entries: [],
+  },
+});
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  fixtures.clear();
+  mocks.opened.length = 0;
+  mocks.policy.mockResolvedValue(undefined);
+  mocks.applyDiscovery.mockImplementation((_userId, results) => ({
+    discovery: { status: 'complete', results },
+  }));
+  mocks.agent.mockImplementation(async (_path, body) =>
+    body.kind === 'choose'
+      ? { operation: 'DONE', target: null }
+      : {
+          cards: [],
+          coverage: body.pages[0].text.includes('no announcements')
+            ? 'complete'
+            : 'unavailable',
+        },
+  );
+  mocks.scan.mockImplementation(
+    async ({
+      connection,
+      withCourseList,
+    }: {
+      connection: { id: string };
+      withCourseList?: (context: unknown) => Promise<unknown>;
+    }) => {
+      const fixture = fixtures.get(connection.id);
+      if (!fixture)
+        return {
+          outcome: 'blocked',
+          entries: [],
+          observed: null,
+          notesOmitted: false,
+          followed: null,
+        };
+      const followed = withCourseList
+        ? await withCourseList({
+            withCoursePage: async (
+              _url: string,
+              run: (context: unknown) => Promise<void>,
+            ) => {
+              mocks.workers(_url);
+              await run({
+                assertReadable: () => undefined,
+                openFrom: async (_from: ObservedPage, url: string) => {
+                  mocks.opened.push(url);
+                  const failure = fixture.errors?.[url];
+                  if (failure) throw new Error(failure);
+                  const opened = fixture.pages[url];
+                  if (!opened) throw new Error('The page could not be loaded.');
+                  return opened;
+                },
+              });
+            },
+            observed: fixture.listPage,
+            entries: fixture.entries.map((entry) => ({
+              ...entry,
+              role: 'course',
+              connectionId: connection.id,
+              evidenceUrl: fixture.listPage.url,
+            })),
+            assertReadable: () => undefined,
+            openFrom: async (_from: ObservedPage, url: string) => {
+              mocks.opened.push(url);
+              const failure = fixture.errors?.[url];
+              if (failure) throw new Error(failure);
+              const opened = fixture.pages[url];
+              if (!opened) throw new Error('The page could not be loaded.');
+              return opened;
+            },
+          })
+        : null;
+      return {
+        outcome: fixture.outcome,
+        entries: fixture.entries,
+        observed: fixture.listPage,
+        notesOmitted: false,
+        followed,
+      };
+    },
+  );
+  db.delete(CourseAnnouncementTable).run();
+  db.delete(CourseAssignmentTable).run();
+  db.delete(CourseTable).run();
+  db.delete(CourseSourceTable).run();
+  db.delete(AcademicConnectionTable).run();
+  mocks.getState.mockImplementation(() => stateFrom());
+});
+
+const savedCourses = () => getCoursesSnapshot(student).courses;
+const savedSources = () => getCoursesSnapshot(student).sources;
+
+describe('choosing what to scan', () => {
+  it('scans only the connections marked as course resources', async () => {
+    insertConnection('marked', host);
+    insertConnection('unmarked', 'portal.school.edu', {
+      isCourseResource: false,
+    });
+    fixtures.set('marked', listFixture());
+    await startCourseRefresh(student);
+    expect(mocks.scan).toHaveBeenCalledOnce();
+    expect(mocks.scan.mock.calls[0][0].connection.id).toBe('marked');
+    expect(savedCourses()).toHaveLength(1);
+  });
+
+  it('rechecks a marked source with a previous sign-in status so notes can resume its account picker', async () => {
+    insertConnection('signed-out', host, { status: 'needs-sign-in' });
+    fixtures.set('signed-out', listFixture());
+    mocks.applyDiscovery.mockImplementationOnce(() => stateFrom());
+    const refreshed = await startCourseRefresh(student);
+    expect(refreshed.state.connections[0].status).toBe('confirmed');
+    expect(mocks.scan).toHaveBeenCalledOnce();
+    expect(savedSources()).toEqual([
+      expect.objectContaining({
+        connectionId: 'signed-out',
+        outcome: 'complete',
+      }),
+    ]);
+  });
+
+  it('keeps the actionable account-picker explanation from the protected scan', async () => {
+    insertConnection('marked', host);
+    const message =
+      'Sign in manually in your study browser, or specify one account to choose in this resource’s notes.';
+    mocks.scan.mockResolvedValueOnce({
+      outcome: 'needs-sign-in',
+      message,
+      entries: [],
+      observed: null,
+      followed: null,
+      truncated: false,
+    });
+    await startCourseRefresh(student);
+    expect(savedSources()[0]).toMatchObject({
+      outcome: 'needs-sign-in',
+      message,
+    });
+  });
+
+  it('refuses to run when nothing is marked', async () => {
+    insertConnection('unmarked', host, { isCourseResource: false });
+    await expect(startCourseRefresh(student)).rejects.toThrow(
+      'Choose which connections hold your courses first.',
+    );
+  });
+});
+
+describe('saving what the scan really saw', () => {
+  it('does not retire courses when classification skipped some observed links', async () => {
+    insertConnection('marked', host);
+    mocks.scan.mockResolvedValueOnce({
+      outcome: 'courses',
+      entries: [],
+      observed: observedPage(listUrl),
+      followed: { courses: [], incomplete: false },
+      truncated: true,
+    });
+    await startCourseRefresh(student);
+    expect(savedSources()[0].outcome).toBe('partial');
+  });
+
+  it('saves the course and both collections from one scan', async () => {
+    insertConnection('marked', host);
+    fixtures.set('marked', listFixture());
+    mocks.agent.mockImplementation(
+      async (
+        _path: string,
+        body: { kind: string; goal: string; pages: Array<{ url: string }> },
+      ) =>
+        body.kind === 'choose'
+          ? { operation: 'DONE', target: null }
+          : body.pages[0].url === biologyUrl
+            ? { coverage: 'unavailable', cards: [] }
+            : {
+                coverage: 'complete',
+                cards: body.goal.includes('announcement')
+                  ? [
+                      {
+                        kind: 'announcement',
+                        assignmentState: 'unknown',
+                        title: 'Midterm moved',
+                        course: null,
+                        detail: null,
+                        date: '2026-03-05',
+                        sourceUrl: announcementsUrl,
+                      },
+                    ]
+                  : [
+                      {
+                        kind: 'assignment',
+                        assignmentState: 'active-unsubmitted',
+                        title: 'Lab report',
+                        course: null,
+                        detail: null,
+                        date: null,
+                        sourceUrl: assignmentsUrl,
+                      },
+                    ],
+              },
+    );
+    await startCourseRefresh(student);
+    const [course] = savedCourses();
+    expect(course).toMatchObject({
+      name: 'Biology 101',
+      active: true,
+      announcementsStatus: 'complete',
+      assignmentsStatus: 'complete',
+    });
+    expect(mocks.opened).toEqual([
+      biologyUrl,
+      biologyUrl,
+      assignmentsUrl,
+      announcementsUrl,
+    ]);
+  });
+
+  it('saves the course when only one collection could be read', async () => {
+    insertConnection('marked', host);
+    fixtures.set(
+      'marked',
+      listFixture({
+        pages: {
+          [biologyUrl]: observedPage(biologyUrl, {
+            links: [
+              { label: 'Announcements', url: announcementsUrl },
+              { label: 'Assignments', url: assignmentsUrl },
+            ],
+          }),
+          [announcementsUrl]: observedPage(announcementsUrl, {
+            text: 'There are no announcements.',
+          }),
+        },
+      }),
+    );
+    await startCourseRefresh(student);
+    const [course] = savedCourses();
+    expect(course?.announcementsStatus).toBe('complete');
+    expect(course?.assignmentsStatus).toBe('blocked');
+    expect(course?.active).toBe(true);
+  });
+
+  it('does not call a collection empty just because nothing was extracted', async () => {
+    insertConnection('marked', host);
+    fixtures.set('marked', listFixture());
+    mocks.agent.mockImplementation(async (_path, body) =>
+      body.kind === 'choose'
+        ? { operation: 'DONE', target: null }
+        : {
+            cards: [],
+            coverage: body.pages[0].text.includes('no announcements')
+              ? 'complete'
+              : 'unavailable',
+          },
+    );
+    await startCourseRefresh(student);
+    const [course] = savedCourses();
+    expect(course?.announcementsStatus).toBe('partial');
+    expect(course?.assignmentsStatus).toBe('partial');
+    expect(course?.announcementsSyncedAt).toBeNull();
+  });
+
+  it('reads the course itself when there is no direct collection link', async () => {
+    insertConnection('marked', host);
+    fixtures.set(
+      'marked',
+      listFixture({
+        pages: {
+          [biologyUrl]: observedPage(biologyUrl, { links: [] }),
+        },
+      }),
+    );
+    await startCourseRefresh(student);
+    const [course] = savedCourses();
+    expect(course?.announcementsStatus).toBe('partial');
+    expect(course?.assignmentsStatus).toBe('partial');
+    expect(mocks.agent).toHaveBeenCalled();
+  });
+
+  it('reports a collection behind a sign-in wall without discarding the course', async () => {
+    insertConnection('marked', host);
+    fixtures.set(
+      'marked',
+      listFixture({
+        errors: {
+          [announcementsUrl]: 'This resource needs you to sign in again.',
+        },
+      }),
+    );
+    await startCourseRefresh(student);
+    const [course] = savedCourses();
+    expect(course?.active).toBe(true);
+    expect(course?.overviewSyncedAt).not.toBeNull();
+    expect(course?.announcementsStatus).toBe('needs-sign-in');
+    expect(savedSources()).toEqual([
+      expect.objectContaining({ outcome: 'complete' }),
+    ]);
+  });
+
+  it('calls a paginated list partial so nothing is retired', async () => {
+    insertConnection('marked', host);
+    fixtures.set('marked', listFixture());
+    await startCourseRefresh(student);
+    expect(savedCourses()).toHaveLength(1);
+    fixtures.set(
+      'marked',
+      listFixture({
+        entries: [{ label: 'Chemistry 200', url: `https://${host}/courses/2` }],
+        listPage: observedPage(listUrl, {
+          links: [
+            { label: 'Chemistry 200', url: `https://${host}/courses/2` },
+            { label: 'Next', url: `${listUrl}?page=2` },
+          ],
+        }),
+        pages: {
+          [`https://${host}/courses/2`]: observedPage(
+            `https://${host}/courses/2`,
+            { links: [] },
+          ),
+        },
+      }),
+    );
+    await startCourseRefresh(student);
+    expect(savedSources()).toEqual([
+      expect.objectContaining({ outcome: 'partial' }),
+    ]);
+    expect(savedCourses().map((course) => course.active)).toEqual([true, true]);
+  });
+
+  it('retires a course after a confirmed complete list', async () => {
+    insertConnection('marked', host);
+    fixtures.set('marked', listFixture());
+    await startCourseRefresh(student);
+    fixtures.set(
+      'marked',
+      listFixture({
+        entries: [],
+        outcome: 'empty',
+        listPage: observedPage(listUrl, {
+          text: 'You have no active courses.',
+        }),
+      }),
+    );
+    await startCourseRefresh(student);
+    expect(savedCourses().map((course) => course.active)).toEqual([false]);
+    expect(savedSources()).toEqual([
+      expect.objectContaining({ outcome: 'complete' }),
+    ]);
+  });
+
+  it('does not open a course the list page never exposed', async () => {
+    insertConnection('marked', host);
+    fixtures.set(
+      'marked',
+      listFixture({
+        entries: [{ label: 'Invented', url: 'https://evil.example/course' }],
+      }),
+    );
+    await startCourseRefresh(student);
+    expect(mocks.opened).not.toContain('https://evil.example/course');
+    expect(savedCourses()).toHaveLength(0);
+    expect(savedSources()).toEqual([
+      expect.objectContaining({ outcome: 'partial' }),
+    ]);
+  });
+
+  it('opens every observed course without a run budget', async () => {
+    insertConnection('marked', host);
+    const many = Array.from({ length: 25 }, (_unused, index) => ({
+      label: `Course ${index}`,
+      url: `https://${host}/courses/${index}`,
+    }));
+    fixtures.set(
+      'marked',
+      listFixture({
+        entries: many,
+        listPage: observedPage(listUrl, {
+          links: many.map((entry) => ({ label: entry.label, url: entry.url })),
+        }),
+        pages: Object.fromEntries(
+          many.map((entry) => [
+            entry.url,
+            observedPage(entry.url, { links: [] }),
+          ]),
+        ),
+      }),
+    );
+    await startCourseRefresh(student);
+    expect(savedCourses()).toHaveLength(25);
+    expect(mocks.opened.length).toBe(50);
+    expect(mocks.agent).toHaveBeenCalledTimes(50);
+    expect(
+      savedCourses().filter((course) => course.overviewSyncedAt === null),
+    ).toHaveLength(0);
+    expect(savedSources()).toEqual([
+      expect.objectContaining({ outcome: 'complete' }),
+    ]);
+  });
+});
+
+describe('stopping safely', () => {
+  it('records a cancelled run without retiring saved courses', async () => {
+    insertConnection('marked', host);
+    fixtures.set('marked', listFixture());
+    await startCourseRefresh(student);
+    const controller = new AbortController();
+    mocks.scan.mockImplementationOnce(async () => {
+      controller.abort();
+      throw new DOMException('Aborted', 'AbortError');
+    });
+    await expect(
+      startCourseRefresh(student, () => true, controller.signal),
+    ).rejects.toThrow();
+    expect(savedCourses().map((course) => course.active)).toEqual([true]);
+    expect(savedSources()).toEqual([
+      expect.objectContaining({ outcome: 'cancelled' }),
+    ]);
+  });
+
+  it('writes nothing once the session is no longer current', async () => {
+    insertConnection('marked', host);
+    fixtures.set('marked', listFixture());
+    await expect(startCourseRefresh(student, () => false)).rejects.toThrow();
+    expect(savedCourses()).toHaveLength(0);
+    expect(savedSources()).toHaveLength(0);
+  });
+
+  it('cancels the run that is currently holding the browser', async () => {
+    insertConnection('marked', host);
+    let release!: () => void;
+    mocks.scan.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () =>
+            resolve({
+              outcome: 'blocked',
+              entries: [],
+              observed: null,
+              notesOmitted: false,
+              followed: null,
+            });
+        }),
+    );
+    const running = startCourseRefresh(student);
+    // Cancelling only makes sense once the run really owns the browser.
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+    cancelCourseRefresh();
+    release();
+    await expect(running).rejects.toThrow();
+  });
+
+  it('clears the domain policy even when a scan throws', async () => {
+    insertConnection('marked', host);
+    mocks.scan.mockRejectedValueOnce(new Error('browser closed'));
+    await expect(startCourseRefresh(student)).rejects.toThrow();
+    expect(mocks.policy).toHaveBeenLastCalledWith(null);
+  });
+});
+
+it('starts independent assignment and announcement workers for every course before any model request finishes', async () => {
+  insertConnection('marked', host, { notes: 'Read the weekly modules' });
+  const entries = [1, 2].map((id) => ({
+    label: `Course ${id}`,
+    url: `${listUrl}/${id}`,
+  }));
+  fixtures.set(
+    'marked',
+    listFixture({
+      entries,
+      listPage: observedPage(listUrl, { links: entries }),
+      pages: Object.fromEntries(
+        entries.map((entry) => [entry.url, observedPage(entry.url)]),
+      ),
+    }),
+  );
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  mocks.agent.mockImplementation(async (_path, body) => {
+    expect(body.notes).toContain('Read the weekly modules');
+    await gate;
+    return { coverage: 'complete', cards: [] };
+  });
+  const running = startCourseRefresh(student);
+  try {
+    await vi.waitFor(() => expect(mocks.workers).toHaveBeenCalledTimes(4));
+    expect(mocks.agent).toHaveBeenCalledTimes(4);
+  } finally {
+    release();
+    await running;
+  }
+});
+
+it('retains assignments in SQLite when cancelled after extraction but before navigation finishes', async () => {
+  insertConnection('marked', host);
+  fixtures.set(
+    'marked',
+    listFixture({
+      pages: {
+        [biologyUrl]: observedPage(biologyUrl, {
+          links: [{ label: 'Assignments', url: assignmentsUrl }],
+        }),
+        [assignmentsUrl]: observedPage(assignmentsUrl, {
+          links: [{ label: 'Details', url: `${biologyUrl}/detail` }],
+        }),
+      },
+    }),
+  );
+  const controller = new AbortController();
+  mocks.agent.mockImplementation(async (_path, body) => {
+    if (body.kind === 'choose' && !body.goal.includes('assignments'))
+      return { operation: 'DONE', target: null };
+    if (body.kind === 'choose') {
+      controller.abort();
+      throw new Error('Cancelled');
+    }
+    return {
+      coverage: 'complete',
+      cards: body.goal.includes('assignments')
+        ? [
+            {
+              kind: 'assignment',
+              assignmentState: 'active-unsubmitted',
+              title: 'Lab report',
+              course: null,
+              detail: null,
+              date: null,
+              sourceUrl: assignmentsUrl,
+            },
+          ]
+        : [],
+    };
+  });
+  await expect(
+    startCourseRefresh(student, () => true, controller.signal),
+  ).rejects.toThrow();
+  expect(db.select().from(CourseAssignmentTable).all()).toEqual([
+    expect.objectContaining({ title: 'Lab report', active: true }),
+  ]);
+});
