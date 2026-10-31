@@ -219,3 +219,38 @@ it.each(['choose', 'extract', 'discover', 'resolve'])(
     expect(mocks.classify).not.toHaveBeenCalled();
   },
 );
+
+it('keeps deep scans running across request windows while rejecting bursts', async () => {
+  const now = vi.spyOn(Date, 'now').mockReturnValue(1000000);
+  try {
+    for (let index = 0; index < 120; index += 1)
+      expect(
+        (await POST(request({ ...body, kind: 'course-content' }))).status,
+      ).toBe(200);
+    expect((await POST(request())).status).toBe(429);
+    now.mockReturnValue(1060001);
+    expect(
+      (await POST(request({ ...body, kind: 'course-content' }))).status,
+    ).toBe(200);
+  } finally {
+    now.mockRestore();
+  }
+});
+
+it('allows bounded slow course extraction while retaining request cancellation', async () => {
+  const deadline = new AbortController();
+  const timeout = vi
+    .spyOn(AbortSignal, 'timeout')
+    .mockReturnValue(deadline.signal);
+  try {
+    await POST(request({ ...body, kind: 'course-content' }));
+    expect(timeout).toHaveBeenLastCalledWith(60_000);
+    const extractionSignal = mocks.extract.mock.calls[0][1] as AbortSignal;
+    deadline.abort();
+    expect(extractionSignal.aborted).toBe(true);
+    await POST(request());
+    expect(timeout).toHaveBeenLastCalledWith(25_000);
+  } finally {
+    timeout.mockRestore();
+  }
+});

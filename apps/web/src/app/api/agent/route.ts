@@ -15,6 +15,7 @@ import { serverEnv } from '@/data/env/server';
 
 export const runtime = 'nodejs';
 const requestBodyLimit = 150_000;
+const requestWindowMs = 60_000;
 const requestBudgets = new Map<string, { since: number; count: number }>();
 
 const readBoundedText = async (request: Request, limit: number) => {
@@ -53,14 +54,14 @@ export const POST = async (request: Request) => {
     return Response.json({ error: 'Unauthorized' }, { status: 401 });
   const now = Date.now();
   for (const [id, budget] of requestBudgets)
-    if (now - budget.since > 3_600_000) requestBudgets.delete(id);
+    if (now - budget.since >= requestWindowMs) requestBudgets.delete(id);
   const budget = requestBudgets.get(currentUser.userId) ?? {
     since: now,
     count: 0,
   };
   if (budget.count >= 120)
     return Response.json(
-      { error: 'Preview limit reached; try again later.' },
+      { error: 'Academic service request limit reached; try again later.' },
       { status: 429 },
     );
   requestBudgets.set(currentUser.userId, {
@@ -110,11 +111,11 @@ export const POST = async (request: Request) => {
         { error: 'Invalid preview request.' },
         { status: 400 },
       );
+    const kind: RequestKind = parsed.data.kind;
     const signal = AbortSignal.any([
       request.signal,
-      AbortSignal.timeout(25_000),
+      AbortSignal.timeout(kind === 'course-content' ? 60_000 : 25_000),
     ]);
-    const kind: RequestKind = parsed.data.kind;
     requestKind = kind;
     if (!isInferenceConfigured())
       return Response.json(

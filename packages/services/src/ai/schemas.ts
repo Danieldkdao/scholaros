@@ -1,6 +1,11 @@
 import { z } from 'zod';
 
-export const requestKinds = ['choose', 'extract', 'discover'] as const;
+export const requestKinds = [
+  'choose',
+  'extract',
+  'discover',
+  'course-content',
+] as const;
 export type RequestKind = (typeof requestKinds)[number];
 export const agentRequestSchema = z.object({
   kind: z.enum(requestKinds),
@@ -59,6 +64,32 @@ export const academicEvidenceSchema = z.object({
     .max(20),
 });
 export type AcademicEvidenceSchema = z.infer<typeof academicEvidenceSchema>;
+
+export const assignmentStates = [
+  'active-unsubmitted',
+  'submitted',
+  'inactive',
+  'unknown',
+] as const;
+export type AssignmentState = (typeof assignmentStates)[number];
+export const contentCoverageValues = [
+  'complete',
+  'detail',
+  'partial',
+  'unavailable',
+] as const;
+export type ContentCoverage = (typeof contentCoverageValues)[number];
+export const courseContentEvidenceSchema = z.object({
+  cards: z.array(
+    academicEvidenceSchema.shape.cards.element.extend({
+      assignmentState: z.enum(assignmentStates),
+    }),
+  ),
+  coverage: z.enum(contentCoverageValues),
+});
+export type CourseContentEvidenceSchema = z.infer<
+  typeof courseContentEvidenceSchema
+>;
 
 export const courseDiscoverySchema = z.object({
   courseTargetIds: z.array(z.string().min(1).max(20)).max(30),

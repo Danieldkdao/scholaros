@@ -191,3 +191,38 @@ describe.each(['baseten', 'meta'] as const)(
     });
   },
 );
+
+it.each(['baseten', 'meta'] as const)(
+  'preserves assignment eligibility and coverage through %s structured extraction',
+  async (provider) => {
+    env.INFERENCE_PROVIDER = provider;
+    const evidence = {
+      cards: [
+        {
+          ...cards[0],
+          kind: 'assignment',
+          assignmentState: 'active-unsubmitted',
+        },
+      ],
+      coverage: 'complete',
+    };
+    fetchMock.mockResolvedValue(Response.json(completion(evidence)));
+    const result = await extractAcademicEvidence(
+      { ...input, kind: 'course-content' },
+      new AbortController().signal,
+    );
+    expect(result).toEqual(evidence);
+    expect(JSON.stringify(sent().body)).toContain('active-unsubmitted');
+    const instructions = JSON.stringify(sent().body);
+    expect(instructions).toContain(
+      'extract every relevant item even when its status is unknown',
+    );
+    expect(instructions).toContain(
+      'Assignments include quizzes, tests, exams, assessments',
+    );
+    expect(instructions).toContain(
+      'A student-specific Upcoming or To-do list is positive evidence of pending work',
+    );
+    expect(instructions).toContain('never copy a neighboring event’s time');
+  },
+);
