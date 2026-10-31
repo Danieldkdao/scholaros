@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifyCapturedPage } from '../lib/connection-policy';
+import { classifyCapturedPage, isSignInPage } from '../lib/connection-policy';
 
 const canvasEvidence = {
   origin: 'https://canvas.school.edu',
@@ -151,3 +151,32 @@ describe('academic connection classification', () => {
     ).toThrow('open your course dashboard');
   });
 });
+
+it('accepts a Khan Academy learner dashboard beneath a profile route', () => {
+  expect(
+    classifyCapturedPage({
+      ...canvasEvidence,
+      origin: 'https://www.khanacademy.org',
+      host: 'www.khanacademy.org',
+      pathname: '/profile/student/courses',
+      href: 'https://www.khanacademy.org/profile/student/courses',
+      title: 'Learner home | Khan Academy',
+      hasCanvasMarkers: false,
+      courseLinkCount: 0,
+    }),
+  ).toMatchObject({ host: 'www.khanacademy.org', kind: 'resource' });
+});
+
+it.each(['/lessons/algebra', '/courses/sso101', '/courses/authorization'])(
+  'does not mistake a content path for sign-in: %s',
+  (path) => {
+    expect(isSignInPage('school.edu', path)).toBe(false);
+  },
+);
+
+it.each(['/login', '/auth/sign-in', '/oauth/authorize', '/%6cogin'])(
+  'recognizes a sign-in route: %s',
+  (path) => {
+    expect(isSignInPage('school.edu', path)).toBe(true);
+  },
+);
