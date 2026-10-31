@@ -8,9 +8,9 @@ export const accountRequest = async (
   body?: unknown,
   signal?: AbortSignal,
 ) => {
-  const response = await net.fetch(
-    new URL(route, clientEnv.VITE_API_URL).href,
-    {
+  let response: Response;
+  try {
+    response = await net.fetch(new URL(route, clientEnv.VITE_API_URL).href, {
       method: body === undefined ? 'GET' : 'POST',
       headers: {
         Cookie: authClient.getCookie(),
@@ -20,9 +20,19 @@ export const accountRequest = async (
       redirect: 'error',
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: signal ?? AbortSignal.timeout(15_000),
-    },
-  );
-  if (response.status === 401) return null;
+    });
+  } catch (cause) {
+    // Chromium reports a missing listener as a bare error code, which reads like
+    // an app fault; name the endpoint so the outage is obvious at a glance.
+    throw new Error(
+      `ScholarOS could not reach its services at ${clientEnv.VITE_API_URL}.`,
+      { cause },
+    );
+  }
+  if (response.status === 401) {
+    invalidateAccountCache();
+    return null;
+  }
   if (!response.ok) {
     const result = await response.json().catch(() => null);
     throw new Error(
