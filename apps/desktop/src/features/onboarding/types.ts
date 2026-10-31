@@ -26,7 +26,14 @@ export type AcademicConnection = {
   kind: 'canvas' | 'classroom' | 'resource';
   status: ConnectionStatus;
   verifiedAt: string | null;
+  notes: string | null;
+  favicon: string | null;
 };
+// What the study browser is showing right now, before anything is stored.
+export type PreviewedConnection = Pick<
+  AcademicConnection,
+  'name' | 'url' | 'host' | 'kind' | 'status'
+>;
 export type LaunchAtLoginPreference = {
   requested: boolean;
   applied: boolean;

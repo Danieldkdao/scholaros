@@ -24,6 +24,8 @@ const connection = (
   kind: 'canvas',
   status: 'verified',
   verifiedAt: null,
+  notes: null,
+  favicon: null,
   ...overrides,
 });
 
