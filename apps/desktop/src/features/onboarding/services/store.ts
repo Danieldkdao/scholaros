@@ -265,7 +265,7 @@ export const markAcademicDiscoveryRunning = (userId: string) => {
 export const applyAcademicDiscovery = (
   userId: string,
   results: AcademicDiscoveryResult[],
-  options: { cancelled?: boolean; now?: string } = {},
+  options: { cancelled?: boolean; now?: string; notesOmitted?: boolean } = {},
 ) => {
   getOnboardingState(userId);
   const now = options.now ?? new Date().toISOString();
@@ -319,7 +319,9 @@ export const applyAcademicDiscovery = (
     tx.update(AcademicContextTable)
       .set({
         discoveryStatus: summary.status,
-        discoveryMessage: summary.message,
+        discoveryMessage: options.notesOmitted
+          ? `${summary.message ?? 'Discovery finished.'} Some general notes were omitted because they were too long.`
+          : summary.message,
         discoveredAt: summary.discoveredAt,
         discoveryCoverage: summary.coverage,
       })

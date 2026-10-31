@@ -1,3 +1,4 @@
+import { composeAgentNotes } from '../lib/agent-notes';
 import { createMissionNavigator } from './mission-navigation';
 import { courseDiscoverySchema } from '@scholaros/services/ai/schemas';
 import { accountRequest } from '../../../lib/auth/main';
@@ -56,6 +57,7 @@ const performAcademicDiscovery = async (
     ? AbortSignal.any([controller.signal, externalSignal])
     : controller.signal;
   const results: AcademicDiscoveryResult[] = [];
+  let notesOmitted = false;
   try {
     const workspace = await getWorkspace(
       userId,
@@ -132,13 +134,19 @@ const performAcademicDiscovery = async (
                   ...(link.context ? { context: link.context } : {}),
                 }));
               if (!targets.length) return [];
+              const composedNotes = composeAgentNotes(
+                connection.host,
+                connection.notes,
+                state.settings.notes,
+              );
+              notesOmitted ||= composedNotes.omitted;
               const result = courseDiscoverySchema.parse(
                 await accountRequest(
                   '/api/agent',
                   {
                     kind: 'discover',
                     goal: 'Find my current enrolled courses',
-                    notes: state.settings.notes,
+                    notes: composedNotes.notes,
                     pages: [
                       {
                         url: snapshot.url,
@@ -225,7 +233,11 @@ const performAcademicDiscovery = async (
         .catch(() => undefined);
     }
     if (!isCurrent()) throw new Error('Your session changed; sign in again.');
-    return applyAcademicDiscovery(userId, results);
+    return applyAcademicDiscovery(
+      userId,
+      results,
+      notesOmitted ? { notesOmitted: true } : {},
+    );
   } catch (error) {
     // A stopped or failed run still records what could not be read.
     if (isCurrent())

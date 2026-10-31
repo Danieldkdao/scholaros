@@ -67,7 +67,8 @@ export const formatAgentActivity = (event: AgentActivity) => {
       };
     case 'checking':
       return {
-        label: 'Checking the results against your course materials',
+        label:
+          event.detail ?? 'Checking the results against your course materials',
         Icon: ListChecks,
       };
     case 'complete':
