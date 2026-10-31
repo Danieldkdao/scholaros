@@ -30,6 +30,14 @@ export const agentRequestSchema = z.object({
 });
 export type AgentRequestSchema = z.infer<typeof agentRequestSchema>;
 
+export const navigationOperations = ['NAVIGATE', 'DONE', 'BLOCKED'] as const;
+export type NavigationOperation = (typeof navigationOperations)[number];
+export const navigationDecisionSchema = z.object({
+  operation: z.enum(navigationOperations),
+  target: z.string().max(20).nullable(),
+});
+export type NavigationDecisionSchema = z.infer<typeof navigationDecisionSchema>;
+
 export const academicCardKinds = [
   'course',
   'assignment',
