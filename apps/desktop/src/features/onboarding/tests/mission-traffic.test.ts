@@ -94,3 +94,16 @@ it('honors cancellation and an extended cooldown while waiting', async () => {
     traffic.waitForTurn('https://other.example/', controller.signal),
   ).rejects.toThrow();
 });
+
+it('applies the configured delay across parallel workers and rejects invalid delays', async () => {
+  const { traffic, sleep } = setup();
+  const signal = new AbortController().signal;
+  traffic.setIntervalSeconds(0.5);
+  await Promise.all([
+    traffic.waitForTurn('https://school.example/a', signal),
+    traffic.waitForTurn('https://school.example/b', signal),
+  ]);
+  expect(sleep).toHaveBeenCalledWith(500, signal);
+  for (const value of [0, -1, 5.1, NaN])
+    expect(() => traffic.setIntervalSeconds(value)).toThrow();
+});

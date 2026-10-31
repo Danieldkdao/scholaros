@@ -40,84 +40,11 @@ const credentialParameterNames = new Set([
   'token',
 ]);
 
-// A page is refused for naming an action, not for failing to match a known
-// product's url shape, so unfamiliar platforms stay usable.
-const unsafeActionTokens = new Set([
-  'accept',
-  'add',
-  'admin',
-  'administrator',
-  'assessment',
-  'assessments',
-  'authenticate',
-  'callback',
-  'cancel',
-  'cas',
-  'checkout',
-  'comment',
-  'comments',
-  'compose',
-  'confirm',
-  'create',
-  'decline',
-  'delete',
-  'destroy',
-  'discard',
-  'drop',
-  'edit',
-  'enroll',
-  'enrolled',
-  'enrollment',
-  'enrollments',
-  'erase',
-  'exam',
-  'exams',
-  'import',
-  'inbox',
-  'login',
-  'logout',
-  'logoff',
-  'logon',
-  'manage',
-  'message',
-  'messages',
-  'new',
-  'news',
-  'oauth',
-  'outbox',
-  'override',
-  'pay',
-  'post',
-  'posts',
-  'preferences',
-  'publish',
-  'purchase',
-  'purge',
-  'quiz',
-  'quizzes',
-  'reject',
-  'remove',
-  'replies',
-  'reply',
-  'respond',
-  'saml',
-  'save',
-  'send',
-  'settings',
-  'shibboleth',
-  'signin',
-  'signout',
-  'submission',
-  'submissions',
-  'submit',
-  'sso',
-  'take',
-  'unenroll',
-  'unpublish',
-  'update',
-  'upload',
-  'withdraw',
-]);
+let blockedWords: string[] = [];
+
+export const configureBrowserPolicy = (words: string[]) => {
+  blockedWords = words.map((word) => word.trim().toLowerCase()).filter(Boolean);
+};
 
 const decodeRepeatedly = (value: string) => {
   let current = value;
@@ -145,9 +72,7 @@ const namesAction = (segments: string[]) =>
   segments.some((segment) => {
     const decoded = decodeRepeatedly(segment);
     if (decoded === null) return true;
-    return segmentTokens(decoded).some((token) =>
-      unsafeActionTokens.has(token),
-    );
+    return segmentTokens(decoded).some((token) => blockedWords.includes(token));
   });
 
 export const isAcademicUrl = (value: string): boolean => {
@@ -207,40 +132,12 @@ const inspectUrl = (value: string): UrlInspection | null => {
   const names: string[] = [];
   const values: string[] = [];
   let credential = fragmentHasCredentials(url.hash);
-  let unsafeSelector = false;
-  for (const [name, value] of new URLSearchParams(decodedSearch)) {
-    const tokens = segmentTokens(name);
-    if (
-      tokens.some((token) =>
-        ['action', 'operation', 'cmd', 'command', 'method', 'do'].includes(
-          token,
-        ),
-      )
-    ) {
-      const operation = segmentTokens(value)[0];
-      if (
-        ![
-          'get',
-          'list',
-          'read',
-          'view',
-          'browse',
-          'fetch',
-          'search',
-          'load',
-          'show',
-        ].includes(operation ?? '')
-      )
-        unsafeSelector = true;
-    }
-  }
   for (const [name, parameterValue] of new URLSearchParams(url.search)) {
     names.push(name);
     values.push(parameterValue);
     if (hasCredentialName(name)) credential = true;
   }
   const unsafe =
-    unsafeSelector ||
     decodedPath.includes('..') ||
     namesAction([url.pathname, url.hash, ...names, ...values]);
   return { url, host, unsafe, credential };
@@ -251,6 +148,12 @@ export const isReadNavigation = (value: string, hosts: string[]): boolean => {
   if (!inspected || inspected.unsafe || inspected.credential) return false;
   return hosts.includes(inspected.host);
 };
+
+export const isReadOnlyEmbed = (value: string): boolean =>
+  isReadNavigation(value, ['docs.google.com']) &&
+  /^\/presentation\/(?:u\/\d+\/)?d\/(?:e\/)?[\w-]+\/(?:embed|pubembed|preview)\/?$/.test(
+    new URL(value).pathname,
+  );
 
 // Identity is compared across navigation, snapshots, source validation, and
 // persistence, so query and fragment parts that distinguish pages are kept and

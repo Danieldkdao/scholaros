@@ -9,7 +9,7 @@ type TrafficOptions = {
 export const createMissionTrafficController = ({
   now = Date.now,
   sleep = (milliseconds, signal) => delay(milliseconds, undefined, { signal }),
-  intervalMs = 2000,
+  intervalMs = 1000,
 }: TrafficOptions = {}) => {
   const schools = new Map<string, { nextAt: number; cooldownUntil: number }>();
   const stateFor = (url: string) => {
@@ -73,7 +73,19 @@ export const createMissionTrafficController = ({
     )
       throw recordRateLimit(url);
   };
-  return { waitForTurn, recordRateLimit, assertPageContent };
+  const setIntervalSeconds = (seconds: number) => {
+    if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 5)
+      throw new Error(
+        'Decision time must be greater than zero and at most five seconds.',
+      );
+    intervalMs = seconds * 1000;
+  };
+  return {
+    waitForTurn,
+    recordRateLimit,
+    assertPageContent,
+    setIntervalSeconds,
+  };
 };
 
 export const missionTraffic = createMissionTrafficController();

@@ -1,7 +1,13 @@
 import { missionTraffic } from './mission-traffic';
 import type { Page } from '@browserbasehq/stagehand';
-import { isAcademicUrl, isReadNavigation } from '../lib/browser-policy';
+import {
+  academicPageIdentity,
+  isAcademicUrl,
+  isReadNavigation,
+  isReadOnlyEmbed,
+} from '../lib/browser-policy';
 import { isSignInPage } from '../lib/connection-policy';
+import type { AccountContinuation } from './account-continuation';
 
 export type MissionProtection = (() => Promise<void>) & {
   assertReadable: () => void;
@@ -10,11 +16,13 @@ export type MissionProtection = (() => Promise<void>) & {
 type SendCommand = (
   method: string,
   params: Record<string, unknown>,
+  sessionId?: string,
 ) => Promise<unknown>;
 type PausedRequest = {
   requestId: string;
   resourceType: string;
   request: { url: string; method: string };
+  mainFrame?: boolean;
 };
 export type BlockedRequest = {
   host: string;
@@ -31,20 +39,43 @@ export const handleMissionRequest = async (
   hosts: string[],
   event: PausedRequest,
   onBlocked?: (blocked: BlockedRequest) => void,
+  continuation?: AccountContinuation,
 ) => {
   const { url, method } = event.request;
   let allowed = false;
   if (readMethods.includes(method) && isAcademicUrl(url)) {
     const parsed = new URL(url);
     if (event.resourceType === 'Document')
-      allowed = isReadNavigation(url, hosts);
-    else if (passiveResourceTypes.includes(event.resourceType))
-      allowed = isReadNavigation(url, [parsed.hostname]);
-    else if (hosts.includes(parsed.hostname))
-      // Same-origin application reads use the same action and credential rules
-      // as documents, so no platform needs its own api path list.
-      allowed = isReadNavigation(url, hosts);
+      allowed =
+        isReadNavigation(url, hosts) ||
+        (event.mainFrame === false && isReadOnlyEmbed(url));
+    else if (passiveResourceTypes.includes(event.resourceType)) {
+      // Script and stylesheet filenames describe assets, not navigation actions.
+      if (
+        (event.resourceType === 'Stylesheet' &&
+          /\.css$/i.test(parsed.pathname)) ||
+        (event.resourceType === 'Script' && /\.m?js$/i.test(parsed.pathname))
+      )
+        parsed.pathname = parsed.pathname.slice(
+          0,
+          parsed.pathname.lastIndexOf('/') + 1,
+        );
+      allowed = isReadNavigation(academicPageIdentity(parsed.href) ?? '', [
+        parsed.hostname,
+      ]);
+    } else if (hosts.includes(parsed.hostname)) {
+      // These Schoology sidebar reads list assignments; they do not submit work.
+      if (
+        ['XHR', 'Fetch'].includes(event.resourceType) &&
+        parsed.hostname.endsWith('.schoology.com') &&
+        /^\/home\/(?:upcoming|overdue)_submissions_ajax$/.test(parsed.pathname)
+      )
+        parsed.pathname = '/';
+      allowed = isReadNavigation(parsed.href, hosts);
+    }
   }
+  if (!allowed && isAcademicUrl(url))
+    allowed = continuation?.allowRequest(event, !!event.mainFrame) ?? false;
   if (!allowed) {
     const parsed = new URL(url);
     onBlocked?.({
@@ -69,6 +100,7 @@ export const protectMissionPage = async (
   cdpUrl: string,
   hosts: string[],
   onBlocked?: (blocked: BlockedRequest) => void,
+  continuation?: AccountContinuation,
 ) => {
   const endpoint = new URL(cdpUrl);
   if (endpoint.hostname !== '127.0.0.1' || endpoint.protocol !== 'http:')
@@ -118,7 +150,7 @@ export const protectMissionPage = async (
     pending.clear();
     if (!disposing) void closeProtectedPage();
   };
-  const send: SendCommand = (method, params) =>
+  const send: SendCommand = (method, params, sessionId) =>
     new Promise((resolve, reject) => {
       const id = ++sequence;
       const timer = setTimeout(() => {
@@ -134,13 +166,35 @@ export const protectMissionPage = async (
       }, 4000);
       pending.set(id, { resolve, reject, timer });
       try {
-        socket.send(JSON.stringify({ id, method, params }));
+        socket.send(JSON.stringify({ id, method, params, sessionId }));
       } catch {
         clearTimeout(timer);
         pending.delete(id);
         reject(new Error('The browser protection connection is unavailable.'));
       }
     });
+  const enableProtection = async (sessionId?: string) => {
+    await send('Network.enable', {}, sessionId);
+    await send('Network.setBypassServiceWorker', { bypass: true }, sessionId);
+    await send(
+      'Fetch.enable',
+      {
+        patterns: [{ urlPattern: '*', requestStage: 'Request' }],
+      },
+      sessionId,
+    );
+    // Cross-origin frames have separate CDP sessions and need the same guard.
+    await send(
+      'Target.setAutoAttach',
+      {
+        autoAttach: true,
+        waitForDebuggerOnStart: true,
+        flatten: true,
+        filter: [{ type: 'iframe' }, { exclude: true }],
+      },
+      sessionId,
+    );
+  };
   socket.addEventListener('message', (event) => {
     try {
       const message = JSON.parse(String(event.data));
@@ -154,6 +208,14 @@ export const protectMissionPage = async (
             new Error('The browser could not apply mission protection.'),
           );
         else entry.resolve(message.result);
+      } else if (message.method === 'Target.attachedToTarget') {
+        const { sessionId } = message.params;
+        void enableProtection(sessionId)
+          .then(() => send('Runtime.runIfWaitingForDebugger', {}, sessionId))
+          .catch(() => {
+            socket.close();
+            fail();
+          });
       } else if (message.method === 'Network.responseReceived') {
         const response = message.params.response;
         if (hosts.includes(new URL(response.url).hostname)) {
@@ -170,21 +232,32 @@ export const protectMissionPage = async (
             );
         }
       } else if (message.method === 'Fetch.requestPaused') {
+        const sendForRequest: SendCommand = (method, params) =>
+          send(method, params, message.sessionId);
         if (protectionFailure) {
-          void send('Fetch.failRequest', {
+          void sendForRequest('Fetch.failRequest', {
             requestId: message.params.requestId,
             errorReason: 'BlockedByClient',
           }).catch(fail);
           return;
         }
-        void handleMissionRequest(send, hosts, message.params, (blocked) => {
-          onBlocked?.({
-            ...blocked,
+        void handleMissionRequest(
+          sendForRequest,
+          hosts,
+          {
+            ...message.params,
             mainFrame: message.params.frameId === mainFrameId,
-            signInWall:
-              blocked.signInWall && message.params.frameId === mainFrameId,
-          });
-        })
+          },
+          (blocked) => {
+            onBlocked?.({
+              ...blocked,
+              mainFrame: message.params.frameId === mainFrameId,
+              signInWall:
+                blocked.signInWall && message.params.frameId === mainFrameId,
+            });
+          },
+          continuation,
+        )
           .then((allowed) => {
             if (
               !allowed &&
@@ -249,11 +322,7 @@ export const protectMissionPage = async (
     mainFrameId = frameTree.frameTree?.frame?.id ?? null;
     if (!mainFrameId)
       throw new Error('The mission page frame could not be identified.');
-    await send('Network.enable', {});
-    await send('Network.setBypassServiceWorker', { bypass: true });
-    await send('Fetch.enable', {
-      patterns: [{ urlPattern: '*', requestStage: 'Request' }],
-    });
+    await enableProtection();
   } catch (error) {
     disposing = true;
     socket.close();
