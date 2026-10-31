@@ -15,6 +15,8 @@ const baseState: OnboardingState = {
     consent: false,
     launchAtLogin: false,
     backgroundSync: false,
+    decisionTimeSeconds: 1,
+    blockedWords: [],
     notes: '',
     localSetupCompletedAt: null,
   },

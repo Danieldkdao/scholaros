@@ -14,6 +14,13 @@ const mocks = vi.hoisted(() => ({
   startPreview: vi.fn(),
   getPreview: vi.fn(),
   discoverAcademicContext: vi.fn(),
+  startCourseRefresh: vi.fn(),
+  getCoursesSnapshot: vi.fn(() => ({
+    courses: [],
+    sources: [],
+    lastSuccessfulAt: null,
+  })),
+  getCourseDetail: vi.fn(() => null),
   resolveConnections: vi.fn(),
   connectWorkspace: vi.fn(),
   workspace: vi.fn(),
@@ -66,6 +73,14 @@ vi.mock('../src/features/onboarding/services/store', () => ({
     };
     return mocks.state;
   },
+}));
+vi.mock('../src/features/courses/services/refresh', () => ({
+  startCourseRefresh: mocks.startCourseRefresh,
+  cancelCourseRefresh: vi.fn(),
+}));
+vi.mock('../src/features/courses/services/store', () => ({
+  getCoursesSnapshot: mocks.getCoursesSnapshot,
+  getCourseDetail: mocks.getCourseDetail,
 }));
 vi.mock('../src/features/onboarding/services/browser-discovery', () => ({
   chooseBrowser: vi.fn(),
@@ -139,6 +154,7 @@ const readyState = () =>
         kind: 'canvas',
         status: 'confirmed',
         verifiedAt: null,
+        isCourseResource: true,
       },
     ],
     primaryLms: null,
@@ -154,6 +170,11 @@ const readyState = () =>
       backgroundSync: { status: 'off', message: null, lastSyncedAt: null },
     },
   }) as unknown as typeof mocks.state;
+
+const refreshed = () => ({
+  state: mocks.state as unknown as OnboardingState,
+  snapshot: { courses: [], sources: [], lastSuccessfulAt: null },
+});
 
 beforeEach(async () => {
   vi.clearAllMocks();
@@ -251,6 +272,7 @@ describe('foreground browser work and background sync', () => {
       hasCompletedOnboarding: true,
     });
     mocks.discoverAcademicContext.mockImplementation(async () => mocks.state);
+    mocks.startCourseRefresh.mockImplementation(async () => refreshed());
     await invoke('getState');
   });
 
@@ -278,28 +300,68 @@ describe('foreground browser work and background sync', () => {
       expect(mocks.discoverAcademicContext).toHaveBeenCalledOnce(),
     );
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(mocks.discoverAcademicContext).toHaveBeenCalledOnce();
+    expect(mocks.startCourseRefresh).not.toHaveBeenCalled();
     finish(mocks.state);
     await expect(refreshing).resolves.toMatchObject({
       preferences: { backgroundSync: { status: 'waiting' } },
     });
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(mocks.discoverAcademicContext).toHaveBeenCalledTimes(2);
+    expect(mocks.startCourseRefresh).toHaveBeenCalledOnce();
   });
 
   it('keeps sync suspended until the preview task settles', async () => {
     await invoke('startPreview', 'courses');
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(mocks.discoverAcademicContext).not.toHaveBeenCalled();
+    expect(mocks.startCourseRefresh).not.toHaveBeenCalled();
     const onSettled = mocks.startPreview.mock.calls.at(-1)?.[2];
     expect(onSettled).toBeTypeOf('function');
     onSettled();
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(mocks.discoverAcademicContext).toHaveBeenCalledOnce();
+    expect(mocks.startCourseRefresh).toHaveBeenCalledOnce();
+  });
+
+  it('leaves scheduled work off until a connection is a course resource', async () => {
+    mocks.state.connections[0].isCourseResource = false;
+    await expect(invoke('getState')).resolves.toMatchObject({
+      preferences: { backgroundSync: { status: 'off' } },
+    });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(mocks.startCourseRefresh).not.toHaveBeenCalled();
+  });
+
+  it('leaves scheduled work off when the marked resource needs sign-in', async () => {
+    mocks.state.connections[0].status = 'needs-sign-in';
+    await expect(invoke('getState')).resolves.toMatchObject({
+      preferences: { backgroundSync: { status: 'off' } },
+    });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(mocks.startCourseRefresh).not.toHaveBeenCalled();
+  });
+
+  it('runs one pipeline for both the schedule and the manual button', async () => {
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(mocks.startCourseRefresh).toHaveBeenCalledOnce();
+    expect(mocks.startCourseRefresh.mock.calls[0]?.[0]).toBe('student-a');
+    await expect(invoke('refreshCourses')).resolves.toEqual({
+      courses: [],
+      sources: [],
+      lastSuccessfulAt: null,
+    });
+    expect(mocks.startCourseRefresh).toHaveBeenCalledTimes(2);
+    expect(mocks.discoverAcademicContext).not.toHaveBeenCalled();
+  });
+
+  it('reads the saved catalog without touching the study browser', async () => {
+    await expect(invoke('getCourses')).resolves.toEqual({
+      courses: [],
+      sources: [],
+      lastSuccessfulAt: null,
+    });
+    expect(mocks.workspace).not.toHaveBeenCalled();
   });
 
   it('waits for a paused refresh to persist cancellation before returning state', async () => {
-    mocks.discoverAcademicContext.mockImplementationOnce(
+    mocks.startCourseRefresh.mockImplementationOnce(
       (userId: string, isCurrent: () => boolean, signal: AbortSignal) =>
         academicTasks.run(
           userId,

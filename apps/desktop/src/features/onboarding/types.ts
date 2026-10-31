@@ -1,5 +1,6 @@
 import type { ConnectRunState } from './services/connect-run';
 import type { ConnectionCandidateSchema } from '@scholaros/services/ai/schemas';
+import type { CourseDetail, CoursesSnapshot } from '../courses/types';
 import type { OnboardingStep, PreviewCardKind, PreviewPrompt } from './schemas';
 
 export type { OnboardingStep, PreviewCardKind, PreviewPrompt };
@@ -33,6 +34,7 @@ export type AcademicConnection = {
   verifiedAt: string | null;
   notes: string | null;
   favicon: string | null;
+  isCourseResource: boolean;
 };
 // What the study browser is showing right now, before anything is stored.
 export type PreviewedConnection = Pick<
@@ -198,10 +200,18 @@ export type ScholarBridge = {
     connectionId: string,
     notes: string,
   ) => Promise<OnboardingState>;
+  setCourseResource: (
+    connectionId: string,
+    isCourseResource: boolean,
+  ) => Promise<OnboardingState>;
   confirmResource: (connectionId: string) => Promise<OnboardingState>;
   removeResource: (connectionId: string) => Promise<OnboardingState>;
   setPrimaryLms: (connectionId: string) => Promise<OnboardingState>;
   discoverContext: () => Promise<OnboardingState>;
+  getCourses: () => Promise<CoursesSnapshot>;
+  getCourse: (courseId: string) => Promise<CourseDetail | null>;
+  refreshCourses: () => Promise<CoursesSnapshot>;
+  cancelCourseRefresh: () => Promise<void>;
   pauseBackgroundSync: () => Promise<OnboardingState>;
   resumeBackgroundSync: () => Promise<OnboardingState>;
   onBackgroundSyncChange: (

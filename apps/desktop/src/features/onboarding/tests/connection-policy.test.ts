@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { configureBrowserPolicy } from '../lib/browser-policy';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { classifyCapturedPage, isSignInPage } from '../lib/connection-policy';
 
 const canvasEvidence = {
@@ -180,3 +181,5 @@ it.each(['/login', '/auth/sign-in', '/oauth/authorize', '/%6cogin'])(
     expect(isSignInPage('school.edu', path)).toBe(true);
   },
 );
+
+beforeEach(() => configureBrowserPolicy(['submit', 'delete']));

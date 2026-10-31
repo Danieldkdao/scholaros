@@ -8,6 +8,7 @@ import { db } from '../../../db';
 import { profileDirectoryFor } from '../lib/profile-directory';
 import { summarizeDiscovery } from '../lib/discovery-outcomes';
 import { getLaunchAtLoginState } from './preferences';
+import { detachCourseSource } from '../../courses/services/store';
 import type { ConnectionOutcome } from '../lib/discovery-outcomes';
 import type {
   AcademicContextEntryDraft,
@@ -204,6 +205,9 @@ export const removeAcademicConnection = (userId: string, id: string) => {
         ),
       )
       .run();
+    // Saved courses outlive the connection and are labelled as coming from a
+    // removed source instead of being deleted with it.
+    detachCourseSource(userId, id);
     tx.update(AcademicContextTable)
       .set({ primaryLms: null })
       .where(

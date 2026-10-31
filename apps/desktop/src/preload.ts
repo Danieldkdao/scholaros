@@ -37,10 +37,16 @@ const bridge: ScholarBridge = {
   previewResource: () => ipcRenderer.invoke('scholar:previewResource'),
   saveConnectionNotes: (id, notes) =>
     ipcRenderer.invoke('scholar:saveConnectionNotes', { id, notes }),
+  setCourseResource: (id, isCourseResource) =>
+    ipcRenderer.invoke('scholar:setCourseResource', { id, isCourseResource }),
   confirmResource: (id) => ipcRenderer.invoke('scholar:confirmResource', id),
   removeResource: (id) => ipcRenderer.invoke('scholar:removeResource', id),
   setPrimaryLms: (id) => ipcRenderer.invoke('scholar:setPrimaryLms', id),
   discoverContext: () => ipcRenderer.invoke('scholar:discoverContext'),
+  getCourses: () => ipcRenderer.invoke('scholar:getCourses'),
+  getCourse: (courseId) => ipcRenderer.invoke('scholar:getCourse', courseId),
+  refreshCourses: () => ipcRenderer.invoke('scholar:refreshCourses'),
+  cancelCourseRefresh: () => ipcRenderer.invoke('scholar:cancelCourseRefresh'),
   pauseBackgroundSync: () => ipcRenderer.invoke('scholar:pauseBackgroundSync'),
   resumeBackgroundSync: () =>
     ipcRenderer.invoke('scholar:resumeBackgroundSync'),

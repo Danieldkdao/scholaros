@@ -271,6 +271,7 @@ describe('durable academic context', () => {
         verifiedAt: null,
         notes: null,
         favicon: null,
+        isCourseResource: false,
       },
       {
         url: 'https://canvas.school.edu/courses',

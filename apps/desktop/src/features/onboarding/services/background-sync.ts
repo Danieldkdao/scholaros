@@ -68,7 +68,7 @@ export const createBackgroundSyncController = <TResult>({
     if (running)
       return {
         status: 'syncing',
-        message: 'Checking your connected course pages.',
+        message: 'Checking your selected course sources.',
         lastSyncedAt,
       };
     if (error) return { status: 'blocked', message: error, lastSyncedAt };

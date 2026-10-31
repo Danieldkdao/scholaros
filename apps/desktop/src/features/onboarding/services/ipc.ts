@@ -43,6 +43,7 @@ import {
   confirmResource,
   previewResource,
   saveConnectionNotes,
+  setCourseResource,
   setPrimaryLms,
 } from './connections';
 import {
@@ -58,6 +59,15 @@ import { applyLaunchAtLogin, getLaunchAtLoginState } from './preferences';
 import { completeOnboarding } from './completion';
 import { discoverAcademicContext } from './discovery';
 import { createBackgroundSyncController } from './background-sync';
+import {
+  getCourseDetail,
+  getCoursesSnapshot,
+} from '../../courses/services/store';
+import {
+  cancelCourseRefresh,
+  startCourseRefresh,
+  type CourseRefreshResult,
+} from '../../courses/services/refresh';
 import type { LaunchAtLoginPreference, OnboardingState } from '../types';
 
 const idSchema = z.string().min(1).max(300);
@@ -71,22 +81,24 @@ let boundOnboardingComplete = false;
 type IpcContext = { userId: string; isCurrent: () => boolean };
 
 let backgroundSyncAccountId: string | null = null;
-const backgroundSync = createBackgroundSyncController<OnboardingState>({
+// Scheduled work runs the same pipeline as the manual button, so one set of
+// protections, bounds and persistence rules covers both.
+const backgroundSync = createBackgroundSyncController<CourseRefreshResult>({
   runDiscovery: async (userId, isCurrent, signal) => {
     if (!isCurrent()) throw new Error('Your session changed; sign in again.');
     const user = await getCurrentUser();
     if (!isCurrent() || user?.id !== userId)
       throw new Error('Please sign in again to resume background sync.');
-    return discoverAcademicContext(userId, isCurrent, signal);
+    return startCourseRefresh(userId, isCurrent, signal);
   },
-  syncFailure: (discovered) => syncFailureMessage(discovered.discovery),
-  onChange: (syncState, discovered) => {
+  syncFailure: (refreshed) => syncFailureMessage(refreshed.state.discovery),
+  onChange: (syncState, refreshed) => {
     for (const window of BrowserWindow.getAllWindows())
       if (!window.isDestroyed())
         window.webContents.send('scholar:backgroundSyncChange', {
           accountId: backgroundSyncAccountId,
           state: syncState,
-          discovery: discovered?.discovery ?? null,
+          discovery: refreshed?.state.discovery ?? null,
         });
   },
 });
@@ -114,7 +126,8 @@ const prepareState = (
       settled.settings.consent &&
       settled.workspace?.ready === true &&
       settled.connections.some(
-        (connection) => connection.status !== 'needs-sign-in',
+        (connection) =>
+          connection.isCourseResource && connection.status !== 'needs-sign-in',
       ),
     isCurrent,
   });
@@ -457,6 +470,16 @@ export const registerOnboardingIpc = () => {
       isCurrent,
     );
   });
+  handle('setCourseResource', ({ userId, isCurrent }, input) => {
+    const data = z
+      .object({ id: idSchema, isCourseResource: z.boolean() })
+      .parse(input);
+    return prepareState(
+      setCourseResource(userId, data.id, data.isCourseResource),
+      undefined,
+      isCurrent,
+    );
+  });
   handle('confirmResource', ({ userId, isCurrent }, input) => {
     requireConsent(userId);
     return prepareState(
@@ -495,6 +518,30 @@ export const registerOnboardingIpc = () => {
       return discoverAcademicContext(userId, isCurrent);
     });
     return prepareState(state, undefined, isCurrent);
+  });
+  handle('getCourses', ({ userId }) => getCoursesSnapshot(userId));
+  handle('getCourse', ({ userId }, input) =>
+    getCourseDetail(userId, idSchema.parse(input)),
+  );
+  // A manual refresh takes the study browser over from a scheduled one, exactly
+  // like every other foreground browser action.
+  handle('refreshCourses', async ({ userId, isCurrent }) => {
+    requireConsent(userId);
+    if (
+      !boundOnboardingComplete ||
+      !getOnboardingState(userId).settings.localSetupCompletedAt
+    )
+      throw new Error('Courses are available from your dashboard after setup.');
+    return withBrowserWorkStopped(async () => {
+      if (!isCurrent()) throw new Error('Your session changed; sign in again.');
+      const refreshed = await startCourseRefresh(userId, isCurrent);
+      // Re-evaluating eligibility keeps the scheduler honest after a scan.
+      prepareState(refreshed.state, undefined, isCurrent);
+      return refreshed.snapshot;
+    });
+  });
+  handle('cancelCourseRefresh', () => {
+    cancelCourseRefresh();
   });
   handle('pauseBackgroundSync', async ({ userId, isCurrent }) => {
     const wasSyncing = backgroundSync.getState().status === 'syncing';

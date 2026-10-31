@@ -41,7 +41,10 @@ The agent finds authorized exam information and materials, connects the concepts
 - Support missions such as finding exam material, catching up after an absence, or reviewing the coming week.
 - Show understandable activity updates, discovered sources, and a way to cancel a mission.
 - Pace school navigation, reuse observed rendering dependencies to avoid repeated bootstrap reloads, and respect rate-limit cooldowns across attempts; stop clearly on rate-limit responses instead of treating them as empty course pages.
-- Preserve source links, course context, and retrieval times alongside extracted information.
+- Preserve source links, course context, and retrieval times alongside extracted information; checkpoint findings to local storage as pages are read so cancellation does not discard completed work.
+- Discover the course list once, then scan each course in its own parallel worker tab within the same academic profile, inheriting connection notes and stopping at that course’s task.
+- Auto-save agent settings: a shared navigation delay greater than zero and at most five seconds, defaulting to one second, and an optional URL word block list that is empty by default.
+- Open mission tabs in the background without activating each tab; the browser itself may still appear when its process first starts.
 - Discover courses from confirmed academic home pages through bounded, protected navigation and Meta classification of observed links; unfamiliar platforms do not require a school-name or course-path allowlist.
 - Treat empty course lists as explicit observed evidence, preserve prior results on cancelled or inconclusive refreshes, and distinguish partial coverage and sign-in requirements from successful discovery.
 
@@ -122,9 +125,10 @@ Verify model capabilities in current official documentation. Add models only for
 - Keep academic resources, the course graph, and study history local by default. Cloud accounts support authentication, service access, and rate limits.
 - Explain and minimize content sent to model providers. Local storage does not imply local inference; avoid academic content in cloud logs by default.
 - Students enter academic-service passwords only on the real service. Persist isolated sessions locally and request reconnection when needed.
+- Resource notes may authorize choosing one explicitly named existing account from an unambiguous account picker; credential inputs, unmatched accounts, and further consent require the student to continue manually.
 - Keep personal browser profiles inaccessible. Manage the academic workspace without terminal commands, browser flags, ports, API keys, or developer setup.
 - Enforce domain/resource allowlists and mission boundaries in code, outside model prompts. Account for redirects, subframes, popups, downloads, and SSO destinations.
-- Agent missions are read-only: read, search, navigate, and retrieve permitted material. Block submissions, quiz-taking, messages, uploads, account changes, deletion, and purchases. Safe navigation can require clicking; enforce effects rather than button appearance or HTTP method.
+- Agent missions gather context by reading, searching, and navigating permitted material; exam, quiz, and submission words do not prevent reading by default. Keep mutating requests and form submissions blocked, and apply URL word restrictions only when the student configures them.
 - Require fresh user authorization for any future expansion into write actions. A model classifier may assist review but cannot be the permission boundary.
 - Protect browser sessions and application credentials, restrict IPC, and prevent cloud requests from becoming arbitrary machine-control commands.
 - Provide controls to revoke sources, stop background work, and delete local academic data and the dedicated profile.
