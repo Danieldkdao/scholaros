@@ -49,7 +49,10 @@ function BreadcrumbLink({
     defaultTagName: 'a',
     props: mergeProps<'a'>(
       {
-        className: cn('transition-colors hover:text-foreground', className),
+        className: cn(
+          'transition-colors hover:text-foreground text-base',
+          className,
+        ),
       },
       props,
     ),
@@ -67,7 +70,7 @@ function BreadcrumbPage({ className, ...props }: React.ComponentProps<'span'>) {
       role="link"
       aria-disabled="true"
       aria-current="page"
-      className={cn('font-normal text-foreground', className)}
+      className={cn('font-normal text-foreground text-base', className)}
       {...props}
     />
   );
@@ -107,7 +110,7 @@ function BreadcrumbEllipsis({
       {...props}
     >
       <MoreHorizontalIcon />
-      <span className="sr-only">More</span>
+      <span className="sr-only text-base">More</span>
     </span>
   );
 }
