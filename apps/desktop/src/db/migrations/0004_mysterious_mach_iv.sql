@@ -1,0 +1,1 @@
+ALTER TABLE `academic_connections` ADD `favicon` text;
