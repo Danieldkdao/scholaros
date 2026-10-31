@@ -10,7 +10,9 @@
     "./ai/schemas": "./src/ai/schemas.ts",
     "./ai/models/baseten": "./src/ai/models/baseten.ts",
     "./ai/models/typesafe": "./src/ai/models/typesafe.ts",
-    "./ai/course-discovery": "./src/ai/course-discovery.ts"
+    "./ai/course-discovery": "./src/ai/course-discovery.ts",
+    "./ai/connection-resolver": "./src/ai/connection-resolver.ts",
+    "./ai/models/inference": "./src/ai/models/inference.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
