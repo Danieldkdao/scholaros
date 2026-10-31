@@ -36,6 +36,7 @@ import type {
   PreviewCard,
   PreviewState,
 } from '../types';
+import type { ConnectRunResult } from '../services/connect-run';
 
 export const formatAgentActivity = (event: AgentActivity) => {
   switch (event.type) {
@@ -152,6 +153,27 @@ export const formatConnectionStatus = (status: ConnectionStatus) => {
       return { label: 'Confirmed by you', Icon: CircleCheck };
     case 'needs-sign-in':
       return { label: 'Needs confirmation', Icon: CircleAlert };
+  }
+};
+
+// One entry per site the agent tried, so the run panel can show what happened
+// without re-deciding the wording for each state.
+export const formatConnectRunResult = (status: ConnectRunResult['status']) => {
+  switch (status) {
+    case 'connected':
+      return {
+        label: 'Connected',
+        Icon: CircleCheck,
+        className: 'text-primary',
+      };
+    case 'needs-sign-in':
+      return {
+        label: 'Needs confirmation',
+        Icon: CircleAlert,
+        className: 'text-muted-foreground',
+      };
+    case 'blocked':
+      return { label: 'Blocked', Icon: Ban, className: 'text-destructive' };
   }
 };
 
