@@ -16,6 +16,11 @@ export const settingsUpdateSchema = z
     consent: z.boolean().optional(),
     launchAtLogin: z.boolean().optional(),
     backgroundSync: z.boolean().optional(),
+    decisionTimeSeconds: z.number().positive().max(5).optional(),
+    blockedWords: z
+      .array(z.string().trim().min(1).max(100).toLowerCase())
+      .max(100)
+      .optional(),
     notes: z.string().max(2000).optional(),
   })
   .strict();

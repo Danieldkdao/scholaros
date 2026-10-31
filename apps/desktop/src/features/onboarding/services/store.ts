@@ -1,3 +1,5 @@
+import { configureBrowserPolicy } from '../lib/browser-policy';
+import { missionTraffic } from './mission-traffic';
 import { app } from 'electron';
 import { existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
@@ -96,6 +98,8 @@ export const getOnboardingState = (userId: string): OnboardingState => {
     .from(AcademicContextEntryTable)
     .where(eq(AcademicContextEntryTable.userId, userId))
     .all();
+  configureBrowserPolicy(existingSettings.blockedWords);
+  missionTraffic.setIntervalSeconds(existingSettings.decisionTimeSeconds);
   return {
     accountId: userId,
     settings: {
@@ -103,6 +107,8 @@ export const getOnboardingState = (userId: string): OnboardingState => {
       consent: existingSettings.consent,
       launchAtLogin: existingSettings.launchAtLogin,
       backgroundSync: existingSettings.backgroundSync,
+      decisionTimeSeconds: existingSettings.decisionTimeSeconds,
+      blockedWords: existingSettings.blockedWords,
       localSetupCompletedAt: existingSettings.localSetupCompletedAt,
       notes: existingContext.notes,
     },
