@@ -1,3 +1,4 @@
+import type { ExtractedCourseSchema } from '@scholaros/services/ai/resources/course';
 import {
   index,
   integer,
@@ -27,6 +28,8 @@ export const CourseTable = sqliteTable(
     active: integer('active', { mode: 'boolean' }).notNull().default(true),
     firstSeenAt: text('first_seen_at').notNull(),
     lastSeenAt: text('last_seen_at').notNull(),
+    content: text('content', { mode: 'json' }).$type<ExtractedCourseSchema>(),
+    contentChangedAt: text('content_changed_at'),
     overviewSyncedAt: text('overview_synced_at'),
     announcementsStatus: text('announcements_status')
       .$type<CourseScanStatus>()

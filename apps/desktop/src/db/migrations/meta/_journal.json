@@ -57,6 +57,13 @@
       "when": 1793468591150,
       "tag": "0007_agent-settings",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1793498130533,
+      "tag": "0008_academic-resources",
+      "breakpoints": true
     }
   ]
 }

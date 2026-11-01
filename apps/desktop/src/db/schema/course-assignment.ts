@@ -1,3 +1,4 @@
+import type { ExtractedAssignmentSchema } from '@scholaros/services/ai/resources/assignment';
 import {
   index,
   integer,
@@ -22,6 +23,10 @@ export const CourseAssignmentTable = sqliteTable(
     url: text('url').notNull(),
     active: integer('active', { mode: 'boolean' }).notNull().default(true),
     lastSeenAt: text('last_seen_at').notNull(),
+    content: text('content', {
+      mode: 'json',
+    }).$type<ExtractedAssignmentSchema>(),
+    contentChangedAt: text('content_changed_at'),
   },
   (table) => [
     uniqueIndex('course_assignments_identity_idx').on(

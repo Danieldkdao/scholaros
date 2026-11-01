@@ -1,3 +1,4 @@
+import type { ExtractedAnnouncementSchema } from '@scholaros/services/ai/resources/announcement';
 import {
   index,
   integer,
@@ -22,6 +23,10 @@ export const CourseAnnouncementTable = sqliteTable(
     url: text('url').notNull(),
     active: integer('active', { mode: 'boolean' }).notNull().default(true),
     lastSeenAt: text('last_seen_at').notNull(),
+    content: text('content', {
+      mode: 'json',
+    }).$type<ExtractedAnnouncementSchema>(),
+    contentChangedAt: text('content_changed_at'),
   },
   (table) => [
     uniqueIndex('course_announcements_identity_idx').on(
