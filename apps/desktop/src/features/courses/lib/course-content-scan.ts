@@ -1,15 +1,14 @@
-import {
-  courseContentEvidenceSchema,
-  navigationDecisionSchema,
-} from '@scholaros/services/ai/schemas';
+import { validateResourceExtraction } from '@scholaros/services/ai/resources/validation';
+import { resourceItem, resourceRequest } from './resource-content';
+import { navigationDecisionSchema } from '@scholaros/services/ai/schemas';
 import {
   academicPageIdentity,
   isReadNavigation,
 } from '../../onboarding/lib/browser-policy';
 import { outcomeFromError } from '../../onboarding/lib/discovery-outcomes';
 import {
-  childItemsFrom,
   childPageTarget,
+  pageHasMorePages,
   type CourseChildKind,
 } from './course-content';
 import type { AgentRequestSchema } from '@scholaros/services/ai/schemas';
@@ -21,6 +20,7 @@ export const scanCourseCollection = async ({
   from,
   kind,
   host,
+  allowedHosts = [host],
   courseName,
   excludedUrls,
   notes,
@@ -33,6 +33,7 @@ export const scanCourseCollection = async ({
   from: ObservedPage;
   kind: CourseChildKind;
   host: string;
+  allowedHosts?: string[];
   courseName: string;
   excludedUrls: string[];
   notes: string;
@@ -47,6 +48,7 @@ export const scanCourseCollection = async ({
 }): Promise<CourseChildScan> => {
   const items = new Map<string, CourseChildItem>();
   const inactiveItems = new Map<string, CourseChildItem>();
+  const unresolvedAssignments = new Set<string>();
   const seen = new Set<string>([from.url]);
   const frontier = new Map<
     string,
@@ -56,6 +58,15 @@ export const scanCourseCollection = async ({
   let saving = false;
   let verified = false;
   let incomplete = false;
+  let calls = 0;
+  const pagination = new Set<string>();
+  const requestBounded = (body: AgentRequestSchema) => {
+    if (++calls > 100)
+      throw new Error(
+        'The refresh reached its reading limit; refresh again to continue.',
+      );
+    return request(body);
+  };
   const assertActive = () => {
     signal.throwIfAborted();
     if (!isCurrent()) throw new Error('Your session changed; sign in again.');
@@ -78,6 +89,8 @@ export const scanCourseCollection = async ({
       frontier.delete(current.url);
       incomplete ||= !!current.linksTruncated;
       for (const link of current.links) {
+        if (pageHasMorePages({ ...current, links: [link] }))
+          pagination.add(academicPageIdentity(link.url) ?? link.url);
         const identity = academicPageIdentity(link.url);
         if (
           !identity ||
@@ -101,46 +114,52 @@ export const scanCourseCollection = async ({
       // Overlap keeps an item split at a request boundary visible to extraction.
       for (let offset = 0; offset < Math.max(text.length, 1); offset += 11000) {
         assertActive();
-        const result = courseContentEvidenceSchema.parse(
-          await request({
-            kind: 'course-content',
-            goal,
-            notes,
-            pages: [
-              {
-                url: current.url,
-                title: current.title.slice(0, 500),
-                text: text.slice(offset, offset + 12000),
-              },
-            ],
-          }),
-        );
+        const body = resourceRequest({
+          page: {
+            ...current,
+            text: text.slice(offset, offset + 12000),
+            links: current.links.filter(
+              (link) =>
+                !excludedUrls.some(
+                  (url) => link.url === url || link.url.startsWith(`${url}/`),
+                ),
+            ),
+          },
+          kind,
+          goal,
+          notes,
+          host,
+          allowedHosts,
+          courseUrl: from.url,
+          courseName,
+          truncated: text.length > 12000,
+        });
+        const output = await requestBounded(body);
         assertActive();
+        const result = validateResourceExtraction(body, kind, output);
         verified ||= result.coverage === 'complete';
         incomplete ||= result.coverage === 'partial';
-        for (const card of result.cards) {
-          if (card.sourceUrl !== current.url) {
-            incomplete = true;
-            continue;
-          }
-          if (kind === 'assignments' && card.kind === 'assignment') {
-            if (card.assignmentState === 'unknown') incomplete = true;
-            if (
-              card.assignmentState === 'submitted' ||
-              card.assignmentState === 'inactive'
-            ) {
-              for (const item of childItemsFrom([card], kind, current.url)) {
-                const key = `${item.url}\n${item.title.toLowerCase()}`;
-                items.delete(key);
-                inactiveItems.set(key, item);
-              }
+        const records =
+          'assignments' in result ? result.assignments : result.announcements;
+        for (const record of records) {
+          const item = resourceItem(record, body.context.retrievedAt);
+          const key = record.sourceId
+            ? `id:${record.sourceId}`
+            : record.url
+              ? `url:${record.url}`
+              : `${item.url}\n${item.title.toLowerCase()}`;
+          if ('state' in record) {
+            if (record.state === 'unknown') {
+              incomplete = true;
+              if (record.url) unresolvedAssignments.add(record.url);
             }
-            if (card.assignmentState !== 'active-unsubmitted') continue;
+            if (record.state === 'submitted' || record.state === 'inactive') {
+              items.delete(key);
+              inactiveItems.set(key, item);
+            }
+            if (record.state !== 'active-unsubmitted') continue;
           }
-          for (const item of childItemsFrom([card], kind, current.url)) {
-            const key = `${item.url}\n${item.title.toLowerCase()}`;
-            if (!inactiveItems.has(key)) items.set(key, item);
-          }
+          if (!inactiveItems.has(key)) items.set(key, item);
         }
         saving = true;
         onProgress?.(finish('partial'));
@@ -150,6 +169,17 @@ export const scanCourseCollection = async ({
         current = await context.openFrom(from, direct);
         seen.add(direct);
         frontier.delete(direct);
+        continue;
+      }
+      // Unknown work needs detail evidence before the model can end the scan.
+      const unresolved = [...frontier.entries()].find(([, link]) =>
+        unresolvedAssignments.has(link.url),
+      );
+      if (unresolved) {
+        const [identity, link] = unresolved;
+        frontier.delete(identity);
+        seen.add(identity);
+        current = await context.openFrom(link.from, link.url);
         continue;
       }
       if (context.revealContent) {
@@ -186,7 +216,7 @@ export const scanCourseCollection = async ({
           url: link.url,
         }));
         const choice = navigationDecisionSchema.parse(
-          await request({
+          await requestBounded({
             kind: 'choose',
             goal: `${goal} Explore modules, folders and pagination; open details to resolve unknown statuses; DONE only when no offered link adds evidence.`,
             notes,
@@ -216,7 +246,13 @@ export const scanCourseCollection = async ({
         }
       }
       if (!next)
-        return finish(verified && !incomplete ? 'complete' : 'partial');
+        return finish(
+          verified &&
+            !incomplete &&
+            ![...pagination].some((url) => !seen.has(url))
+            ? 'complete'
+            : 'partial',
+        );
       current = await context.openFrom(next.from, next.url);
     }
   } catch (error) {

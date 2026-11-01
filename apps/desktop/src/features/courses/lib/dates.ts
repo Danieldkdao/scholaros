@@ -1,64 +1,56 @@
-const monthNames = [
-  'jan',
-  'feb',
-  'mar',
-  'apr',
-  'may',
-  'jun',
-  'jul',
-  'aug',
-  'sep',
-  'oct',
-  'nov',
-  'dec',
-];
+import { format, parseISO, startOfDay } from 'date-fns';
+import {
+  academicDateSchema,
+  type AcademicDateSchema,
+} from '@scholaros/services/ai/resources/shared';
+import type { CourseChildItem } from '../types';
 
-const dateOnlyPattern = /^(\d{4})-(\d{2})-(\d{2})$/;
-// Only a timestamp carrying its own zone is unambiguous enough to store.
-const zonedTimestampPattern =
-  /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})$/;
-const namedDatePattern =
-  /^([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})$/;
-
-const isRealDate = (year: number, month: number, day: number) => {
-  const date = new Date(Date.UTC(year, month - 1, day));
-  return (
-    date.getUTCFullYear() === year &&
-    date.getUTCMonth() === month - 1 &&
-    date.getUTCDate() === day
-  );
+export const legacyDateFrom = ({
+  dateValue,
+  dateText,
+}: {
+  dateValue: string | null;
+  dateText: string | null;
+}): AcademicDateSchema | null => {
+  const original = dateText?.trim() || dateValue;
+  if (!original) return null;
+  if (
+    dateValue &&
+    /^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/.test(dateValue)
+  ) {
+    const parsed = academicDateSchema.safeParse({
+      kind: 'local',
+      date: dateValue.slice(0, 10),
+      time: dateValue.slice(11),
+      original,
+    });
+    if (parsed.success) return parsed.data;
+  }
+  if (dateValue) {
+    const candidate = /^\d{4}-\d{2}-\d{2}$/.test(dateValue)
+      ? { kind: 'date', date: dateValue, original }
+      : { kind: 'instant', instant: dateValue, timezone: null, original };
+    const parsed = academicDateSchema.safeParse(candidate);
+    if (parsed.success) return parsed.data;
+  }
+  return {
+    kind: 'unresolved',
+    original,
+    reason: 'Refresh this source to establish its date.',
+  };
 };
 
-const pad = (value: number) => String(value).padStart(2, '0');
+export const academicDateFor = (
+  item: Pick<CourseChildItem, 'content' | 'dateValue' | 'dateText'>,
+): AcademicDateSchema | null => {
+  if (item.content)
+    return 'due' in item.content ? item.content.due : item.content.published;
+  return legacyDateFrom(item);
+};
 
-// Ambiguous dates stay as source wording rather than becoming guessed deadlines.
-export const storedDateFrom = (
-  raw: string | null,
-): { dateValue: string | null; dateText: string | null } => {
-  const text = raw?.replace(/\s+/g, ' ').trim() ?? '';
-  if (!text) return { dateValue: null, dateText: null };
-  if (
-    zonedTimestampPattern.test(text) &&
-    isRealDate(+text.slice(0, 4), +text.slice(5, 7), +text.slice(8, 10)) &&
-    !Number.isNaN(Date.parse(text))
-  )
-    return { dateValue: text, dateText: null };
-  const isoDate = dateOnlyPattern.exec(text);
-  if (isoDate && isRealDate(+isoDate[1], +isoDate[2], +isoDate[3]))
-    return { dateValue: text, dateText: null };
-  const namedDate = namedDatePattern.exec(text);
-  if (namedDate) {
-    const month =
-      monthNames.indexOf(namedDate[1].slice(0, 3).toLowerCase()) + 1;
-    const day = +namedDate[2];
-    const year = +namedDate[3];
-    if (month && isRealDate(year, month, day)) {
-      const dateValue = `${year}-${pad(month)}-${pad(day)}`;
-      return {
-        dateValue,
-        dateText: dateValue === text ? null : text,
-      };
-    }
-  }
-  return { dateValue: null, dateText: text };
+export const isPastDateInput = (value: string, now = new Date()) => {
+  if (!value) return false;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value))
+    return value < format(startOfDay(now), 'yyyy-MM-dd');
+  return parseISO(value).getTime() < now.getTime();
 };

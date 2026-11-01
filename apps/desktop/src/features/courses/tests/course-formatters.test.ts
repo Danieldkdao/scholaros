@@ -125,27 +125,66 @@ describe('ordering saved collections', () => {
   });
 });
 
-it('orders explicit text deadlines with normalized dates, leaving invalid and ambiguous dates last', () => {
+it('leaves unnormalized source wording in stable order after known dates', () => {
   const items = [
-    item('Invalid', {
-      dateValue: 'invalid',
-      dateText: 'Feb 31, 2026 at 11:59 pm',
-    }),
-    item('Later', { dateText: 'Due Monday, November 9, 2026 at 11:59 pm' }),
-    item('Evening', { dateText: 'Monday, November 2, 2026 11:59 pm' }),
-    item('Morning', { dateText: 'Nov 2, 2026 at 9:00am' }),
-    item('Normalized', { dateValue: '2026-11-01' }),
-    item('Ambiguous', { dateText: '11/2/2026' }),
-    item('Relative', { dateText: 'Due Monday' }),
+    item('Later wording', { dateText: 'November 9, 2026' }),
+    item('Earlier wording', { dateText: 'November 2, 2026' }),
+    item('Known date', { dateValue: '2026-11-01' }),
   ];
   expect(sortAssignments(items).map((entry) => entry.title)).toEqual([
-    'Normalized',
-    'Morning',
-    'Evening',
-    'Later',
-    'Invalid',
-    'Ambiguous',
-    'Relative',
+    'Known date',
+    'Later wording',
+    'Earlier wording',
   ]);
-  expect(items[0]?.title).toBe('Invalid');
+});
+
+it('orders normalized local times without assigning a device timezone', () => {
+  const local = (title: string, time: string) =>
+    item(title, {
+      content: {
+        title,
+        description: null,
+        kind: 'assignment',
+        state: 'active-unsubmitted',
+        due: {
+          kind: 'local',
+          date: '2026-11-02',
+          time,
+          original: `November 2 at ${time}`,
+        },
+        availableFrom: null,
+        availableUntil: null,
+        pointsPossible: null,
+        url: null,
+        sourceId: null,
+        resources: [],
+        evidence: {
+          sourceUrl: 'https://canvas.school.edu/courses/1',
+          excerpts: [title],
+          targetIds: [],
+        },
+      },
+    });
+  expect(
+    sortAssignments([local('Evening', '23:59'), local('Morning', '09:00')]).map(
+      (entry) => entry.title,
+    ),
+  ).toEqual(['Morning', 'Evening']);
+  expect(formatCourseDate(local('Morning', '09:00'))).toBe(
+    'November 2 at 09:00',
+  );
+});
+
+it('reserves refresh warnings for access issues rather than incomplete information', async () => {
+  const { formatRefreshActivity } = await import('../lib/formatters');
+  expect(formatRefreshActivity('complete').label).toBe('Refresh complete');
+  expect(formatRefreshActivity('partial').label).toBe(
+    'Refresh needs attention',
+  );
+});
+
+it('shows a manually entered local timestamp in a readable format', () => {
+  expect(
+    formatCourseDate({ dateValue: null, dateText: '2026-11-02T15:44:44' }),
+  ).toBe('Nov 2, 2026, 3:44 PM');
 });

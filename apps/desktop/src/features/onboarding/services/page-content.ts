@@ -16,6 +16,7 @@ export const readPage = async (page: Page, fullContent = false) => {
     return {
       url: location.href,
       title: document.title,
+      locale: document.documentElement.lang || null,
       // innerText keeps hidden and script content out of model context.
       text: readAll
         ? content.innerText.replace(/\s+/g, ' ').trim()
@@ -51,6 +52,7 @@ export const readPage = async (page: Page, fullContent = false) => {
   missionTraffic.assertPageContent(identity, snapshot.text);
   return {
     ...snapshot,
+    retrievedAt: new Date().toISOString(),
     password: snapshot.password
       ? (await readPageEvidence(page)).hasPasswordField
       : false,

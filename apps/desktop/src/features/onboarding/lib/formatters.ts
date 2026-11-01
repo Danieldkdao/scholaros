@@ -1,3 +1,4 @@
+import { intlFormat } from 'date-fns';
 import {
   Ban,
   Check,
@@ -333,12 +334,12 @@ export const formatContextUrl = (value: string) => {
 export const formatObservedAt = (value: string) => {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return 'Unknown time';
-  return new Intl.DateTimeFormat(undefined, {
+  return intlFormat(date, {
     month: 'short',
     day: 'numeric',
     hour: 'numeric',
     minute: '2-digit',
-  }).format(date);
+  });
 };
 
 export const formatWorkspaceStatus = (status: BrowserWorkspaceStatus) => {

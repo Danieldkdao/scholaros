@@ -3,6 +3,8 @@ import type { AcademicConnection, AcademicContextEntryDraft } from '../types';
 
 export type ObservedLink = { label: string; url: string; context?: string };
 export type ObservedPage = {
+  retrievedAt?: string;
+  locale?: string | null;
   url: string;
   title: string;
   text?: string;

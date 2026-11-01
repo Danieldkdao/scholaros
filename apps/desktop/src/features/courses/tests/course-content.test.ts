@@ -1,9 +1,7 @@
 import { configureBrowserPolicy } from '../../onboarding/lib/browser-policy';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
-  childItemsFrom,
   childPageTarget,
-  courseFieldsFrom,
   pageHasMorePages,
   pageListsNothing,
 } from '../lib/course-content';
@@ -19,35 +17,6 @@ const page = (overrides: Partial<ObservedPage> = {}): ObservedPage => ({
   ...overrides,
 });
 const link = (label: string, url: string) => ({ label, url });
-
-describe('reading course fields off a name the source really showed', () => {
-  it('does not mistake a term for a catalogue code', () => {
-    expect(courseFieldsFrom('World History - Fall 2026')).toEqual({
-      code: null,
-      term: 'Fall 2026',
-    });
-  });
-  it('separates a catalogue code and a term from the course name', () => {
-    expect(courseFieldsFrom('BIOL 101 - Fall 2026')).toEqual({
-      code: 'BIOL 101',
-      term: 'Fall 2026',
-    });
-  });
-
-  it('keeps a plain name without inventing a code or term', () => {
-    expect(courseFieldsFrom('Introduction to Biology')).toEqual({
-      code: null,
-      term: null,
-    });
-  });
-
-  it('reads a code out of a subject name and number', () => {
-    expect(courseFieldsFrom('Biology 101')).toEqual({
-      code: 'Biology 101',
-      term: null,
-    });
-  });
-});
 
 describe('finding the announcements and assignments page among observed links', () => {
   it('picks the course link that names the collection', () => {
@@ -129,69 +98,6 @@ describe('telling an empty list from a list we could not read', () => {
   });
 });
 
-describe('turning extracted cards into saved items', () => {
-  const card = (overrides: Record<string, unknown> = {}) => ({
-    kind: 'announcement' as const,
-    title: 'Midterm moved',
-    course: 'Biology 101',
-    detail: 'Now on Thursday.',
-    date: 'Mar 5, 2026',
-    sourceUrl: courseUrl,
-    ...overrides,
-  });
-
-  it('keeps the wording, the source link, and a date it can place', () => {
-    expect(childItemsFrom([card()], 'announcements', courseUrl)).toEqual([
-      {
-        title: 'Midterm moved',
-        body: 'Now on Thursday.',
-        dateValue: '2026-03-05',
-        dateText: 'Mar 5, 2026',
-        url: courseUrl,
-      },
-    ]);
-  });
-
-  it('ignores cards for the other collection', () => {
-    expect(
-      childItemsFrom(
-        [card({ kind: 'assignment' })],
-        'announcements',
-        courseUrl,
-      ),
-    ).toEqual([]);
-  });
-
-  it('ignores a card whose source is not the page that was read', () => {
-    expect(
-      childItemsFrom(
-        [card({ sourceUrl: 'https://evil.example/x' })],
-        'announcements',
-        courseUrl,
-      ),
-    ).toEqual([]);
-  });
-
-  it('ignores a card with no title and keeps a date it cannot place', () => {
-    expect(
-      childItemsFrom([card({ title: '  ' })], 'announcements', courseUrl),
-    ).toEqual([]);
-    expect(
-      childItemsFrom([card({ date: 'soon' })], 'announcements', courseUrl)[0],
-    ).toMatchObject({ dateValue: null, dateText: 'soon' });
-  });
-
-  it('keeps one item per distinct title on the same page', () => {
-    expect(
-      childItemsFrom(
-        [card(), card({ detail: 'Room changed' })],
-        'announcements',
-        courseUrl,
-      ),
-    ).toHaveLength(1);
-  });
-});
-
 beforeEach(() => configureBrowserPolicy(['new']));
 
 it('recognizes course updates as the announcement collection', () => {
@@ -202,4 +108,36 @@ it('recognizes course updates as the announcement collection', () => {
       host,
     ),
   ).toBe(`${courseUrl}/updates`);
+});
+
+it('offers supporting links only from authorized sources and preserves the observed retrieval context', async () => {
+  const { resourceRequest } = await import('../lib/resource-content');
+  const retrievedAt = '2026-10-31T23:59:00Z';
+  const request = resourceRequest({
+    page: {
+      ...page({
+        links: [
+          link('Notes', 'https://docs.google.com/document/d/1'),
+          link('Unconnected', 'https://unconnected.example/notes'),
+        ],
+      }),
+      retrievedAt,
+      locale: 'en-US',
+    },
+    kind: 'assignments',
+    goal: 'Read work',
+    notes: '',
+    host,
+    allowedHosts: [host, 'docs.google.com'],
+    courseUrl,
+    courseName: 'Biology',
+  });
+  expect(request.targets?.map((target) => target.url)).toEqual([
+    'https://docs.google.com/document/d/1',
+  ]);
+  expect(request.context).toMatchObject({
+    retrievedAt,
+    locale: 'en-US',
+    observedTimezone: null,
+  });
 });
