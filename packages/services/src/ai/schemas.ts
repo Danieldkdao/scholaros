@@ -2,19 +2,32 @@ import { z } from 'zod';
 
 export const requestKinds = [
   'choose',
-  'extract',
   'discover',
-  'course-content',
+  'courses',
+  'assignments',
+  'announcements',
 ] as const;
 export type RequestKind = (typeof requestKinds)[number];
 export const agentRequestSchema = z.object({
   kind: z.enum(requestKinds),
   goal: z.string().max(500),
+  context: z
+    .object({
+      retrievedAt: z.iso.datetime({ offset: true }),
+      observedTimezone: z.string().max(100).nullable(),
+      locale: z.string().max(100).nullable(),
+      courseUrl: z.url().nullable(),
+      courseName: z.string().max(300).nullable(),
+      truncated: z.boolean(),
+    })
+    .optional(),
   notes: z.string().max(2000),
   pages: z
     .array(
       z.object({
         url: z.url(),
+        retrievedAt: z.iso.datetime({ offset: true }).optional(),
+        locale: z.string().max(100).nullable().optional(),
         title: z.string().max(500),
         text: z.string().max(16000),
       }),
@@ -43,53 +56,8 @@ export const navigationDecisionSchema = z.object({
 });
 export type NavigationDecisionSchema = z.infer<typeof navigationDecisionSchema>;
 
-export const academicCardKinds = [
-  'course',
-  'assignment',
-  'announcement',
-] as const;
-export type AcademicCardKind = (typeof academicCardKinds)[number];
-export const academicEvidenceSchema = z.object({
-  cards: z
-    .array(
-      z.object({
-        kind: z.enum(academicCardKinds),
-        title: z.string().min(1).max(180),
-        course: z.string().max(180).nullable(),
-        detail: z.string().max(600).nullable(),
-        date: z.string().max(100).nullable(),
-        sourceUrl: z.url(),
-      }),
-    )
-    .max(20),
-});
-export type AcademicEvidenceSchema = z.infer<typeof academicEvidenceSchema>;
-
-export const assignmentStates = [
-  'active-unsubmitted',
-  'submitted',
-  'inactive',
-  'unknown',
-] as const;
-export type AssignmentState = (typeof assignmentStates)[number];
-export const contentCoverageValues = [
-  'complete',
-  'detail',
-  'partial',
-  'unavailable',
-] as const;
-export type ContentCoverage = (typeof contentCoverageValues)[number];
-export const courseContentEvidenceSchema = z.object({
-  cards: z.array(
-    academicEvidenceSchema.shape.cards.element.extend({
-      assignmentState: z.enum(assignmentStates),
-    }),
-  ),
-  coverage: z.enum(contentCoverageValues),
-});
-export type CourseContentEvidenceSchema = z.infer<
-  typeof courseContentEvidenceSchema
->;
+export { assignmentStates, contentCoverageValues } from './resources/shared';
+export type { AssignmentState, ContentCoverage } from './resources/shared';
 
 export const courseDiscoverySchema = z.object({
   courseTargetIds: z.array(z.string().min(1).max(20)).max(30),
