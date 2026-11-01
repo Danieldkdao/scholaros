@@ -1,3 +1,4 @@
+import { TooltipWrapper } from '@scholaros/ui/components/tooltip-wrapper';
 import { useEffect, useState } from 'react';
 import { Button } from '@scholaros/ui/components/button';
 import { cn } from 'cn';
@@ -99,21 +100,27 @@ export const ConnectRunPanel = () => {
             <p className="text-base">{state.awaiting.note}</p>
           )}
           <div className="flex items-center gap-2">
-            <Button
-              aria-label="Continue"
-              title="Continue"
-              onClick={() => void act(() => window.scholar.resumeConnectRun())}
-            >
-              <PlayIcon />
-            </Button>
-            <Button
-              variant="outline"
-              aria-label="Stop"
-              title="Stop"
-              onClick={() => void act(() => window.scholar.cancelConnectRun())}
-            >
-              <SquareIcon />
-            </Button>
+            <TooltipWrapper content="Continue">
+              <Button
+                aria-label="Continue"
+                onClick={() =>
+                  void act(() => window.scholar.resumeConnectRun())
+                }
+              >
+                <PlayIcon />
+              </Button>
+            </TooltipWrapper>
+            <TooltipWrapper content="Stop">
+              <Button
+                variant="outline"
+                aria-label="Stop"
+                onClick={() =>
+                  void act(() => window.scholar.cancelConnectRun())
+                }
+              >
+                <SquareIcon />
+              </Button>
+            </TooltipWrapper>
           </div>
         </div>
       )}

@@ -1,3 +1,4 @@
+import { TooltipWrapper } from '@scholaros/ui/components/tooltip-wrapper';
 import { useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { Button } from '@scholaros/ui/components/button';
@@ -102,12 +103,14 @@ export const DiscoverySummary = ({
                                 {formatContextUrl(entry.evidenceUrl)}
                               </span>
                             </span>
-                            <span
-                              className="text-muted-foreground"
-                              title={role.description}
-                            >
-                              {role.label}
-                            </span>
+                            <TooltipWrapper content={role.description}>
+                              <span
+                                tabIndex={0}
+                                className="text-muted-foreground"
+                              >
+                                {role.label}
+                              </span>
+                            </TooltipWrapper>
                             <span className="truncate text-muted-foreground">
                               {formatContextUrl(entry.url)}
                             </span>

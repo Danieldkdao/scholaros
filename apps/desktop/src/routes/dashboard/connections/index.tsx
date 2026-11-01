@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { useDebouncedCallback } from "@tanstack/react-pacer";
+import { useEffect, useState } from 'react';
+import { createFileRoute, Link } from '@tanstack/react-router';
+import { useDebouncedCallback } from '@tanstack/react-pacer';
 import {
   Check,
   CircleAlert,
@@ -9,12 +9,12 @@ import {
   Loader2,
   PlusIcon,
   Trash2,
-} from "lucide-react";
-import { Button } from "@scholaros/ui/components/button";
-import { Input } from "@scholaros/ui/components/input";
-import { Switch } from "@scholaros/ui/components/switch";
-import { Card, CardContent } from "@scholaros/ui/components/card";
-import { Alert, AlertDescription } from "@scholaros/ui/components/alert";
+} from 'lucide-react';
+import { Button } from '@scholaros/ui/components/button';
+import { Input } from '@scholaros/ui/components/input';
+import { Switch } from '@scholaros/ui/components/switch';
+import { Card, CardContent } from '@scholaros/ui/components/card';
+import { Alert, AlertDescription } from '@scholaros/ui/components/alert';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -24,20 +24,20 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-} from "@scholaros/ui/components/alert-dialog";
+} from '@scholaros/ui/components/alert-dialog';
 import {
   Popover,
   PopoverTrigger,
   PopoverContent,
-} from "@scholaros/ui/components/popover";
+} from '@scholaros/ui/components/popover';
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@scholaros/ui/components/select";
-import { PageHeading } from "../../../features/dashboard/page-heading";
+} from '@scholaros/ui/components/select';
+import { PageHeading } from '../../../features/dashboard/page-heading';
 import {
   connectionKindFilters,
   connectionSearchSchema,
@@ -45,25 +45,21 @@ import {
   filterConnections,
   type ConnectionKindFilter,
   type ConnectionStatusFilter,
-} from "../../../features/dashboard/lib/connection-filters";
+} from '../../../features/dashboard/lib/connection-filters';
 import {
   formatConnectionKindFilter,
   formatConnectionStatusFilter,
-} from "../../../features/dashboard/lib/formatters";
-import { useOnboardingState } from "../../../features/onboarding/hooks/use-onboarding-state";
-import { useBridgeAction } from "../../../hooks/use-bridge-action";
-import { useConfirm } from "../../../hooks/use-confirm";
-import { ConnectionNotesEditor } from "../../../features/onboarding/components/connection-notes-editor";
+} from '../../../features/dashboard/lib/formatters';
+import { useOnboardingState } from '../../../features/onboarding/hooks/use-onboarding-state';
+import { useBridgeAction } from '../../../hooks/use-bridge-action';
+import { useConfirm } from '../../../hooks/use-confirm';
+import { ConnectionNotesEditor } from '../../../features/onboarding/components/connection-notes-editor';
 import {
   formatConnectionStatus,
   formatResourceKind,
-} from "../../../features/onboarding/lib/formatters";
-import type { AcademicConnection } from "../../../features/onboarding/types";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@scholaros/ui/components/tooltip";
+} from '../../../features/onboarding/lib/formatters';
+import type { AcademicConnection } from '../../../features/onboarding/types';
+import { TooltipWrapper } from '@scholaros/ui/components/tooltip-wrapper';
 
 const ConnectionsPage = () => {
   const search = Route.useSearch();
@@ -93,7 +89,7 @@ const ConnectionsPage = () => {
       window.scholar.onConnectChange((run) => {
         if (
           run.accountId === state?.accountId &&
-          ["complete", "cancelled", "blocked"].includes(run.status)
+          ['complete', 'cancelled', 'blocked'].includes(run.status)
         )
           void reload();
       }),
@@ -253,18 +249,16 @@ const ConnectionsPage = () => {
                         <div className="flex items-center gap-3">
                           <p>{connection.name}</p>
                           <div className="flex items-center gap-2">
-                            <Tooltip>
-                              <TooltipTrigger>
+                            <TooltipWrapper content={kind.label}>
+                              <span tabIndex={0} aria-label={kind.label}>
                                 <kind.Icon className="size-4" />
-                              </TooltipTrigger>
-                              <TooltipContent>{kind.label}</TooltipContent>
-                            </Tooltip>
-                            <Tooltip>
-                              <TooltipTrigger>
+                              </span>
+                            </TooltipWrapper>
+                            <TooltipWrapper content={status.label}>
+                              <span tabIndex={0} aria-label={status.label}>
                                 <status.Icon className="size-4" />
-                              </TooltipTrigger>
-                              <TooltipContent>{status.label}</TooltipContent>
-                            </Tooltip>
+                              </span>
+                            </TooltipWrapper>
                           </div>
                         </div>
                         <p className="text-muted-foreground">
@@ -272,18 +266,19 @@ const ConnectionsPage = () => {
                         </p>
                       </div>
 
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        title="Remove connection"
-                        aria-label={`Remove ${connection.name}`}
-                        disabled={busy}
-                        onClick={() => requestRemoval(connection)}
-                      >
-                        <Trash2 />
-                      </Button>
+                      <TooltipWrapper content="Remove connection">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          aria-label={`Remove ${connection.name}`}
+                          disabled={busy}
+                          onClick={() => requestRemoval(connection)}
+                        >
+                          <Trash2 />
+                        </Button>
+                      </TooltipWrapper>
                     </div>
-                    {connection.status === "needs-sign-in" && (
+                    {connection.status === 'needs-sign-in' && (
                       <Button
                         variant="outline"
                         className="self-start"
@@ -322,7 +317,7 @@ const ConnectionsPage = () => {
                           Find courses from this site.
                         </p>
                         {connection.isCourseResource &&
-                          connection.status === "needs-sign-in" && (
+                          connection.status === 'needs-sign-in' && (
                             <p className="flex items-center gap-2 text-muted-foreground">
                               <CircleAlert className="size-4 shrink-0" />
                               Sign in here before courses can refresh.
@@ -387,7 +382,7 @@ const ConnectionsPage = () => {
   );
 };
 
-export const Route = createFileRoute("/dashboard/connections/")({
+export const Route = createFileRoute('/dashboard/connections/')({
   validateSearch: connectionSearchSchema,
   component: ConnectionsPage,
 });

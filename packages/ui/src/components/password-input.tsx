@@ -7,7 +7,7 @@ import {
   InputGroupButton,
   InputGroupInput,
 } from './input-group';
-import { Tooltip, TooltipContent, TooltipTrigger } from './tooltip';
+import { TooltipWrapper } from './tooltip-wrapper';
 import { cn } from '../lib/utils';
 import { ZxcvbnFactory } from '@zxcvbn-ts/core';
 import * as common from '@zxcvbn-ts/language-common';
@@ -156,17 +156,18 @@ export function PasswordInputStrengthChecker() {
         {strengthResult.feedback.warning == null ? (
           label
         ) : (
-          <Tooltip>
-            <TooltipTrigger
-              type="button"
-              className="underline underline-offset-1"
-            >
+          <TooltipWrapper
+            content={strengthResult.feedback.warning}
+            tooltipContentProps={{
+              side: 'bottom',
+              sideOffset: 4,
+              className: 'text-base',
+            }}
+          >
+            <button type="button" className="underline underline-offset-1">
               {label}
-            </TooltipTrigger>
-            <TooltipContent side="bottom" sideOffset={4} className="text-base">
-              {strengthResult.feedback.warning}
-            </TooltipContent>
-          </Tooltip>
+            </button>
+          </TooltipWrapper>
         )}
       </div>
     </div>

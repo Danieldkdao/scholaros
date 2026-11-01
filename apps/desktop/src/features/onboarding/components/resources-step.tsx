@@ -1,3 +1,4 @@
+import { TooltipWrapper } from '@scholaros/ui/components/tooltip-wrapper';
 import { useEffect, useState } from 'react';
 import { ConnectionNotesEditor } from './connection-notes-editor';
 import { Check, ExternalLink, Link as LinkIcon, Trash2 } from 'lucide-react';
@@ -225,22 +226,23 @@ export const ResourcesStep = ({
                       {connection.host}
                     </p>
                   </div>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    aria-label={`Remove ${connection.name}`}
-                    title="Remove resource"
-                    disabled={busy}
-                    onClick={() =>
-                      void act(`remove:${connection.id}`, async () => {
-                        update(
-                          await window.scholar.removeResource(connection.id),
-                        );
-                      })
-                    }
-                  >
-                    <Trash2 className="size-5" />
-                  </Button>
+                  <TooltipWrapper content="Remove resource">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      aria-label={`Remove ${connection.name}`}
+                      disabled={busy}
+                      onClick={() =>
+                        void act(`remove:${connection.id}`, async () => {
+                          update(
+                            await window.scholar.removeResource(connection.id),
+                          );
+                        })
+                      }
+                    >
+                      <Trash2 className="size-5" />
+                    </Button>
+                  </TooltipWrapper>
                 </div>
                 <ConnectionNotesEditor
                   id={connection.id}
