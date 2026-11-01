@@ -1,3 +1,8 @@
+import {
+  courseRecordSchema,
+  updateCourseRecordSchema,
+  createCourseRecordSchema,
+} from '../../courses/schemas';
 import { academicTasks } from './academic-tasks';
 import { createConnectRuntime } from './connect-runtime';
 import { createConnectWorkspace } from './connect-workspace';
@@ -5,7 +10,11 @@ import { acquireConnectOwnership } from './connect-ownership';
 import { protectMissionPage } from './mission-request-guard';
 import { createConnectionApprovalStore } from './connection-approval';
 import { resolveConnectionCandidates } from './connection-resolver';
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app } from 'electron';
+import type {
+  AcademicAction,
+  AcademicEventChannel,
+} from '../../../services/academic/contracts';
 import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
 import { authClient } from '../../../lib/auth/client';
@@ -13,6 +22,7 @@ import {
   accountRequest,
   getCurrentUser,
   markLocalSignOut,
+  isAccountSessionCurrent,
 } from '../../../lib/auth/main';
 import {
   createSessionGuard,
@@ -60,27 +70,40 @@ import { completeOnboarding } from './completion';
 import { discoverAcademicContext } from './discovery';
 import { createBackgroundSyncController } from './background-sync';
 import {
+  updateCourseRecord,
+  createCourseRecord,
+  deleteCourseRecord,
   getCourseDetail,
   getCoursesSnapshot,
+  subscribeCourseChanges,
 } from '../../courses/services/store';
 import {
   cancelCourseRefresh,
   startCourseRefresh,
+  refreshSingleCourse,
   type CourseRefreshResult,
 } from '../../courses/services/refresh';
+import type { CoursesSnapshot } from '../../courses/types';
 import type { LaunchAtLoginPreference, OnboardingState } from '../types';
 
 const idSchema = z.string().min(1).max(300);
 const sessionGuard = createSessionGuard();
 const connectionApprovals = createConnectionApprovalStore();
 let resolutionEpoch = 0;
+let stoppingBackgroundSync: Promise<void> | null = null;
 let broadcastingPreview = false;
+let manualCourseRefresh: {
+  userId: string;
+  completion: Promise<CoursesSnapshot>;
+} | null = null;
 let boundAccountId: string | null = null;
 let boundOnboardingComplete = false;
 
 type IpcContext = { userId: string; isCurrent: () => boolean };
 
 let backgroundSyncAccountId: string | null = null;
+let publish: (channel: AcademicEventChannel, value: unknown) => void = () =>
+  undefined;
 // Scheduled work runs the same pipeline as the manual button, so one set of
 // protections, bounds and persistence rules covers both.
 const backgroundSync = createBackgroundSyncController<CourseRefreshResult>({
@@ -91,15 +114,20 @@ const backgroundSync = createBackgroundSyncController<CourseRefreshResult>({
       throw new Error('Please sign in again to resume background sync.');
     return startCourseRefresh(userId, isCurrent, signal);
   },
-  syncFailure: (refreshed) => syncFailureMessage(refreshed.state.discovery),
+  syncFailure: (refreshed) =>
+    refreshed.snapshot.courses.some(
+      (course) =>
+        course.assignmentsStatus === 'needs-sign-in' ||
+        course.announcementsStatus === 'needs-sign-in',
+    )
+      ? 'Sign in in your study browser, then resume background sync.'
+      : syncFailureMessage(refreshed.state.discovery),
   onChange: (syncState, refreshed) => {
-    for (const window of BrowserWindow.getAllWindows())
-      if (!window.isDestroyed())
-        window.webContents.send('scholar:backgroundSyncChange', {
-          accountId: backgroundSyncAccountId,
-          state: syncState,
-          discovery: refreshed?.state.discovery ?? null,
-        });
+    publish('scholar:backgroundSyncChange', {
+      accountId: backgroundSyncAccountId,
+      state: syncState,
+      discovery: refreshed?.state.discovery ?? null,
+    });
   },
 });
 
@@ -254,40 +282,55 @@ const registerQuitCleanup = () => {
   });
 };
 
-export const registerOnboardingIpc = () => {
+export const registerAcademicActions = (service: {
+  register: (method: string, action: AcademicAction) => void;
+  publish: typeof publish;
+}) => {
+  publish = service.publish;
   const handle = (
     method: string,
     action: (context: IpcContext, input: unknown) => unknown,
     options: { requiresUser?: boolean } = {},
   ) => {
-    ipcMain.handle(`scholar:${method}`, async (event, input: unknown) => {
-      const window = BrowserWindow.fromWebContents(event.sender);
-      if (!window || event.senderFrame !== event.sender.mainFrame)
-        throw new Error('Untrusted application frame.');
+    const invoke = async (input: unknown) => {
       if (options.requiresUser === false)
         return action({ userId: '', isCurrent: () => true }, input);
-      return runSessionAction(sessionGuard, async (isCurrent) => {
+      const cookie = authClient.getCookie();
+      return runSessionAction(sessionGuard, async (sessionIsCurrent) => {
+        const isCurrent = () =>
+          sessionIsCurrent() && isAccountSessionCurrent(cookie);
         const user = await getCurrentUser();
         if (!isCurrent())
           throw new Error('Your session changed; sign in again.');
         if (!user) throw new Error('Please sign in to ScholarOS.');
         bindAccount(user.id);
         boundOnboardingComplete = user.hasCompletedOnboarding === true;
-        return action({ userId: user.id, isCurrent }, input);
+        const accountIsCurrent = () =>
+          isCurrent() && boundAccountId === user.id;
+        const result = await action(
+          { userId: user.id, isCurrent: accountIsCurrent },
+          input,
+        );
+        if (!accountIsCurrent())
+          throw new Error('Your session changed; sign in again.');
+        return result;
       });
-    });
+    };
+    service.register(method, invoke);
   };
   if (!broadcastingPreview) {
+    academicTasks.subscribe((accountId) =>
+      publish('scholar:coursesChange', { accountId, courseId: null }),
+    );
+    subscribeCourseChanges((change) =>
+      publish('scholar:coursesChange', change),
+    );
     connectRuntime.subscribe((state) => {
-      for (const window of BrowserWindow.getAllWindows())
-        if (!window.isDestroyed())
-          window.webContents.send('scholar:connectChange', state);
+      publish('scholar:connectChange', state);
     });
     broadcastingPreview = true;
     subscribePreview((state) => {
-      for (const window of BrowserWindow.getAllWindows())
-        if (!window.isDestroyed())
-          window.webContents.send('scholar:previewChange', state);
+      publish('scholar:previewChange', state);
     });
   }
   handle(
@@ -519,10 +562,54 @@ export const registerOnboardingIpc = () => {
     });
     return prepareState(state, undefined, isCurrent);
   });
-  handle('getCourses', ({ userId }) => getCoursesSnapshot(userId));
-  handle('getCourse', ({ userId }, input) =>
-    getCourseDetail(userId, idSchema.parse(input)),
-  );
+  const requireIdleCourse = (userId: string, courseId: string) => {
+    const active = academicTasks.getRefreshState(userId);
+    if (active.allCourses || active.courseIds.includes(courseId))
+      throw new Error(
+        'Stop refreshing this course before changing its saved records.',
+      );
+  };
+  handle('createCourseRecord', ({ userId }, input) => {
+    const data = createCourseRecordSchema.parse(input);
+    requireIdleCourse(userId, data.kind === 'courses' ? '' : data.courseId);
+    return createCourseRecord(userId, data);
+  });
+  handle('updateCourseRecord', ({ userId }, input) => {
+    const data = updateCourseRecordSchema.parse(input);
+    requireIdleCourse(userId, data.courseId);
+    updateCourseRecord(userId, data);
+  });
+  handle('deleteCourseRecord', ({ userId }, input) => {
+    const data = courseRecordSchema.parse(input);
+    requireIdleCourse(userId, data.courseId);
+    deleteCourseRecord(userId, data);
+  });
+  handle('getCourses', ({ userId }) => {
+    const existingCourses = getCoursesSnapshot(userId);
+    const active = academicTasks.getRefreshState(userId);
+    return {
+      ...existingCourses,
+      activity: academicTasks.getActivity(userId),
+      courses: existingCourses.courses.map((course) => ({
+        ...course,
+        refreshing: active.allCourses || active.courseIds.includes(course.id),
+      })),
+      refreshing: active.allCourses || active.courseIds.length > 0,
+    };
+  });
+  handle('getCourse', ({ userId }, input) => {
+    const courseId = idSchema.parse(input);
+    const course = getCourseDetail(userId, courseId);
+    if (!course) return null;
+    const active = academicTasks.getRefreshState(userId);
+    return {
+      ...course,
+      activity: academicTasks
+        .getActivity(userId)
+        .filter((run) => run.key === 'courses' || run.key === courseId),
+      refreshing: active.allCourses || active.courseIds.includes(courseId),
+    };
+  });
   // A manual refresh takes the study browser over from a scheduled one, exactly
   // like every other foreground browser action.
   handle('refreshCourses', async ({ userId, isCurrent }) => {
@@ -532,17 +619,69 @@ export const registerOnboardingIpc = () => {
       !getOnboardingState(userId).settings.localSetupCompletedAt
     )
       throw new Error('Courses are available from your dashboard after setup.');
-    return withBrowserWorkStopped(async () => {
+    if (manualCourseRefresh?.userId === userId)
+      return manualCourseRefresh.completion;
+    const completion = withBrowserWorkStopped(async () => {
       if (!isCurrent()) throw new Error('Your session changed; sign in again.');
       const refreshed = await startCourseRefresh(userId, isCurrent);
       // Re-evaluating eligibility keeps the scheduler honest after a scan.
       prepareState(refreshed.state, undefined, isCurrent);
-      return refreshed.snapshot;
+      return {
+        ...refreshed.snapshot,
+        activity: academicTasks.getActivity(userId),
+      };
+    }).finally(() => {
+      if (manualCourseRefresh?.completion === completion)
+        manualCourseRefresh = null;
     });
+    manualCourseRefresh = { userId, completion };
+    return completion;
   });
-  handle('cancelCourseRefresh', () => {
-    cancelCourseRefresh();
+  handle('refreshCourse', async ({ userId, isCurrent }, input) => {
+    const courseId = idSchema.parse(input);
+    requireConsent(userId);
+    if (
+      !boundOnboardingComplete ||
+      !getOnboardingState(userId).settings.localSetupCompletedAt
+    )
+      throw new Error('Courses are available from your dashboard after setup.');
+    const wasSyncing = backgroundSync.getState().status === 'syncing';
+    const release = backgroundSync.suspend();
+    if (wasSyncing) {
+      stoppingBackgroundSync = academicTasks.cancelAndWait().finally(() => {
+        stoppingBackgroundSync = null;
+      });
+    }
+    try {
+      await stoppingBackgroundSync;
+      if (!isCurrent()) throw new Error('Your session changed; sign in again.');
+      const course = await refreshSingleCourse(userId, courseId, isCurrent);
+      return course
+        ? {
+            ...course,
+            activity: academicTasks
+              .getActivity(userId)
+              .filter((run) => run.key === 'courses' || run.key === courseId),
+          }
+        : null;
+    } finally {
+      release();
+    }
   });
+  handle(
+    'cancelCourseRefresh',
+    (_context, input) => {
+      const courseId = input === undefined ? undefined : idSchema.parse(input);
+      const accountId = boundAccountId ?? undefined;
+      const allCourses =
+        accountId && academicTasks.getRefreshState(accountId).allCourses;
+      cancelCourseRefresh(
+        accountId,
+        courseId && !allCourses ? courseId : undefined,
+      );
+    },
+    { requiresUser: false },
+  );
   handle('pauseBackgroundSync', async ({ userId, isCurrent }) => {
     const wasSyncing = backgroundSync.getState().status === 'syncing';
     backgroundSync.pause();

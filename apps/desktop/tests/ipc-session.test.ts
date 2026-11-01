@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
     lastSuccessfulAt: null,
   })),
   getCourseDetail: vi.fn(() => null),
+  subscribeCourseChanges: vi.fn(() => () => undefined),
   resolveConnections: vi.fn(),
   connectWorkspace: vi.fn(),
   workspace: vi.fn(),
@@ -47,6 +48,7 @@ vi.mock('../src/lib/auth/main', () => ({
   getCurrentUser: mocks.getCurrentUser,
   accountRequest: vi.fn(),
   markLocalSignOut: vi.fn(),
+  isAccountSessionCurrent: (cookie: string) => cookie === mocks.getCookie(),
 }));
 vi.mock('../src/db', () => ({ db: {} }));
 vi.mock('../src/features/onboarding/services/store', () => ({
@@ -81,6 +83,7 @@ vi.mock('../src/features/courses/services/refresh', () => ({
 vi.mock('../src/features/courses/services/store', () => ({
   getCoursesSnapshot: mocks.getCoursesSnapshot,
   getCourseDetail: mocks.getCourseDetail,
+  subscribeCourseChanges: mocks.subscribeCourseChanges,
 }));
 vi.mock('../src/features/onboarding/services/browser-discovery', () => ({
   chooseBrowser: vi.fn(),
@@ -120,7 +123,7 @@ vi.mock('../src/features/onboarding/services/connection-resolver', () => ({
 vi.mock('../src/features/onboarding/services/discovery', () => ({
   discoverAcademicContext: mocks.discoverAcademicContext,
 }));
-const { registerOnboardingIpc } =
+const { registerAcademicActions } =
   await import('../src/features/onboarding/services/ipc');
 const frame = {};
 const event = { sender: { mainFrame: frame }, senderFrame: frame };
@@ -180,11 +183,18 @@ beforeEach(async () => {
   vi.clearAllMocks();
   mocks.getCookie.mockReturnValue('initial-cookie');
   mocks.state = { settings: { consent: true, localSetupCompletedAt: null } };
-  if (!mocks.handlers.size) registerOnboardingIpc();
+  if (!mocks.handlers.size)
+    registerAcademicActions({
+      register: (method, action) =>
+        mocks.handlers.set(`scholar:${method}`, async (_event, input) =>
+          action(input),
+        ),
+      publish: () => undefined,
+    });
   await invoke('signOut');
 });
 
-describe('main-process IPC session boundaries', () => {
+describe('academic service session boundaries', () => {
   it('never starts an old-account preview when authentication resolves after sign-out', async () => {
     let release!: (value: unknown) => void;
     mocks.getCurrentUser.mockReturnValueOnce(
@@ -343,6 +353,7 @@ describe('foreground browser work and background sync', () => {
     expect(mocks.startCourseRefresh).toHaveBeenCalledOnce();
     expect(mocks.startCourseRefresh.mock.calls[0]?.[0]).toBe('student-a');
     await expect(invoke('refreshCourses')).resolves.toEqual({
+      activity: [],
       courses: [],
       sources: [],
       lastSuccessfulAt: null,
@@ -353,6 +364,8 @@ describe('foreground browser work and background sync', () => {
 
   it('reads the saved catalog without touching the study browser', async () => {
     await expect(invoke('getCourses')).resolves.toEqual({
+      activity: [],
+      refreshing: false,
       courses: [],
       sources: [],
       lastSuccessfulAt: null,
@@ -589,4 +602,39 @@ it('does not capture for the previous account when its cookie changes during a r
   completeInspection({ status: 'readable', host: 'school.edu' });
   await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
   expect(capture).not.toHaveBeenCalled();
+});
+
+it('joins duplicate manual all-course refresh commands without cancelling the first', async () => {
+  mocks.state = readyState();
+  mocks.getCurrentUser.mockResolvedValue({
+    id: 'student-a',
+    hasCompletedOnboarding: true,
+  });
+  await invoke('getState');
+  let resolve!: (value: unknown) => void;
+  mocks.startCourseRefresh.mockReturnValueOnce(
+    new Promise((yes) => {
+      resolve = yes;
+    }),
+  );
+  const first = invoke('refreshCourses');
+  await vi.waitFor(() =>
+    expect(mocks.startCourseRefresh).toHaveBeenCalledOnce(),
+  );
+  const second = invoke('refreshCourses');
+  await Promise.resolve();
+  resolve({
+    state: mocks.state,
+    snapshot: { courses: [], sources: [], lastSuccessfulAt: null },
+  });
+  await Promise.all([first, second]);
+  expect(mocks.startCourseRefresh).toHaveBeenCalledOnce();
+});
+
+it('can cancel academic work after cloud authentication expires', async () => {
+  const { cancelCourseRefresh } =
+    await import('../src/features/courses/services/refresh');
+  mocks.getCurrentUser.mockResolvedValue(null);
+  await expect(invoke('cancelCourseRefresh')).resolves.toBeUndefined();
+  expect(cancelCourseRefresh).toHaveBeenCalledOnce();
 });
