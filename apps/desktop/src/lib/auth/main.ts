@@ -9,19 +9,24 @@ export const accountRequest = async (
   signal?: AbortSignal,
 ) => {
   let response: Response;
+  const cookie = authClient.getCookie();
   try {
     response = await net.fetch(new URL(route, clientEnv.VITE_API_URL).href, {
       method: body === undefined ? 'GET' : 'POST',
       headers: {
-        Cookie: authClient.getCookie(),
+        Cookie: cookie,
         'Content-Type': 'application/json',
       },
       credentials: 'omit',
       redirect: 'error',
       body: body === undefined ? undefined : JSON.stringify(body),
-      signal: signal ?? AbortSignal.timeout(15_000),
+      signal: AbortSignal.any([
+        ...(signal ? [signal] : []),
+        AbortSignal.timeout(route === '/api/agent' ? 65_000 : 15_000),
+      ]),
     });
   } catch (cause) {
+    signal?.throwIfAborted();
     // Chromium reports a missing listener as a bare error code, which reads like
     // an app fault; name the endpoint so the outage is obvious at a glance.
     throw new Error(
@@ -31,6 +36,11 @@ export const accountRequest = async (
   }
   if (response.status === 401) {
     invalidateAccountCache();
+    if (authClient.getCookie() === cookie) locallySignedOutCookie = cookie;
+    if (route === '/api/agent')
+      throw new Error(
+        'Please sign in to ScholarOS again to refresh academic data.',
+      );
     return null;
   }
   if (!response.ok) {
@@ -52,6 +62,18 @@ let cachedAccount: {
   expiresAt: number;
 } | null = null;
 let cacheEpoch = 0;
+
+export const isAccountSessionCurrent = (cookie: string) => {
+  try {
+    return (
+      !!cookie.trim() &&
+      cookie !== locallySignedOutCookie &&
+      cookie === authClient.getCookie()
+    );
+  } catch {
+    return false;
+  }
+};
 
 export const invalidateAccountCache = () => {
   cacheEpoch += 1;

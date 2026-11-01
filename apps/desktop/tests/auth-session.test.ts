@@ -125,3 +125,31 @@ it('discards an account response that arrives after local sign-out', async () =>
   );
   await expect(pending).resolves.toBeNull();
 });
+
+it('identifies expired ScholarOS inference authentication instead of blaming the academic account picker', async () => {
+  const { accountRequest } = await import('../src/lib/auth/main');
+  cookieMock.mockReturnValue('expired-inference-cookie');
+  fetchMock.mockResolvedValue(new Response(null, { status: 401 }));
+  await expect(
+    accountRequest('/api/agent', { kind: 'assignments' }),
+  ).rejects.toThrow('sign in to ScholarOS');
+  expect(fetchMock).toHaveBeenCalledOnce();
+});
+
+it('does not repeatedly validate an expired cookie until the student signs in again', async () => {
+  cookieMock.mockReturnValue('confirmed-expired-cookie');
+  fetchMock.mockResolvedValue(new Response(null, { status: 401 }));
+  await expect(getCurrentUser()).resolves.toBeNull();
+  await expect(getCurrentUser()).resolves.toBeNull();
+  expect(fetchMock).toHaveBeenCalledOnce();
+});
+
+it('invalidates synchronous scan guards immediately when inference authentication expires', async () => {
+  const { accountRequest, isAccountSessionCurrent } =
+    await import('../src/lib/auth/main');
+  cookieMock.mockReturnValue('scan-session');
+  expect(isAccountSessionCurrent('scan-session')).toBe(true);
+  fetchMock.mockResolvedValue(new Response(null, { status: 401 }));
+  await expect(accountRequest('/api/agent', {})).rejects.toThrow();
+  expect(isAccountSessionCurrent('scan-session')).toBe(false);
+});
