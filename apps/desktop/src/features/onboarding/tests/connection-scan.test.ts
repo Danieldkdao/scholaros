@@ -300,3 +300,28 @@ it('settles asynchronous course content before taking the snapshot', async () =>
     mocks.readPage.mock.invocationCallOrder[0],
   );
 });
+
+it('returns to the saved course after account selection lands on the course list', async () => {
+  let current = listUrl;
+  const navigatePage = vi.fn(async (_page, url: string) => {
+    if (navigatePage.mock.calls.length > 1) current = url;
+  });
+  mocks.page.url.mockImplementation(async () => current);
+  mocks.readPage.mockImplementation(async () =>
+    current === courseUrl ? coursePage : listPage,
+  );
+  const followed = vi.fn(async (context) => context.observed.url);
+  const result = await scanConnection({
+    connection,
+    workspace,
+    hosts: [host],
+    notes: '',
+    navigatePage,
+    isCurrent: () => true,
+    signal: new AbortController().signal,
+    courseUrl,
+    withCourseList: followed,
+  });
+  expect(result.followed).toBe(courseUrl);
+  expect(navigatePage).toHaveBeenCalledTimes(2);
+});

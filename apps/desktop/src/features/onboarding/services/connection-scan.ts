@@ -3,7 +3,7 @@ import { composeAgentNotes } from '../lib/agent-notes';
 import { courseDiscoverySchema } from '@scholaros/services/ai/schemas';
 import { accountRequest } from '../../../lib/auth/main';
 import { exploreForCourses } from '../lib/course-exploration';
-import { isReadNavigation } from '../lib/browser-policy';
+import { academicPageIdentity, isReadNavigation } from '../lib/browser-policy';
 import {
   assertMissionNavigation,
   isStaleNavigation,
@@ -187,11 +187,29 @@ export const scanConnection = async <TFollowed = never>({
       await navigatePage(openedPage, url, continuation);
       return readSnapshot();
     };
+    const readCourseTarget = async () => {
+      let snapshot = await readSnapshot();
+      const target = academicPageIdentity(courseUrl!)!;
+      const matches = (url: string) => {
+        const identity = academicPageIdentity(url);
+        return identity === target || identity?.startsWith(`${target}/`);
+      };
+      if (!matches(snapshot.url)) {
+        // SSO can return to the LMS home instead of the originally requested course.
+        await navigatePage(openedPage, courseUrl!, continuation);
+        snapshot = await readSnapshot();
+      }
+      if (!matches(snapshot.url))
+        throw new Error(
+          'The requested course could not be verified after sign-in.',
+        );
+      return snapshot;
+    };
     const exploration = courseUrl
       ? {
           status: 'courses' as const,
           entries: [],
-          visited: [(await readSnapshot()).url],
+          visited: [(await readCourseTarget()).url],
           disclosed: false,
         }
       : await exploreForCourses({
