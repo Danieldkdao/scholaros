@@ -31,6 +31,8 @@ export const getLaunchAtLoginState = (
 export const applyLaunchAtLogin = (
   openAtLogin: boolean,
 ): LaunchAtLoginPreference => {
+  const current = getLaunchAtLoginState(openAtLogin);
+  if (current.applied) return current;
   try {
     app.setLoginItemSettings({ openAtLogin });
   } catch (error) {
