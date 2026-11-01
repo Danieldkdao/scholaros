@@ -107,6 +107,7 @@ beforeEach(() => {
   };
   Element.prototype.scrollIntoView = () => undefined;
   window.scholar = {
+    onCoursesChange: vi.fn(() => () => {}),
     getCurrentUser: vi.fn(async () => ({ id: 'student' })),
     getState: vi.fn(async () => state()),
     onBackgroundSyncChange: vi.fn(() => () => {}),
@@ -252,19 +253,26 @@ it('links each course to its own page', async () => {
 
 it('offers a refresh once courses have been saved', async () => {
   await open();
-  expect(buttonWith('Refresh courses')).toBeTruthy();
-  expect(buttonWith('Find courses')).toBeUndefined();
+  expect(buttonWith('Add courses')).toBeTruthy();
+  await openAddCourses();
+  expect(syncOption()?.getAttribute('aria-disabled')).not.toBe('true');
 });
 
 it('explains how to choose course resources when nothing is marked', async () => {
   connections = [connection('canvas', { isCourseResource: false })];
   snapshot = { courses: [], sources: [], lastSuccessfulAt: null };
   await open();
-  expect(text()).toContain('Choose which connections hold your courses.');
+  expect(text()).toContain(
+    'Add courses manually or select a course resource in Connections to enable syncing.',
+  );
   expect(
     document.querySelector('a[href="/dashboard/connections"]'),
   ).not.toBeNull();
-  expect(buttonWith('Find courses')?.disabled).toBe(true);
+  await openAddCourses();
+  expect(syncOption()?.getAttribute('aria-disabled')).toBe('true');
+  expect(document.querySelector('[role="menu"]')?.textContent).toContain(
+    'Add manually',
+  );
 });
 
 it('explains that every marked resource needs a sign-in', async () => {
@@ -272,7 +280,8 @@ it('explains that every marked resource needs a sign-in', async () => {
   snapshot = { courses: [], sources: [], lastSuccessfulAt: null };
   await open();
   expect(text()).toContain('Sign in in your study browser');
-  expect(buttonWith('Find courses')?.disabled).toBe(false);
+  await openAddCourses();
+  expect(syncOption()?.getAttribute('aria-disabled')).not.toBe('true');
 });
 
 it('names a resource that needs sign-in beside the ready ones', async () => {
@@ -282,13 +291,13 @@ it('names a resource that needs sign-in beside the ready ones', async () => {
   ];
   await open();
   expect(text()).toContain('Portal needs you to sign in again.');
-  expect(buttonWith('Refresh courses')?.disabled).toBe(false);
+  expect(buttonWith('Add courses')?.disabled).toBe(false);
 });
 
 it('offers a first scan before anything was saved', async () => {
   snapshot = { courses: [], sources: [], lastSuccessfulAt: null };
   await open();
-  expect(buttonWith('Find courses')).toBeTruthy();
+  expect(buttonWith('Add courses')).toBeTruthy();
   expect(text()).toContain('No courses saved yet.');
 });
 
@@ -372,8 +381,9 @@ it('keeps saved courses visible while refreshing and offers a way to stop', asyn
       }),
   );
   await open();
+  await openAddCourses();
   await act(async () => {
-    buttonWith('Refresh courses')?.click();
+    syncOption()?.click();
   });
   expect(text()).toContain('Biology 101');
   expect(text()).toContain('Refreshing your courses');
@@ -394,8 +404,9 @@ it('reports a failed refresh and keeps the saved courses', async () => {
     ),
   );
   await open();
+  await openAddCourses();
   await act(async () => {
-    buttonWith('Refresh courses')?.click();
+    syncOption()?.click();
   });
   await act(async () => {});
   expect(text()).toContain('Another academic task is running');
@@ -474,4 +485,28 @@ it('shows courses alphabetically with their saved content counts', async () => {
   expect(cards[0]?.textContent).toContain('1 assignment');
   expect(cards[1]?.textContent).toContain('2 announcements');
   expect(cards[1]?.textContent).toContain('3 assignments');
+});
+
+const openAddCourses = async () => {
+  await act(async () => {
+    buttonWith('Add courses')!.click();
+  });
+};
+const syncOption = () =>
+  [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
+    (node) => node.textContent?.includes('Sync courses'),
+  );
+
+it('opens manual course creation without a course resource', async () => {
+  connections = [];
+  await open();
+  await openAddCourses();
+  await act(async () => {
+    [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')]
+      .find((node) => node.textContent?.includes('Add manually'))!
+      .click();
+  });
+  expect(
+    document.querySelector<HTMLInputElement>('input[name="name"]')?.value,
+  ).toBe('');
 });

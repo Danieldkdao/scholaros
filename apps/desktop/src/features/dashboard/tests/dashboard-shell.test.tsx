@@ -62,6 +62,7 @@ const bridge = {
     discovery: {},
     preferences: {},
   })),
+  onCoursesChange: vi.fn(() => () => undefined),
   onBackgroundSyncChange: vi.fn(() => () => undefined),
   onConnectChange: vi.fn(() => () => undefined),
   getConnectRun: vi.fn(async () => ({ status: 'idle', accountId: null })),

@@ -1,3 +1,4 @@
+import { toast } from '@scholaros/ui/components/toast';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { errorMessage } from '../../../lib/error-message';
 import type { CoursesSnapshot } from '../types';
@@ -23,7 +24,10 @@ export const useCourses = (accountId: string | null) => {
     setLoadError(null);
     try {
       const loaded = await window.scholar.getCourses();
-      if (attempt === request.current) setSnapshot(loaded);
+      if (attempt === request.current) {
+        setSnapshot(loaded);
+        if (loaded?.refreshing !== undefined) setRefreshing(loaded.refreshing);
+      }
     } catch (cause) {
       if (attempt === request.current)
         setLoadError(errorMessage(cause, 'Could not load your courses.'));
@@ -39,6 +43,16 @@ export const useCourses = (accountId: string | null) => {
     return window.scholar.onBackgroundSyncChange(
       ({ accountId: changed, state }) => {
         if (changed !== accountId || state.status === 'syncing') return;
+        void load();
+      },
+    );
+  }, [accountId, load]);
+
+  useEffect(() => {
+    if (!accountId) return;
+    return window.scholar.onCoursesChange(
+      ({ accountId: changed, courseId: _changedCourse }) => {
+        if (changed !== accountId) return;
         void load();
       },
     );
@@ -64,6 +78,10 @@ export const useCourses = (accountId: string | null) => {
     } catch (cause) {
       if (generation === scope.current) {
         setRefreshError(errorMessage(cause, 'Could not refresh your courses.'));
+        if (!/abort|cancel|stopped/i.test(errorMessage(cause, '')))
+          toast.error(errorMessage(cause, 'Could not refresh your courses.'), {
+            id: `course-refresh-${'courses'}`,
+          });
         await load();
       }
     } finally {
@@ -85,7 +103,11 @@ export const useCourses = (accountId: string | null) => {
 
   const cancel = useCallback(async () => {
     // Stopping is best effort; the run reports its own outcome.
-    await window.scholar.cancelCourseRefresh().catch(() => undefined);
+    await window.scholar
+      .cancelCourseRefresh()
+      .catch((cause) =>
+        toast.error(errorMessage(cause, 'Could not stop this refresh.')),
+      );
   }, []);
 
   return {

@@ -87,6 +87,7 @@ beforeEach(() => {
   Element.prototype.releasePointerCapture = () => undefined;
   window.scrollTo = () => undefined;
   window.scholar = {
+    onCoursesChange: vi.fn(() => () => {}),
     getCurrentUser: vi.fn(async () => ({ id: 'student' })),
     getState: vi.fn(async () => ({
       accountId: 'student',
@@ -104,6 +105,7 @@ beforeEach(() => {
       lastSuccessfulAt: null,
     })),
     getCourse: vi.fn(async () => detail),
+    refreshCourse: vi.fn(async () => detail),
     openSource: vi.fn(async () => undefined),
   } as unknown as typeof window.scholar;
   window.onAuthenticated = vi.fn(() => () => {});
@@ -307,7 +309,7 @@ it('keeps saved announcements visible after their refresh fails', async () => {
   await openTab('Announcements');
   expect(text()).toContain('Still here');
   expect(text()).not.toContain('Not found');
-  expect(text()).toContain('Updated');
+  expect(text()).toContain('Checked');
 });
 
 it('explains a missing course without saying whether it exists elsewhere', async () => {
@@ -352,21 +354,50 @@ it('opens an item at its own source', async () => {
 });
 
 it('sorts the displayed LMS due dates and hides the partial-read label', async () => {
+  const datedChild = (id: string, date: string, original: string) =>
+    child(id, {
+      content: {
+        title: `Item ${id}`,
+        description: null,
+        kind: 'assignment',
+        state: 'active-unsubmitted',
+        due: { kind: 'local', date, time: '23:59', original },
+        availableFrom: null,
+        availableUntil: null,
+        pointsPossible: null,
+        url: null,
+        sourceId: null,
+        resources: [],
+        evidence: {
+          sourceUrl: 'https://canvas.school.edu/courses/1',
+          excerpts: [`Item ${id}`],
+          targetIds: [],
+        },
+      },
+    });
   detail = course({
     assignmentsStatus: 'partial',
     assignments: [
-      child('calendar-later', {
-        dateText: 'Monday, November 9, 2026 11:59 pm',
-      }),
-      child('calendar-sooner', {
-        dateText: 'Monday, November 2, 2026 11:59 pm',
-      }),
-      child('detail-later', {
-        dateText: 'Due Monday, November 9, 2026 at 11:59 pm',
-      }),
-      child('detail-sooner', {
-        dateText: 'Due Monday, November 2, 2026 at 11:59 pm',
-      }),
+      datedChild(
+        'calendar-later',
+        '2026-11-09',
+        'Monday, November 9, 2026 11:59 pm',
+      ),
+      datedChild(
+        'calendar-sooner',
+        '2026-11-02',
+        'Monday, November 2, 2026 11:59 pm',
+      ),
+      datedChild(
+        'detail-later',
+        '2026-11-09',
+        'Due Monday, November 9, 2026 at 11:59 pm',
+      ),
+      datedChild(
+        'detail-sooner',
+        '2026-11-02',
+        'Due Monday, November 2, 2026 at 11:59 pm',
+      ),
     ],
   });
   await open();
@@ -382,5 +413,225 @@ it('sorts the displayed LMS due dates and hides the partial-read label', async (
     'Item detail-later',
   ]);
   expect(text()).not.toContain('Partly read');
-  expect(text()).toContain('Updated');
+  expect(text()).toContain('Checked');
 });
+
+it('refreshes the current course with an accessible button', async () => {
+  await open();
+  const button = document.querySelector('button[aria-label="Refresh course"]')!;
+  expect(button).not.toBeNull();
+  await click(button);
+  expect(window.scholar.refreshCourse).toHaveBeenCalledWith('course-1');
+});
+
+it('shows a stop action for a running course refresh', async () => {
+  detail = course({ refreshing: true });
+  window.scholar.cancelCourseRefresh = vi.fn(async () => undefined);
+  await open();
+  const stop = document.querySelector<HTMLButtonElement>(
+    'button[aria-label="Stop refreshing course"]',
+  );
+  expect(stop).not.toBeNull();
+  await act(async () => stop!.click());
+  expect(window.scholar.cancelCourseRefresh).toHaveBeenCalledWith('course-1');
+});
+
+it('opens a validated course edit dialog from its actions menu', async () => {
+  window.scholar.updateCourseRecord = vi.fn(async () => undefined);
+  await open();
+  await act(async () =>
+    document
+      .querySelector<HTMLButtonElement>(
+        'button[aria-label="Actions for Biology 101"]',
+      )!
+      .click(),
+  );
+  await act(async () =>
+    [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')]
+      .find((node) => node.textContent?.includes('Edit'))!
+      .click(),
+  );
+  expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
+    'Edit course',
+  );
+  const input = document.querySelector<HTMLInputElement>('input[name="name"]');
+  expect(input?.value).toBe('Biology 101');
+  await act(async () =>
+    document
+      .querySelector('form')!
+      .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })),
+  );
+  expect(window.scholar.updateCourseRecord).toHaveBeenCalledWith(
+    expect.objectContaining({
+      kind: 'courses',
+      courseId: 'course-1',
+      values: expect.objectContaining({ name: 'Biology 101' }),
+    }),
+  );
+});
+
+it('requires confirmation before deleting and preserves the record on failure', async () => {
+  window.scholar.deleteCourseRecord = vi.fn(async () => {
+    throw new Error('Storage unavailable');
+  });
+  await open();
+  await click(
+    document.querySelector('button[aria-label="Actions for Biology 101"]')!,
+  );
+  await click(
+    [...document.querySelectorAll('[role="menuitem"]')].find((node) =>
+      node.textContent?.includes('Delete'),
+    )!,
+  );
+  expect(window.scholar.deleteCourseRecord).not.toHaveBeenCalled();
+  expect(document.querySelector('[role="alertdialog"]')?.textContent).toContain(
+    'Delete Biology 101?',
+  );
+  await click(
+    [...document.querySelectorAll('[role="alertdialog"] button')].find(
+      (node) => node.textContent?.trim() === 'Delete',
+    )!,
+  );
+  expect(window.scholar.deleteCourseRecord).toHaveBeenCalledWith({
+    kind: 'courses',
+    courseId: 'course-1',
+    id: 'course-1',
+  });
+  expect(document.querySelector('[role="alertdialog"]')).not.toBeNull();
+  expect(text()).toContain('Biology 101');
+});
+
+it.each(['assignments', 'announcements'] as const)(
+  'offers a dialog to edit %s',
+  async (kind) => {
+    detail = course({ [kind]: [child('editable')] });
+    window.scholar.updateCourseRecord = vi.fn(async () => undefined);
+    await open();
+    await openTab(kind === 'assignments' ? 'Assignments' : 'Announcements');
+    await click(
+      document.querySelector('button[aria-label="Actions for Item editable"]')!,
+    );
+    await click(
+      [...document.querySelectorAll('[role="menuitem"]')].find((node) =>
+        node.textContent?.includes('Edit'),
+      )!,
+    );
+    expect(
+      document.querySelector<HTMLInputElement>('input[name="title"]')?.value,
+    ).toBe('Item editable');
+    await act(async () =>
+      document
+        .querySelector('form')!
+        .dispatchEvent(
+          new Event('submit', { bubbles: true, cancelable: true }),
+        ),
+    );
+    expect(window.scholar.updateCourseRecord).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind,
+        id: 'editable',
+        values: expect.objectContaining({ title: 'Item editable' }),
+      }),
+    );
+  },
+);
+
+it('shows inline validation and does not save an empty course name', async () => {
+  detail = course({ name: '' });
+  window.scholar.updateCourseRecord = vi.fn(async () => undefined);
+  await open();
+  await click(document.querySelector('button[aria-label="Actions for "]')!);
+  await click(
+    [...document.querySelectorAll('[role="menuitem"]')].find((node) =>
+      node.textContent?.includes('Edit'),
+    )!,
+  );
+  await act(async () =>
+    document
+      .querySelector('form')!
+      .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })),
+  );
+  expect(window.scholar.updateCourseRecord).not.toHaveBeenCalled();
+  expect(
+    document.querySelector('input[name="name"]')?.getAttribute('aria-invalid'),
+  ).toBe('true');
+  expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
+    'Enter a course name.',
+  );
+});
+
+it.each(['assignments', 'announcements'] as const)(
+  'creates a manual %s record with the shared form',
+  async (kind) => {
+    window.scholar.createCourseRecord = vi.fn(async () => 'manual-id');
+    await open();
+    await click(tab(kind === 'assignments' ? 'Assignments' : 'Announcements'));
+    const label = kind === 'assignments' ? 'assignment' : 'announcement';
+    await click(document.querySelector(`button[aria-label="Add ${label}"]`)!);
+    const input = document.querySelector<HTMLInputElement>(
+      'input[name="title"]',
+    )!;
+    expect(input.value).toBe('');
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        'value',
+      )!.set!.call(input, 'Manual record');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => {
+      document
+        .querySelector('form')!
+        .dispatchEvent(
+          new Event('submit', { bubbles: true, cancelable: true }),
+        );
+    });
+    expect(window.scholar.createCourseRecord).toHaveBeenCalledWith({
+      kind,
+      courseId: 'course-1',
+      values: { title: 'Manual record', body: '', date: '' },
+    });
+    expect(document.querySelector('[data-slot="dialog-content"]')).toBeNull();
+  },
+);
+
+it.each(['Assignments', 'Announcements'])(
+  'debounces search in %s',
+  async (label) => {
+    detail = course({
+      assignments: [child('assignment')],
+      announcements: [child('announcement')],
+    });
+    await open();
+    await click(tab(label));
+    const kind = label.toLowerCase();
+    const input = document.querySelector<HTMLInputElement>(
+      `input[aria-label="Search ${kind}"]`,
+    )!;
+    const before = document.querySelectorAll(
+      `[data-slot="${kind}-card"]`,
+    ).length;
+    expect(before).toBeGreaterThan(0);
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(
+          HTMLInputElement.prototype,
+          'value',
+        )!.set!.call(input, 'no matching record');
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      expect(
+        document.querySelectorAll(`[data-slot="${kind}-card"]`).length,
+      ).toBe(before);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(250);
+      });
+      expect(
+        document.querySelectorAll(`[data-slot="${kind}-card"]`).length,
+      ).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  },
+);

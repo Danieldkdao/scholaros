@@ -17,7 +17,7 @@ const catalogProbe = ({ id }: { id: string | null }) => {
   return null;
 };
 const detailProbe = ({ id }: { id: string }) => {
-  detail = useCourse(id);
+  detail = useCourse(id, 'student');
   return null;
 };
 const snapshot = (id: string): CoursesSnapshot => ({
@@ -39,9 +39,11 @@ beforeEach(() => {
   document.body.append(node);
   root = createRoot(node);
   window.scholar = {
+    onCoursesChange: vi.fn(() => () => {}),
     getCourses: vi.fn(async () => snapshot('current')),
     getCourse: vi.fn(async () => null),
     refreshCourses: vi.fn(async () => snapshot('refreshed')),
+    refreshCourse: vi.fn(async () => null),
     onBackgroundSyncChange: vi.fn(() => () => {}),
   } as unknown as typeof window.scholar;
 });
@@ -126,4 +128,86 @@ it('reattaches to a running refresh after navigation without starting another jo
   });
   expect(catalog.refreshing).toBe(false);
   expect(catalog.snapshot?.sources[0].connectionId).toBe('finished');
+});
+
+it('keeps course refreshes running across navigation and reattaches only to that course', async () => {
+  const completions = new Map<string, (value: CourseDetail | null) => void>();
+  vi.mocked(window.scholar.refreshCourse).mockImplementation(
+    (id) => new Promise((resolve) => completions.set(id, resolve)),
+  );
+  await act(async () => root.render(createElement(detailProbe, { id: 'a' })));
+  let a!: Promise<void>;
+  await act(async () => {
+    a = detail.refresh();
+  });
+  expect(detail.refreshing).toBe(true);
+  await act(async () => root.render(createElement(detailProbe, { id: 'b' })));
+  expect(detail.refreshing).toBe(false);
+  let b!: Promise<void>;
+  await act(async () => {
+    b = detail.refresh();
+  });
+  await act(async () => root.render(createElement(detailProbe, { id: 'a' })));
+  expect(detail.refreshing).toBe(true);
+  expect(window.scholar.refreshCourse).toHaveBeenCalledTimes(2);
+  await act(async () => {
+    completions.get('b')!({ id: 'b' } as CourseDetail);
+    await b;
+  });
+  expect(detail.course?.id).not.toBe('b');
+  expect(detail.refreshing).toBe(true);
+  await act(async () => {
+    completions.get('a')!({ id: 'a' } as CourseDetail);
+    await a;
+  });
+  expect(detail.course?.id).toBe('a');
+  expect(detail.refreshing).toBe(false);
+});
+
+it('reports a course refresh failure and reloads saved progress', async () => {
+  await act(async () => root.render(createElement(detailProbe, { id: 'a' })));
+  vi.mocked(window.scholar.refreshCourse).mockRejectedValueOnce(
+    new Error('Connection lost'),
+  );
+  vi.mocked(window.scholar.getCourse).mockResolvedValueOnce({
+    id: 'a',
+  } as CourseDetail);
+  await act(async () => detail.refresh());
+  expect(detail.refreshError).toBe('Connection lost');
+  expect(detail.course?.id).toBe('a');
+  expect(detail.refreshing).toBe(false);
+});
+
+it('reloads snapshots after service resource events and ignores events belonging to another account', async () => {
+  const listeners = new Set<
+    (change: { accountId: string; courseId: string | null }) => void
+  >();
+  window.scholar.onCoursesChange = (listener) => {
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+    };
+  };
+  await act(async () =>
+    root.render(
+      createElement(
+        'div',
+        null,
+        createElement(catalogProbe, { id: 'student' }),
+        createElement(detailProbe, { id: 'course-1' }),
+      ),
+    ),
+  );
+  await act(async () => {
+    for (const listener of listeners)
+      listener({ accountId: 'other', courseId: null });
+  });
+  expect(window.scholar.getCourses).toHaveBeenCalledOnce();
+  expect(window.scholar.getCourse).toHaveBeenCalledOnce();
+  await act(async () => {
+    for (const listener of listeners)
+      listener({ accountId: 'student', courseId: 'course-1' });
+  });
+  expect(window.scholar.getCourses).toHaveBeenCalledTimes(2);
+  expect(window.scholar.getCourse).toHaveBeenCalledTimes(2);
 });

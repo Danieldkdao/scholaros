@@ -1,3 +1,13 @@
+import { CourseCreateDialog } from "../../../features/courses/components/course-create-dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@scholaros/ui/components/dropdown-menu";
+import { CourseRecordActions } from "../../../features/courses/components/course-record-actions";
+import { CourseRefreshActivity } from "../../../features/courses/components/course-refresh-activity";
+import { LoadingSwap } from "@scholaros/ui/components/loading-swap";
 import { useState } from "react";
 import { useDebouncedValue } from "@tanstack/react-pacer";
 import { createFileRoute, Link } from "@tanstack/react-router";
@@ -9,6 +19,8 @@ import {
   KeyRound,
   Loader2,
   RefreshCw,
+  Plus,
+  Pencil,
   SquareIcon,
 } from "lucide-react";
 import { Alert, AlertDescription } from "@scholaros/ui/components/alert";
@@ -16,11 +28,7 @@ import { Button } from "@scholaros/ui/components/button";
 import { Card, CardContent } from "@scholaros/ui/components/card";
 import { Input } from "@scholaros/ui/components/input";
 import { Separator } from "@scholaros/ui/components/separator";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@scholaros/ui/components/tooltip";
+import { TooltipWrapper } from "@scholaros/ui/components/tooltip-wrapper";
 import { PageHeading } from "../../../features/dashboard/page-heading";
 import { defaultConnectionSearch } from "../../../features/dashboard/lib/connection-filters";
 import { useCourses } from "../../../features/courses/hooks/use-courses";
@@ -35,16 +43,9 @@ import { useBridgeAction } from "../../../hooks/use-bridge-action";
 
 const CoursesPage = () => {
   const { state } = useOnboardingState();
-  const {
-    snapshot,
-    loading,
-    loadError,
-    reload,
-    refreshing,
-    refreshError,
-    refresh,
-    cancel,
-  } = useCourses(state?.accountId ?? null);
+  const { snapshot, loading, loadError, reload, refreshing, refresh, cancel } =
+    useCourses(state?.accountId ?? null);
+  const [creating, setCreating] = useState(false);
   const [showInactive, setShowInactive] = useState(false);
   const [query, setQuery] = useState("");
   const [debouncedQuery] = useDebouncedValue(query, { wait: 250 });
@@ -80,7 +81,6 @@ const CoursesPage = () => {
       }),
     );
   const canRefresh = marked.length > 0;
-  const firstScan = !courses.length && !snapshot?.sources.length;
   return (
     <div className="flex flex-col gap-6 text-base">
       <PageHeading page="courses">
@@ -97,16 +97,44 @@ const CoursesPage = () => {
               Stop
             </Button>
           ) : (
-            <Button
-              disabled={!canRefresh || loading}
-              onClick={() => void refresh()}
-            >
-              <RefreshCw />
-              {firstScan ? "Find courses" : "Refresh courses"}
-            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger render={<Button disabled={loading} />}>
+                <Plus />
+                Add courses
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-auto">
+                <TooltipWrapper
+                  content={
+                    canRefresh
+                      ? "Sync courses from your learning resources"
+                      : "Select a course resource in Connections to enable syncing."
+                  }
+                >
+                  <span className="block" tabIndex={canRefresh ? undefined : 0}>
+                    <DropdownMenuItem
+                      disabled={!canRefresh}
+                      onClick={() => void refresh()}
+                    >
+                      <RefreshCw />
+                      Sync courses
+                    </DropdownMenuItem>
+                  </span>
+                </TooltipWrapper>
+                <DropdownMenuItem onClick={() => setCreating(true)}>
+                  <Pencil />
+                  Add manually
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           )}
         </div>
       </PageHeading>
+      <CourseCreateDialog
+        open={creating}
+        onOpenChange={setCreating}
+        kind="courses"
+      />
+      <CourseRefreshActivity activity={snapshot?.activity} />
       {loading && (
         <Loader2
           role="status"
@@ -123,7 +151,8 @@ const CoursesPage = () => {
       {marked.length === 0 && (
         <Alert>
           <AlertDescription className="flex flex-wrap items-center justify-between gap-3">
-            Choose which connections hold your courses.
+            Add courses manually or select a course resource in Connections to
+            enable syncing.
             <Button
               variant="outline"
               nativeButton={false}
@@ -177,13 +206,18 @@ const CoursesPage = () => {
           Refreshing your courses…
         </p>
       )}
-      {(refreshError || error) && (
+      {error && (
         <Alert>
-          <AlertDescription>{refreshError || error}</AlertDescription>
+          <AlertDescription>{error}</AlertDescription>
         </Alert>
       )}
       {snapshot?.sources
-        .filter((source) => source.outcome !== "complete")
+        .filter(
+          (source) =>
+            source.outcome !== "complete" &&
+            source.outcome !== "partial" &&
+            source.outcome !== "cancelled",
+        )
         .map((source) => {
           const connection = marked.find(
             (item) => item.id === source.connectionId,
@@ -202,28 +236,21 @@ const CoursesPage = () => {
                     {source.message ?? status.label}
                   </span>
                 </span>
-                <Tooltip>
-                  <TooltipTrigger
-                    render={
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        aria-label={`Open ${connection.name} in study browser`}
-                        disabled={busy || refreshing}
-                        onClick={() =>
-                          void run(async () => {
-                            await window.scholar.openSource(connection.url);
-                          })
-                        }
-                      />
+                <TooltipWrapper content="Open resource in study browser">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label={`Open ${connection.name} in study browser`}
+                    disabled={busy || refreshing}
+                    onClick={() =>
+                      void run(async () => {
+                        await window.scholar.openSource(connection.url);
+                      })
                     }
                   >
                     <ExternalLink />
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    Open resource in study browser
-                  </TooltipContent>
-                </Tooltip>
+                  </Button>
+                </TooltipWrapper>
               </AlertDescription>
             </Alert>
           );
@@ -285,14 +312,33 @@ const CoursesPage = () => {
                       </span>
                     </div>
                   </div>
-                  {source && (
-                    <Tooltip>
-                      <TooltipTrigger>
-                        <source.Icon className="size-4 shrink-0 text-muted-foreground" />
-                      </TooltipTrigger>
-                      <TooltipContent>{source.label}</TooltipContent>
-                    </Tooltip>
-                  )}
+                  <div className="flex items-center gap-2">
+                    {course.refreshing && (
+                      <TooltipWrapper content="Refreshing course">
+                        <span
+                          role="status"
+                          aria-label={`Refreshing ${course.name}`}
+                        >
+                          <LoadingSwap isLoading>
+                            <RefreshCw className="size-4" />
+                          </LoadingSwap>
+                        </span>
+                      </TooltipWrapper>
+                    )}
+                    <CourseRecordActions
+                      kind="courses"
+                      courseId={course.id}
+                      course={course}
+                      disabled={refreshing || course.refreshing}
+                    />
+                    {source && (
+                      <TooltipWrapper content={source.label}>
+                        <span tabIndex={0} aria-label={source.label}>
+                          <source.Icon className="size-4 shrink-0 text-muted-foreground" />
+                        </span>
+                      </TooltipWrapper>
+                    )}
+                  </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-4 text-muted-foreground">
                   <span className="flex items-center gap-2">

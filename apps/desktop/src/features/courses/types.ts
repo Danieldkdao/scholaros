@@ -1,3 +1,7 @@
+import type { ExtractedAssignmentSchema } from '@scholaros/services/ai/resources/assignment';
+import type { ExtractedAnnouncementSchema } from '@scholaros/services/ai/resources/announcement';
+import type { ExtractedCourseSchema } from '@scholaros/services/ai/resources/course';
+
 export const courseScanStatuses = [
   'pending',
   'complete',
@@ -13,9 +17,12 @@ export type CourseScanStatus = (typeof courseScanStatuses)[number];
 export const courseScanSucceeded = (status: CourseScanStatus) =>
   status === 'complete';
 
-export type CourseSourceState = 'connected' | 'unmarked' | 'removed';
+export type CourseSourceState = 'connected' | 'unmarked' | 'removed' | 'manual';
 
 export type CourseChildItem = {
+  retrievedAt?: string;
+  content?: ExtractedAssignmentSchema | ExtractedAnnouncementSchema | null;
+  contentChangedAt?: string | null;
   title: string;
   body: string | null;
   dateValue: string | null;
@@ -30,6 +37,7 @@ export type CourseChildScan = {
 };
 
 export type ObservedCourse = {
+  content?: ExtractedCourseSchema | null;
   externalId: string | null;
   name: string;
   code: string | null;
@@ -50,6 +58,11 @@ export type CourseSourceScan = {
 };
 
 export type CourseSummary = {
+  instructor?: string | null;
+  description?: string | null;
+  refreshing?: boolean;
+  contentChangedAt?: string | null;
+  content?: ExtractedCourseSchema | null;
   announcementCount: number;
   assignmentCount: number;
   id: string;
@@ -76,6 +89,7 @@ export type SavedCourseChild = CourseChildItem & {
 };
 
 export type CourseDetail = CourseSummary & {
+  activity?: CourseRefreshActivity[];
   instructor: string | null;
   description: string | null;
   announcements: SavedCourseChild[];
@@ -91,7 +105,16 @@ export type CourseSourceStatus = {
 };
 
 export type CoursesSnapshot = {
+  activity?: CourseRefreshActivity[];
+  refreshing?: boolean;
   courses: CourseSummary[];
   sources: CourseSourceStatus[];
   lastSuccessfulAt: string | null;
+};
+
+export type CourseRefreshActivity = {
+  id: string;
+  key: string;
+  status: 'running' | 'complete' | 'partial' | 'cancelled' | 'failed';
+  events: string[];
 };
