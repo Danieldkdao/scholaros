@@ -12,14 +12,14 @@ export class AccountContinuationError extends Error {}
 
 const accountFromNotes = (specific: string | null, general: string) => {
   const notes =
-    specific && /\b(?:choose|select|use)\b|@/i.test(specific)
+    specific && /\b(?:choose|select|use|click)\b|@/i.test(specific)
       ? specific
       : general;
   const instructions = notes
     .split(/[;\n,]|\.\s+/)
     .filter(
       (instruction) =>
-        /\b(?:choose|select|use)\b/i.test(instruction) &&
+        /\b(?:choose|select|use|click)\b/i.test(instruction) &&
         !/\b(?:not|never|avoid|except|unless|don['’]t|besides|other than|but)\b/i.test(
           instruction,
         ),
@@ -71,10 +71,11 @@ const inspectPicker = ({
     }
     return true;
   };
+  // Account pickers include language selectors; only editable fields require manual sign-in.
   if (
     [
       ...document.querySelectorAll<HTMLElement>(
-        'input:not([type="hidden"]):not([type="submit"]):not([type="button"]), textarea, select, [contenteditable="true"]',
+        'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"]), textarea, [contenteditable="true"]',
       ),
     ].some(visible)
   )
@@ -145,7 +146,8 @@ export const createAccountContinuation = (
 ) => {
   const email = accountFromNotes(notes, generalNotes);
   let selected = false;
-  let finished = false;
+  let selections = 0;
+  let lastSelectionAt = 0;
   let documents = 0;
   const isAuthenticationUrl = (value: string) => {
     if (!isAcademicUrl(value)) return false;
@@ -190,7 +192,7 @@ export const createAccountContinuation = (
       event: { request: { url: string; method: string }; resourceType: string },
       mainFrame: boolean,
     ) => {
-      if (finished || !isAuthenticationUrl(event.request.url)) return false;
+      if (!isAuthenticationUrl(event.request.url)) return false;
       const url = new URL(event.request.url);
       if (
         event.resourceType === 'Document' &&
@@ -228,7 +230,7 @@ export const createAccountContinuation = (
           throw new Error('Your session changed; sign in again.');
         const url = await page.url();
         if (isReadNavigation(url, [host])) {
-          if (selected) finished = true;
+          selected = false;
           return;
         }
         if (!isAuthenticationUrl(url))
@@ -245,8 +247,16 @@ export const createAccountContinuation = (
           throw new AccountContinuationError(credentialMessage);
         if (result === 'unmatched')
           throw new AccountContinuationError(accountPickerMessage);
-        if (result === 'selected' && !selected) {
+        // A cold picker can render before its click handlers are ready.
+        if (
+          result === 'selected' &&
+          (!selected ||
+            (selections < 3 && Date.now() - lastSelectionAt >= 1500))
+        ) {
+          if (++selections > 3)
+            throw new AccountContinuationError(credentialMessage);
           selected = true;
+          lastSelectionAt = Date.now();
           const prepared = await page.evaluate(inspectPicker, {
             email,
             prepare: true,

@@ -366,3 +366,115 @@ it('allows the shared Schoology callback only for a Schoology source', () => {
     ).isAuthenticationUrl(callback),
   ).toBe(false);
 });
+
+it('can resume a second bounded picker redirect without retaining permission to post between selections', async () => {
+  const session = continuation();
+  const post = {
+    request: {
+      url: 'https://accounts.google.com/v3/signin/_/AccountsSignInUi/data/batchexecute',
+      method: 'POST',
+    },
+    resourceType: 'XHR',
+  };
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    picker();
+    expect(
+      session.allowRequest(
+        {
+          request: { url: pickerUrl, method: 'GET' },
+          resourceType: 'Document',
+        },
+        true,
+      ),
+    ).toBe(true);
+    const selected = vi.fn(() => {
+      expect(session.allowRequest(post, true)).toBe(true);
+      vi.stubGlobal('location', new URL(`https://${host}/courses`));
+    });
+    document
+      .querySelector(`[data-identifier="${email}"]`)!
+      .addEventListener('click', selected);
+    await session.resume(page as never, signal());
+    expect(selected).toHaveBeenCalledOnce();
+    expect(session.allowRequest(post, true)).toBe(false);
+  }
+});
+
+it('honors click instructions in resource notes', async () => {
+  const selected = vi.fn(() =>
+    vi.stubGlobal('location', new URL(`https://${host}/courses`)),
+  );
+  document
+    .querySelector(`[data-identifier="${email}"]`)!
+    .addEventListener('click', selected);
+  await continuation(
+    `Click on my already signed in account ${email} and continue.`,
+  ).resume(page as never, signal());
+  expect(selected).toHaveBeenCalledOnce();
+});
+
+it('ignores non-credential checkbox controls on an account picker', async () => {
+  document.body.insertAdjacentHTML(
+    'beforeend',
+    '<input type="checkbox" aria-label="Remember this account">',
+  );
+  document
+    .querySelector(`[data-identifier="${email}"]`)!
+    .addEventListener('click', () =>
+      vi.stubGlobal('location', new URL(`https://${host}/courses`)),
+    );
+  await continuation().resume(page as never, signal());
+});
+
+it('selects the named signed-in account when the cold-start Google picker includes its language selector', async () => {
+  document.body.insertAdjacentHTML(
+    'beforeend',
+    '<select aria-label="Change language"><option>English (United States)</option></select>',
+  );
+  const selected = vi.fn(() =>
+    vi.stubGlobal('location', new URL(`https://${host}/courses`)),
+  );
+  document
+    .querySelector(`[data-identifier="${email}"]`)!
+    .addEventListener('click', selected);
+  await continuation().resume(page as never, signal());
+  expect(selected).toHaveBeenCalledOnce();
+});
+
+it('retries a verified account when the first cold-start click arrives before picker handlers are ready', async () => {
+  const click = vi.fn(async () => {
+    if (click.mock.calls.length === 2)
+      vi.stubGlobal('location', new URL(`https://${host}/courses`));
+  });
+  await continuation().resume(
+    { ...page, locator: () => ({ click }) } as never,
+    signal(),
+  );
+  expect(click).toHaveBeenCalledTimes(2);
+});
+
+it('stops retrying when credential input appears after an ignored account click', async () => {
+  const click = vi.fn(async () =>
+    document.body.insertAdjacentHTML('beforeend', '<input type="password">'),
+  );
+  await expect(
+    continuation().resume(
+      { ...page, locator: () => ({ click }) } as never,
+      signal(),
+    ),
+  ).rejects.toThrow(/sign in manually/i);
+  expect(click).toHaveBeenCalledOnce();
+});
+
+it('bounds ignored account clicks instead of retrying indefinitely', async () => {
+  let now = 0;
+  vi.spyOn(Date, 'now').mockImplementation(() => (now += 1000));
+  const click = vi.fn(async () => undefined);
+  await expect(
+    continuation().resume(
+      { ...page, locator: () => ({ click }) } as never,
+      signal(),
+    ),
+  ).rejects.toThrow(/sign in manually/i);
+  expect(click).toHaveBeenCalledTimes(3);
+});
