@@ -825,3 +825,201 @@ export const applySingleCourseRefresh = (
   });
   notifyCourseChanges(userId, courseId);
 };
+
+export const createCourseRecord = (
+  userId: string,
+  input: CreateCourseRecordSchema,
+) => {
+  const data = createCourseRecordSchema.parse(input);
+  const id = randomUUID();
+  const now = new Date().toISOString();
+  if (data.kind === 'courses') {
+    db.insert(CourseTable)
+      .values({
+        id,
+        userId,
+        sourceKey: `manual:${id}`,
+        sourceName: 'Manual',
+        sourceHost: '',
+        url: '',
+        name: data.values.name,
+        code: data.values.code || null,
+        term: data.values.term || null,
+        instructor: data.values.instructor || null,
+        description: data.values.description || null,
+        firstSeenAt: now,
+        lastSeenAt: now,
+        contentChangedAt: now,
+      })
+      .run();
+  } else {
+    if (!getCourseRefreshTarget(userId, data.courseId))
+      throw new Error('This course is no longer available.');
+    const date = legacyDateFrom({
+      dateValue: data.values.date || null,
+      dateText: data.values.date || null,
+    });
+    const table =
+      data.kind === 'assignments'
+        ? CourseAssignmentTable
+        : CourseAnnouncementTable;
+    db.insert(table)
+      .values({
+        id,
+        userId,
+        courseId: data.courseId,
+        sourceKey: `manual:${id}`,
+        url: '',
+        title: data.values.title,
+        body: data.values.body || null,
+        dateText: date?.original ?? null,
+        dateValue:
+          date?.kind === 'date'
+            ? date.date
+            : date?.kind === 'instant'
+              ? date.instant
+              : null,
+        lastSeenAt: now,
+        contentChangedAt: now,
+      })
+      .run();
+  }
+  notifyCourseChanges(userId, data.kind === 'courses' ? id : data.courseId);
+  return id;
+};
+
+export const updateCourseRecord = (
+  userId: string,
+  input: UpdateCourseRecordSchema,
+) => {
+  const data = updateCourseRecordSchema.parse(input);
+  const now = new Date().toISOString();
+  const existingCourse = getCourseRefreshTarget(userId, data.courseId);
+  if (!existingCourse) throw new Error('This course is no longer available.');
+  if (data.kind === 'courses') {
+    if (data.id !== data.courseId) throw new Error('Choose this course.');
+    const values = data.values;
+    db.update(CourseTable)
+      .set({
+        name: values.name,
+        code: values.code || null,
+        term: values.term || null,
+        instructor: values.instructor || null,
+        description: values.description || null,
+        content: existingCourse.content
+          ? {
+              ...existingCourse.content,
+              name: values.name,
+              code: values.code || null,
+              term: values.term || null,
+              instructors: values.instructor ? [values.instructor] : [],
+              description: values.description || null,
+            }
+          : null,
+        contentChangedAt: now,
+      })
+      .where(and(eq(CourseTable.id, data.id), eq(CourseTable.userId, userId)))
+      .run();
+  } else {
+    const table =
+      data.kind === 'assignments'
+        ? CourseAssignmentTable
+        : CourseAnnouncementTable;
+    const scope = and(
+      eq(table.userId, userId),
+      eq(table.courseId, data.courseId),
+      eq(table.id, data.id),
+    );
+    const existingChild = db.select().from(table).where(scope).get();
+    if (!existingChild) throw new Error('This item is no longer available.');
+    const values = data.values;
+    const previousDate = academicDateFor(existingChild);
+    const date =
+      values.date === (previousDate?.original ?? '')
+        ? previousDate
+        : legacyDateFrom({
+            dateValue: values.date || null,
+            dateText: values.date || null,
+          });
+    const content = existingChild.content;
+    db.update(table)
+      .set({
+        title: values.title,
+        body: values.body || null,
+        dateText: date?.original ?? null,
+        dateValue:
+          date?.kind === 'date'
+            ? date.date
+            : date?.kind === 'instant'
+              ? date.instant
+              : null,
+        content: content
+          ? 'due' in content
+            ? {
+                ...content,
+                title: values.title,
+                description: values.body || null,
+                due: date,
+              }
+            : {
+                ...content,
+                title: values.title,
+                body: values.body || null,
+                published: date,
+              }
+          : null,
+        contentChangedAt: now,
+      })
+      .where(scope)
+      .run();
+  }
+  notifyCourseChanges(userId, data.courseId);
+};
+
+export const deleteCourseRecord = (
+  userId: string,
+  input: CourseRecordSchema,
+) => {
+  const data = courseRecordSchema.parse(input);
+  db.transaction((tx) => {
+    if (data.kind === 'courses') {
+      if (
+        data.id !== data.courseId ||
+        !getCourseRefreshTarget(userId, data.courseId)
+      )
+        throw new Error('This course is no longer available.');
+      for (const table of [CourseAssignmentTable, CourseAnnouncementTable])
+        tx.delete(table)
+          .where(
+            and(eq(table.userId, userId), eq(table.courseId, data.courseId)),
+          )
+          .run();
+      tx.delete(CourseTable)
+        .where(
+          and(
+            eq(CourseTable.userId, userId),
+            eq(CourseTable.id, data.courseId),
+          ),
+        )
+        .run();
+    } else {
+      const table =
+        data.kind === 'assignments'
+          ? CourseAssignmentTable
+          : CourseAnnouncementTable;
+      const deletedItem = tx
+        .delete(table)
+        .where(
+          and(
+            eq(table.userId, userId),
+            eq(table.courseId, data.courseId),
+            eq(table.id, data.id),
+          ),
+        )
+        .returning({ id: table.id })
+        .get();
+      if (!deletedItem) throw new Error('This item is no longer available.');
+    }
+  });
+  notifyCourseChanges(userId, data.kind === 'courses' ? null : data.courseId);
+};

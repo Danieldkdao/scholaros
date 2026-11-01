@@ -695,3 +695,559 @@ it('counts only active saved content on course summaries', () => {
   });
   expect(onlyCourse(other)).toBeUndefined();
 });
+
+it('advances freshness without reporting unchanged content as changed and retains identity when a platform item is renamed', () => {
+  const content = {
+    title: 'Essay',
+    description: 'Read chapter one',
+    kind: 'assignment' as const,
+    state: 'active-unsubmitted' as const,
+    due: { kind: 'date' as const, date: '2026-10-31', original: 'October 31' },
+    availableFrom: null,
+    availableUntil: null,
+    pointsPossible: 10,
+    sourceId: 'assignment-123',
+    url: `${biologyUrl}/assignments/123`,
+    resources: [],
+    evidence: { sourceUrl: assignmentsUrl, excerpts: ['Essay'], targetIds: [] },
+  };
+  const save = (now: string, title = 'Essay') =>
+    applyCourseRefresh(
+      student,
+      [
+        sourceScan({
+          courses: [
+            observedCourse({
+              assignments: {
+                status: 'complete',
+                items: [
+                  child(title, {
+                    url: content.url,
+                    content: { ...content, title },
+                  }),
+                ],
+              },
+            }),
+          ],
+        }),
+      ],
+      { now },
+    );
+  save(first);
+  const initial = detailOf().assignments[0];
+  save(second);
+  expect(detailOf().assignments[0]).toMatchObject({
+    id: initial.id,
+    lastSeenAt: second,
+    contentChangedAt: first,
+    content: { due: content.due },
+  });
+  save('2026-03-09T09:00:00.000Z', 'Revised essay');
+  expect(detailOf().assignments).toHaveLength(1);
+  expect(detailOf().assignments[0]).toMatchObject({
+    id: initial.id,
+    title: 'Revised essay',
+    contentChangedAt: '2026-03-09T09:00:00.000Z',
+  });
+});
+
+it('refreshes evidence without changing the academic content timestamp', () => {
+  const save = (now: string, original: string) =>
+    applyCourseRefresh(
+      student,
+      [
+        sourceScan({
+          courses: [
+            observedCourse({
+              assignments: {
+                status: 'complete',
+                items: [
+                  child('Essay', {
+                    dateValue: '2026-10-31',
+                    dateText: original,
+                    content: {
+                      title: 'Essay',
+                      description: null,
+                      kind: 'assignment',
+                      state: 'active-unsubmitted',
+                      due: { kind: 'date', date: '2026-10-31', original },
+                      availableFrom: null,
+                      availableUntil: null,
+                      pointsPossible: null,
+                      sourceId: 'essay',
+                      url: null,
+                      resources: [],
+                      evidence: {
+                        sourceUrl: assignmentsUrl,
+                        excerpts: [original],
+                        targetIds: [],
+                      },
+                    },
+                  }),
+                ],
+              },
+            }),
+          ],
+        }),
+      ],
+      { now },
+    );
+  save(first, 'Oct 31');
+  save(second, 'October 31');
+  expect(detailOf().assignments[0]).toMatchObject({
+    lastSeenAt: second,
+    contentChangedAt: first,
+    content: { evidence: { excerpts: ['October 31'] } },
+  });
+});
+
+it('keeps the trusted page retrieval time separate from the time extraction was persisted', () => {
+  applyCourseRefresh(
+    student,
+    [
+      sourceScan({
+        courses: [
+          observedCourse({
+            assignments: {
+              status: 'complete',
+              items: [child('Essay', { retrievedAt: first })],
+            },
+          }),
+        ],
+      }),
+    ],
+    { now: second },
+  );
+  expect(detailOf().assignments[0]).toMatchObject({
+    lastSeenAt: first,
+    contentChangedAt: second,
+  });
+});
+
+it('exposes unknown normalized course fields without displaying legacy values as freshly confirmed', () => {
+  applyCourseRefresh(student, [
+    sourceScan({
+      courses: [
+        observedCourse({
+          code: 'BIO',
+          term: 'Autumn',
+          instructor: 'Dr. Teacher',
+          description: 'Earlier description',
+        }),
+      ],
+    }),
+  ]);
+  const saved = detailOf();
+  applyCourseRefresh(student, [
+    sourceScan({
+      courses: [
+        observedCourse({
+          content: {
+            name: 'Biology 101',
+            code: null,
+            section: null,
+            term: null,
+            description: null,
+            instructors: [],
+            sourceId: null,
+            url: biologyUrl,
+            evidence: {
+              sourceUrl: biologyUrl,
+              excerpts: ['Biology 101'],
+              targetIds: [],
+            },
+          },
+        }),
+      ],
+    }),
+  ]);
+  expect(detailOf()).toMatchObject({
+    id: saved.id,
+    code: null,
+    term: null,
+    instructor: null,
+    description: null,
+  });
+});
+
+it('adopts an observed platform ID without changing a legacy item identity when its unique item URL is unchanged', () => {
+  const url = `${biologyUrl}/assignments/123`;
+  applyCourseRefresh(student, [
+    sourceScan({
+      courses: [
+        observedCourse({
+          assignments: {
+            status: 'complete',
+            items: [child('Old essay', { url })],
+          },
+        }),
+      ],
+    }),
+  ]);
+  const saved = detailOf().assignments[0];
+  const content = {
+    title: 'Renamed essay',
+    description: null,
+    kind: 'assignment' as const,
+    state: 'active-unsubmitted' as const,
+    due: null,
+    availableFrom: null,
+    availableUntil: null,
+    pointsPossible: null,
+    sourceId: '123',
+    url,
+    resources: [],
+    evidence: { sourceUrl: url, excerpts: ['Renamed essay'], targetIds: [] },
+  };
+  applyCourseRefresh(student, [
+    sourceScan({
+      courses: [
+        observedCourse({
+          assignments: {
+            status: 'complete',
+            items: [child(content.title, { url, content })],
+          },
+        }),
+      ],
+    }),
+  ]);
+  expect(detailOf().assignments).toMatchObject([
+    { id: saved.id, title: 'Renamed essay' },
+  ]);
+  applyCourseRefresh(student, [
+    sourceScan({
+      courses: [
+        observedCourse({
+          assignments: {
+            status: 'partial',
+            items: [],
+            inactiveItems: [
+              child(content.title, {
+                url,
+                content: { ...content, state: 'submitted' },
+              }),
+            ],
+          },
+        }),
+      ],
+    }),
+  ]);
+  expect(detailOf().assignments).toEqual([]);
+});
+
+it('ignores changing observed link references when the supporting resource itself is unchanged', () => {
+  const content = {
+    title: 'Essay',
+    description: null,
+    kind: 'assignment' as const,
+    state: 'active-unsubmitted' as const,
+    due: null,
+    availableFrom: null,
+    availableUntil: null,
+    pointsPossible: null,
+    sourceId: '123',
+    url: `${biologyUrl}/assignments/123`,
+    resources: [{ targetId: '1', label: 'Notes', url: `${biologyUrl}/notes` }],
+    evidence: {
+      sourceUrl: assignmentsUrl,
+      excerpts: ['Essay'],
+      targetIds: ['1'],
+    },
+  };
+  const save = (now: string, targetId: string) =>
+    applyCourseRefresh(
+      student,
+      [
+        sourceScan({
+          courses: [
+            observedCourse({
+              assignments: {
+                status: 'complete',
+                items: [
+                  child('Essay', {
+                    url: content.url,
+                    content: {
+                      ...content,
+                      resources: [{ ...content.resources[0], targetId }],
+                      evidence: { ...content.evidence, targetIds: [targetId] },
+                    },
+                  }),
+                ],
+              },
+            }),
+          ],
+        }),
+      ],
+      { now },
+    );
+  save(first, '1');
+  save(second, '9');
+  expect(detailOf().assignments[0]).toMatchObject({
+    lastSeenAt: second,
+    contentChangedAt: first,
+  });
+});
+
+it('keeps one assignment when a partial scan finds its detail link after its collection entry', () => {
+  const save = (item: CourseChildItem) =>
+    applyCourseRefresh(student, [
+      sourceScan({
+        courses: [
+          observedCourse({ assignments: { status: 'partial', items: [item] } }),
+        ],
+      }),
+    ]);
+  save(child('Essay', { url: assignmentsUrl }));
+  const id = detailOf().assignments[0].id;
+  save(child('Essay', { url: `${assignmentsUrl}/123` }));
+  expect(detailOf().assignments).toMatchObject([{ id, title: 'Essay' }]);
+  expect(db.select().from(CourseAssignmentTable).all()).toHaveLength(1);
+  save(child('Essay', { url: assignmentsUrl }));
+  expect(db.select().from(CourseAssignmentTable).all()).toHaveLength(1);
+});
+
+it('edits and deletes local records within their account and course scope', async () => {
+  const { updateCourseRecord, deleteCourseRecord } =
+    await import('../services/store');
+  saveBoth();
+  const saved = detailOf();
+  const target = {
+    kind: 'assignments' as const,
+    courseId: saved.id,
+    id: saved.assignments[0].id,
+  };
+  expect(() =>
+    updateCourseRecord(other, {
+      ...target,
+      values: { title: 'Changed', body: '', date: '' },
+    }),
+  ).toThrow();
+  updateCourseRecord(student, {
+    ...target,
+    values: { title: 'Changed', body: 'Instructions', date: '2026-12-01' },
+  });
+  expect(detailOf().assignments[0]).toMatchObject({
+    title: 'Changed',
+    body: 'Instructions',
+    dateValue: '2026-12-01',
+  });
+  expect(() => deleteCourseRecord(other, target)).toThrow();
+  deleteCourseRecord(student, target);
+  expect(detailOf().assignments).toEqual([]);
+  deleteCourseRecord(student, {
+    kind: 'courses',
+    courseId: saved.id,
+    id: saved.id,
+  });
+  expect(savedCourses()).toEqual([]);
+  expect(db.select().from(CourseAnnouncementTable).all()).toEqual([]);
+});
+
+it('retires an existing collection duplicate when its detailed assignment is refreshed', () => {
+  const save = (url: string) =>
+    applyCourseRefresh(student, [
+      sourceScan({
+        courses: [
+          observedCourse({
+            assignments: {
+              status: 'partial',
+              items: [child('Essay', { url })],
+            },
+          }),
+        ],
+      }),
+    ]);
+  save(assignmentsUrl);
+  const saved = db.select().from(CourseAssignmentTable).get()!;
+  const url = `${assignmentsUrl}/123`;
+  db.insert(CourseAssignmentTable)
+    .values({
+      ...saved,
+      id: 'existing-duplicate',
+      url,
+      sourceKey: `${url} essay`,
+    })
+    .run();
+  save(url);
+  expect(detailOf().assignments).toHaveLength(1);
+  expect(onlyCourse().assignmentCount).toBe(1);
+  save(assignmentsUrl);
+  expect(detailOf().assignments).toHaveLength(1);
+});
+
+it('updates normalized course and announcement content without losing their source identity', async () => {
+  const { updateCourseRecord } = await import('../services/store');
+  saveBoth();
+  const saved = detailOf();
+  db.update(CourseTable)
+    .set({
+      content: {
+        name: 'Biology',
+        code: null,
+        section: 'A',
+        term: null,
+        description: null,
+        instructors: [],
+        sourceId: 'course-1',
+        url: biologyUrl,
+        evidence: {
+          sourceUrl: biologyUrl,
+          excerpts: ['Biology'],
+          targetIds: [],
+        },
+      },
+    })
+    .run();
+  db.update(CourseAnnouncementTable)
+    .set({
+      content: {
+        title: 'Welcome',
+        body: null,
+        author: 'Teacher',
+        published: null,
+        updated: null,
+        sourceId: 'welcome',
+        url: announcementsUrl,
+        resources: [],
+        evidence: {
+          sourceUrl: announcementsUrl,
+          excerpts: ['Welcome'],
+          targetIds: [],
+        },
+      },
+    })
+    .run();
+  updateCourseRecord(student, {
+    kind: 'courses',
+    courseId: saved.id,
+    id: saved.id,
+    values: {
+      name: 'Updated biology',
+      code: 'BIO',
+      term: 'Fall',
+      instructor: 'Dr. Chen',
+      description: 'Cells',
+    },
+  });
+  updateCourseRecord(student, {
+    kind: 'announcements',
+    courseId: saved.id,
+    id: saved.announcements[0].id,
+    values: { title: 'Updated welcome', body: 'Read this', date: '2026-11-01' },
+  });
+  expect(detailOf()).toMatchObject({
+    name: 'Updated biology',
+    code: 'BIO',
+    instructor: 'Dr. Chen',
+    description: 'Cells',
+    content: { section: 'A', sourceId: 'course-1' },
+    announcements: [
+      {
+        title: 'Updated welcome',
+        content: {
+          body: 'Read this',
+          author: 'Teacher',
+          sourceId: 'welcome',
+          published: { kind: 'date', date: '2026-11-01' },
+        },
+      },
+    ],
+  });
+});
+
+it('creates owned manual records without a connection', async () => {
+  const { createCourseRecord } = await import('../services/store');
+  const courseId = createCourseRecord(student, {
+    kind: 'courses',
+    values: {
+      name: 'Manual biology',
+      code: '',
+      term: '',
+      instructor: '',
+      description: '',
+    },
+  });
+  const id = createCourseRecord(student, {
+    kind: 'assignments',
+    courseId,
+    values: {
+      title: 'Read chapter one',
+      body: 'Take notes',
+      date: '2026-11-02',
+    },
+  });
+  expect(getCourseDetail(student, courseId)?.assignments).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ id, title: 'Read chapter one' }),
+    ]),
+  );
+  expect(getCourseDetail(other, courseId)).toBeNull();
+  expect(() =>
+    createCourseRecord(other, {
+      kind: 'announcements',
+      courseId,
+      values: { title: 'No access', body: '', date: '' },
+    }),
+  ).toThrow();
+  expect(() =>
+    createCourseRecord(student, {
+      kind: 'courses',
+      values: { name: '', code: '', term: '', instructor: '', description: '' },
+    }),
+  ).toThrow();
+});
+
+it('keeps manual children when a complete source sync retires missing source records', async () => {
+  const { createCourseRecord } = await import('../services/store');
+  saveBoth();
+  const courseId = onlyCourse().id;
+  for (const kind of ['assignments', 'announcements'] as const) {
+    createCourseRecord(student, {
+      kind,
+      courseId,
+      values: { title: 'Manual record', body: '', date: '' },
+    });
+  }
+  applyCourseRefresh(
+    student,
+    [
+      sourceScan({
+        courses: [
+          observedCourse({
+            assignments: { status: 'complete', items: [] },
+            announcements: { status: 'complete', items: [] },
+          }),
+        ],
+      }),
+    ],
+    { now: second },
+  );
+  const detail = getCourseDetail(student, courseId)!;
+  expect(detail.assignments.map((item) => item.title)).toEqual([
+    'Manual record',
+  ]);
+  expect(detail.announcements.map((item) => item.title)).toEqual([
+    'Manual record',
+  ]);
+});
+
+it('preserves separate manual assignments with identical titles', async () => {
+  const { createCourseRecord } = await import('../services/store');
+  const courseId = createCourseRecord(student, {
+    kind: 'courses',
+    values: {
+      name: 'Manual',
+      code: '',
+      term: '',
+      instructor: '',
+      description: '',
+    },
+  });
+  for (let index = 0; index < 2; index++)
+    createCourseRecord(student, {
+      kind: 'assignments',
+      courseId,
+      values: { title: 'Reading', body: '', date: '' },
+    });
+  expect(getCourseDetail(student, courseId)?.assignments).toHaveLength(2);
+});
