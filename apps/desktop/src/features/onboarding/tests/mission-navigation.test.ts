@@ -255,3 +255,68 @@ it('reuses rendering dependencies on a later mission for the same account', asyn
   });
   expect(missionTraffic.waitForTurn).toHaveBeenCalled();
 });
+
+it('keeps shared rendering dependencies when independently created course navigators use the same workspace', async () => {
+  const context = { setDomainPolicy: vi.fn(async () => undefined) };
+  const signal = new AbortController().signal;
+  const first = createMissionNavigator(
+    context,
+    ['shared.school.edu'],
+    signal,
+    undefined,
+    { scopeId: 'shared-worker-student' },
+  );
+  const second = createMissionNavigator(
+    context,
+    ['shared.school.edu'],
+    signal,
+    undefined,
+    { scopeId: 'shared-worker-student' },
+  );
+  const page = (asset: string) => ({
+    goto: vi.fn(async () => undefined),
+    reload: vi.fn(async () => undefined),
+    url: async () => 'https://shared.school.edu/courses/1',
+    evaluate: vi.fn(async () => [asset]),
+  });
+  await first(
+    page('https://first-assets.example.net') as never,
+    'https://shared.school.edu/courses/1',
+  );
+  await second(
+    page('https://second-assets.example.net') as never,
+    'https://shared.school.edu/courses/2',
+  );
+  expect(context.setDomainPolicy).toHaveBeenLastCalledWith({
+    allowedDomains: expect.arrayContaining([
+      'first-assets.example.net',
+      'second-assets.example.net',
+    ]),
+    blockedDomains: [],
+  });
+});
+
+it('relearns rendering dependencies after the browser restarts while preserving reuse inside one browser', async () => {
+  const page = {
+    goto: vi.fn(async () => undefined),
+    reload: vi.fn(async () => undefined),
+    url: async () => 'https://restart.school.edu/',
+    evaluate: vi.fn(async () => ['https://restart-assets.example.net']),
+  };
+  const firstContext = { setDomainPolicy: vi.fn(async () => undefined) };
+  const run = (context: typeof firstContext) =>
+    createMissionNavigator(
+      context,
+      ['restart.school.edu'],
+      new AbortController().signal,
+      undefined,
+      { scopeId: 'restart-student' },
+    )(page as never, 'https://restart.school.edu/');
+  await run(firstContext);
+  page.reload.mockClear();
+  await run(firstContext);
+  expect(page.reload).not.toHaveBeenCalled();
+  const restartedContext = { setDomainPolicy: vi.fn(async () => undefined) };
+  await run(restartedContext);
+  expect(page.reload).toHaveBeenCalledOnce();
+});

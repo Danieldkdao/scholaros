@@ -12,9 +12,13 @@ type PolicyContext = {
 
 type MissionNavigationOptions = {
   scopeId?: string;
+  onNavigate?: (url: string) => void;
   onWait?: (milliseconds: number) => void;
 };
-const renderingCache = new Map<string, string[]>();
+const browserRenderingCaches = new WeakMap<
+  PolicyContext,
+  Map<string, Set<string>>
+>();
 
 // Stagehand applies its domain policy to subresources too. Learn only observed
 // rendering origins; the mission guard retains the original navigation hosts.
@@ -25,11 +29,25 @@ export const createMissionNavigator = (
   isCurrent: () => boolean = () => true,
   options: MissionNavigationOptions = {},
 ) => {
+  // A relaunched browser must bootstrap its own rendering dependencies.
+  let renderingCache = browserRenderingCaches.get(context);
+  if (!renderingCache) {
+    renderingCache = new Map();
+    browserRenderingCaches.set(context, renderingCache);
+  }
   const cacheKey = options.scopeId
     ? JSON.stringify([options.scopeId, [...hosts].sort()])
     : null;
-  const cachedHosts = cacheKey ? (renderingCache.get(cacheKey) ?? []) : [];
-  const renderingHosts = new Set([...hosts, ...cachedHosts]);
+  const renderingHosts =
+    (cacheKey && renderingCache.get(cacheKey)) || new Set(hosts);
+  const cachedHosts = [...renderingHosts].filter(
+    (host) => !hosts.includes(host),
+  );
+  if (cacheKey) {
+    if (renderingCache.size >= 100 && !renderingCache.has(cacheKey))
+      renderingCache.delete(renderingCache.keys().next().value!);
+    renderingCache.set(cacheKey, renderingHosts);
+  }
   let initialized = false;
   const assertActive = () => {
     signal.throwIfAborted();
@@ -46,6 +64,7 @@ export const createMissionNavigator = (
         'This destination is outside your connected academic resources.',
       );
     const continuationDomains = continuation?.domains ?? [];
+    for (const domain of continuationDomains) renderingHosts.add(domain);
     if (!initialized) {
       initialized = true;
       if (cachedHosts.length && !continuation)
@@ -56,7 +75,7 @@ export const createMissionNavigator = (
     }
     if (continuation)
       await context.setDomainPolicy({
-        allowedDomains: [...renderingHosts, ...continuationDomains],
+        allowedDomains: [...renderingHosts],
         blockedDomains: [],
       });
     const goTo = async (reload = false) => {
@@ -77,6 +96,7 @@ export const createMissionNavigator = (
           throw missionTraffic.recordRateLimit(destination, retryAfter);
       }
     };
+    options.onNavigate?.(url);
     await goTo();
     for (let attempt = 0; attempt < (continuation ? 4 : 2); attempt += 1) {
       assertActive();
@@ -140,14 +160,9 @@ export const createMissionNavigator = (
         return;
       }
       await context.setDomainPolicy({
-        allowedDomains: [...renderingHosts, ...continuationDomains],
+        allowedDomains: [...renderingHosts],
         blockedDomains: [],
       });
-      if (cacheKey) {
-        if (renderingCache.size >= 100 && !renderingCache.has(cacheKey))
-          renderingCache.delete(renderingCache.keys().next().value!);
-        renderingCache.set(cacheKey, [...renderingHosts]);
-      }
       assertActive();
       await goTo(true);
     }
