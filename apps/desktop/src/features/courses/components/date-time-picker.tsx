@@ -13,6 +13,7 @@ import {
 
 type DateTimePickerProps = {
   sourceDate?: AcademicDateSchema | null;
+  allowPast?: boolean;
   id: string;
   value: string;
   onChange: (value: string) => void;
@@ -34,6 +35,7 @@ const formatDateInputValue = (date: AcademicDateSchema) => {
 export const DateTimePicker = ({
   id,
   sourceDate,
+  allowPast = false,
   value,
   onChange,
 }: DateTimePickerProps) => {
@@ -76,7 +78,9 @@ export const DateTimePicker = ({
           <PopoverContent align="start" className="w-auto p-0">
             <Calendar
               mode="single"
-              disabled={{ before: startOfDay(new Date()) }}
+              disabled={
+                allowPast ? undefined : { before: startOfDay(new Date()) }
+              }
               selected={selected}
               defaultMonth={selected}
               onSelect={(day) => {
@@ -96,7 +100,7 @@ export const DateTimePicker = ({
           type="time"
           step="1"
           min={
-            date === format(new Date(), 'yyyy-MM-dd') && !offset
+            !allowPast && date === format(new Date(), 'yyyy-MM-dd') && !offset
               ? format(new Date(), 'HH:mm:ss')
               : undefined
           }

@@ -44,6 +44,7 @@ type SourceContent = { courses: ObservedCourse[]; incomplete: boolean };
 export type CourseRefreshResult = {
   state: OnboardingState;
   snapshot: CoursesSnapshot;
+  attemptedConnectionIds: string[];
 };
 
 const pendingScan = (): CourseChildScan => ({ status: 'pending', items: [] });
@@ -261,6 +262,7 @@ const performCourseRefresh = async (
   const signal = externalSignal ?? new AbortController().signal;
   const discoveryResults: AcademicDiscoveryResult[] = [];
   const scans: CourseSourceScan[] = [];
+  const attemptedConnectionIds: string[] = [];
   let persisted = false;
   try {
     const workspace = await getWorkspace(
@@ -294,6 +296,7 @@ const performCourseRefresh = async (
         if (!isCurrent())
           throw new Error('Your session changed; sign in again.');
         signal.throwIfAborted();
+        attemptedConnectionIds.push(connection.id);
         academicTasks.report(signal, `Finding courses on ${connection.name}`);
         const scan = await scanConnection<SourceContent>({
           connection,
@@ -379,6 +382,7 @@ const performCourseRefresh = async (
     return {
       state: applyAcademicDiscovery(userId, discoveryResults),
       snapshot,
+      attemptedConnectionIds,
     };
   } catch (error) {
     // A stopped or failed run still records the attempt, but nothing it could

@@ -9,7 +9,8 @@ import {
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { Providers } from '../../../components/providers';
 import { routeTree } from '../../../route-tree.gen';
-import type { CourseDetail } from '../types';
+import { CourseChildEditor } from '../components/course-record-editor';
+import type { CourseDetail, SavedCourseChild } from '../types';
 
 vi.mock('../../../lib/auth/helpers', () => ({
   getCurrentUser: vi.fn(async () => ({
@@ -30,6 +31,7 @@ const course = (overrides: Partial<CourseDetail> = {}): CourseDetail => ({
   code: 'BIOL 101',
   term: 'Fall 2026',
   url: 'https://canvas.school.edu/courses/1',
+  connectionId: 'canvas',
   active: true,
   sourceName: 'Canvas',
   sourceHost: 'canvas.school.edu',
@@ -535,6 +537,60 @@ it.each(['assignments', 'announcements'] as const)(
     );
   },
 );
+
+it('shows an inline error when an assignment deadline changes to a past time', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  try {
+    vi.setSystemTime(new Date(2026, 9, 15, 12, 0, 0));
+    const node = document.createElement('div');
+    document.body.append(node);
+    root = createRoot(node);
+    const onSave = vi.fn(async () => undefined);
+    const item: SavedCourseChild = {
+      id: 'assignment-1',
+      title: 'Current assignment',
+      body: null,
+      dateValue: '2026-10-15T12:30',
+      dateText: '2026-10-15T12:30',
+      url: 'https://canvas.school.edu/courses/1/assignments/1',
+      active: true,
+      lastSeenAt: '2026-10-01T12:00:00.000Z',
+      content: null,
+    };
+    await act(async () =>
+      root.render(
+        createElement(CourseChildEditor, {
+          item,
+          kind: 'assignments',
+          onSave,
+          onCancel: vi.fn(),
+        }),
+      ),
+    );
+    const time = node.querySelector<HTMLInputElement>('input[type="time"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        'value',
+      )!.set!.call(time, '11:00');
+      time.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () =>
+      node
+        .querySelector('form')!
+        .dispatchEvent(
+          new Event('submit', { bubbles: true, cancelable: true }),
+        ),
+    );
+
+    expect(onSave).not.toHaveBeenCalled();
+    expect(node.querySelector('[role="alert"]')?.textContent).toContain(
+      'Choose a date and time in the future.',
+    );
+  } finally {
+    vi.useRealTimers();
+  }
+});
 
 it('shows inline validation and does not save an empty course name', async () => {
   detail = course({ name: '' });

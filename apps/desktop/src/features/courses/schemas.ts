@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import { isPastDateInput } from './lib/dates';
 import { resourceKinds } from '@scholaros/services/ai/resources/shared';
 
 export const courseRecordSchema = z.object({
@@ -19,14 +18,7 @@ export type EditCourseSchema = z.infer<typeof editCourseSchema>;
 export const editCourseChildSchema = z.object({
   title: z.string().trim().min(1, 'Enter a title.').max(300),
   body: z.string().trim().max(20000),
-  date: z
-    .string()
-    .trim()
-    .max(200)
-    .refine(
-      (value) => !isPastDateInput(value),
-      'Choose a date and time in the future.',
-    ),
+  date: z.string().trim().max(200),
 });
 export type EditCourseChildSchema = z.infer<typeof editCourseChildSchema>;
 export const updateCourseRecordSchema = z.discriminatedUnion('kind', [

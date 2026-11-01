@@ -20,7 +20,8 @@ if (serviceMode) {
   mkdirSync(runtimeDirectory, { recursive: true, mode: 0o700 });
   app.setPath('userData', runtimeDirectory);
   app.setPath('sessionData', runtimeDirectory);
-  if (!app.requestSingleInstanceLock()) app.exit(0);
+  const ownsServiceLock = app.requestSingleInstanceLock();
+  if (!ownsServiceLock) app.exit(0);
   app.setPath('userData', userData);
 }
 

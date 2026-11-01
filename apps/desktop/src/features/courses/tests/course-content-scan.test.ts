@@ -8,7 +8,8 @@ const page = (
   url: string,
   links: ObservedPage['links'] = [],
   text = 'Course content Open overdue Submitted Closed Unknown Submitted essay Unknown work One detail Verified work Saved before stop Work',
-): ObservedPage => ({ url, title: 'Biology', text: `${text} ${url}`, links });
+  title = 'Biology',
+): ObservedPage => ({ url, title, text: `${text} ${url}`, links });
 const card = (
   title: string,
   sourceUrl: string,
@@ -27,13 +28,7 @@ const card = (
   resources: [],
   evidence: {
     sourceUrl,
-    excerpts: [
-      title === 'Late assignment'
-        ? 'Late assignment'
-        : title === 'Upcoming quiz'
-          ? 'Upcoming quiz'
-          : 'Course content',
-    ],
+    excerpts: [title],
     targetIds: [],
   },
 });
@@ -120,7 +115,7 @@ describe('deep course content scanning', () => {
         coverage: 'complete',
         assignments: [card('Submitted', root, 'submitted')],
       })),
-      new Map([[root, page(root)]]),
+      new Map([[root, page(root, [], 'Submitted')]]),
     );
     expect(await result).toMatchObject({
       status: 'complete',
@@ -177,7 +172,7 @@ describe('deep course content scanning', () => {
               { label: 'Unknown work', url: newUrl },
             ]),
           ],
-          [newUrl, page(newUrl)],
+          [newUrl, page(newUrl, [], undefined, 'Unknown work')],
         ]),
       );
       expect((await result).items.map((item) => item.title)).toEqual(
@@ -208,6 +203,210 @@ describe('deep course content scanning', () => {
       request.mock.calls.filter(([body]) => body.kind === 'choose'),
     ).toHaveLength(2);
     expect(openFrom).not.toHaveBeenCalled();
+  });
+
+  it('keeps current-course assignment links offered under a broader course-list exclusion', async () => {
+    const assignmentUrl = `${root}/assignments/123`;
+    const sibling = 'https://school.edu/courses/2';
+    const bodies: AgentRequestSchema[] = [];
+    const request = vi.fn(async (body: AgentRequestSchema) => {
+      bodies.push(body);
+      if (body.kind === 'choose') return { operation: 'DONE', target: null };
+      const target = body.targets?.find((item) => item.url === assignmentUrl);
+      return {
+        coverage: 'complete',
+        assignments: [
+          {
+            ...card('Current assignment', root),
+            url: assignmentUrl,
+            evidence: {
+              sourceUrl: root,
+              excerpts: ['Current assignment'],
+              targetIds: target ? [target.id] : [],
+            },
+          },
+        ],
+      };
+    });
+    const result = await scanCourseCollection({
+      from: page(
+        root,
+        [
+          { label: 'Courses', url: 'https://school.edu/courses' },
+          { label: 'Current assignment', url: assignmentUrl },
+          { label: 'Other course', url: sibling },
+          { label: 'Other assignment', url: `${sibling}/assignments/1` },
+        ],
+        'Course content Current assignment',
+      ),
+      kind: 'assignments',
+      host: 'school.edu',
+      courseName: 'Biology',
+      excludedUrls: ['https://school.edu/courses', sibling],
+      notes: '',
+      context: { assertReadable: () => undefined, openFrom: vi.fn() },
+      request,
+      signal: new AbortController().signal,
+      isCurrent: () => true,
+    });
+    const extraction = bodies.find((body) => body.kind === 'assignments');
+
+    expect(extraction?.targets?.map((target) => target.url)).toContain(
+      assignmentUrl,
+    );
+    expect(extraction?.targets?.map((target) => target.url)).not.toContain(
+      'https://school.edu/courses',
+    );
+    expect(extraction?.targets?.map((target) => target.url)).not.toContain(
+      sibling,
+    );
+    expect(extraction?.targets?.map((target) => target.url)).not.toContain(
+      `${sibling}/assignments/1`,
+    );
+    expect(result).toMatchObject({
+      status: 'complete',
+      items: [expect.objectContaining({ title: 'Current assignment' })],
+    });
+  });
+
+  it('resolves a partial home summary when its complete assignments collection is read', async () => {
+    const assignmentsUrl = `${root}/assignments`;
+    const request = vi.fn(async (body: AgentRequestSchema) => {
+      if (body.kind === 'choose') return { operation: 'DONE', target: null };
+      const record = {
+        ...card('Upcoming quiz', body.pages[0].url),
+        sourceId: 'quiz-1',
+      };
+      return body.pages[0].url === root
+        ? { coverage: 'partial', assignments: [record] }
+        : { coverage: 'complete', assignments: [record] };
+    });
+    const { result } = run(
+      request,
+      new Map([
+        [
+          root,
+          page(
+            root,
+            [{ label: 'Assignments', url: assignmentsUrl }],
+            'Upcoming quiz',
+          ),
+        ],
+        [assignmentsUrl, page(assignmentsUrl, [], 'Upcoming quiz')],
+      ]),
+    );
+
+    expect(await result).toMatchObject({
+      status: 'complete',
+      items: [expect.objectContaining({ title: 'Upcoming quiz' })],
+    });
+  });
+
+  it('clears an unknown assignment gap only after its detail page resolves the same item', async () => {
+    const assignmentUrl = `${root}/assignments/123`;
+    const request = vi.fn(async (body: AgentRequestSchema) => {
+      if (body.kind === 'choose') return { operation: 'DONE', target: null };
+      const detail = body.pages[0].url === assignmentUrl;
+      return {
+        coverage: detail ? 'detail' : 'complete',
+        assignments: [
+          {
+            ...card(
+              'Unknown work',
+              body.pages[0].url,
+              detail ? 'active-unsubmitted' : 'unknown',
+            ),
+            sourceId: 'assignment-1',
+            url: assignmentUrl,
+            evidence: {
+              sourceUrl: body.pages[0].url,
+              excerpts: ['Unknown work'],
+              targetIds: detail ? [] : ['1'],
+            },
+          },
+        ],
+      };
+    });
+    const { result, openFrom } = run(
+      request,
+      new Map([
+        [root, page(root, [{ label: 'Unknown work', url: assignmentUrl }])],
+        [assignmentUrl, page(assignmentUrl, [], undefined, 'Unknown work')],
+      ]),
+    );
+
+    expect(await result).toMatchObject({
+      status: 'complete',
+      items: [expect.objectContaining({ title: 'Unknown work' })],
+    });
+    expect(openFrom).toHaveBeenCalledWith(expect.anything(), assignmentUrl);
+  });
+
+  it('keeps an unknown assignment unresolved when its detail page remains unknown', async () => {
+    const assignmentUrl = `${root}/assignments/123`;
+    const request = vi.fn(async (body: AgentRequestSchema) => {
+      if (body.kind === 'choose') return { operation: 'DONE', target: null };
+      const detail = body.pages[0].url === assignmentUrl;
+      return {
+        coverage: detail ? 'detail' : 'complete',
+        assignments: [
+          {
+            ...card('Unknown work', body.pages[0].url, 'unknown'),
+            url: assignmentUrl,
+            evidence: {
+              sourceUrl: body.pages[0].url,
+              excerpts: ['Unknown work'],
+              targetIds: detail ? [] : ['1'],
+            },
+          },
+        ],
+      };
+    });
+    const { result } = run(
+      request,
+      new Map([
+        [root, page(root, [{ label: 'Unknown work', url: assignmentUrl }])],
+        [assignmentUrl, page(assignmentUrl, [], undefined, 'Unknown work')],
+      ]),
+    );
+
+    expect(await result).toMatchObject({
+      status: 'partial',
+      items: [],
+    });
+  });
+
+  it('keeps an unvisited pagination target unresolved after DONE', async () => {
+    const next = `${root}/assignments?page=2`;
+    const { result } = run(
+      vi.fn(async (body: AgentRequestSchema) =>
+        body.kind === 'choose'
+          ? { operation: 'DONE', target: null }
+          : { coverage: 'complete', assignments: [] },
+      ),
+      new Map([[root, page(root, [{ label: 'Next', url: next }])]]),
+    );
+
+    expect(await result).toEqual({ status: 'partial', items: [] });
+  });
+
+  it('keeps a truncated page incomplete when extraction reports complete', async () => {
+    const request = vi.fn(async (body: AgentRequestSchema) =>
+      body.kind === 'choose'
+        ? { operation: 'DONE', target: null }
+        : { coverage: 'complete', assignments: [] },
+    );
+    const { result } = run(
+      request,
+      new Map([[root, page(root, [], 'a'.repeat(15_000))]]),
+    );
+
+    expect(await result).toEqual({ status: 'partial', items: [] });
+    expect(
+      request.mock.calls.some(
+        ([body]) => body.kind === 'assignments' && body.context?.truncated,
+      ),
+    ).toBe(true);
   });
 
   it('reads content after the old text cutoff and rejects invented sources', async () => {
@@ -293,10 +492,10 @@ it('continues through changing content disclosures without a navigation or depth
 it('does not claim a collection is complete after reading only an individual detail', async () => {
   const { result } = run(
     vi.fn(async () => ({
-      assignments: [card('One detail', root)],
+      assignments: [{ ...card('One detail', root), url: root }],
       coverage: 'detail',
     })),
-    new Map([[root, page(root)]]),
+    new Map([[root, page(root, [], 'One detail', 'One detail')]]),
   );
   expect(await result).toMatchObject({
     status: 'partial',
@@ -437,9 +636,13 @@ it('keeps a valid normalized assignment while a forged item prevents complete re
     kind: 'local',
     date: '2026-10-31',
     time: '23:59',
-    original: 'October 31 at 11:59 PM',
+    original: 'October 31, 2026 at 11:59 PM',
   };
-  const observed = page(root, [], 'Lab report due October 31 at 11:59 PM');
+  const observed = page(
+    root,
+    [],
+    'Lab report due October 31, 2026 at 11:59 PM',
+  );
   const assignment = {
     title: 'Lab report',
     description: 'Write the report',
@@ -452,7 +655,11 @@ it('keeps a valid normalized assignment while a forged item prevents complete re
     url: null,
     sourceId: null,
     resources: [],
-    evidence: { sourceUrl: root, excerpts: ['Lab report'], targetIds: [] },
+    evidence: {
+      sourceUrl: root,
+      excerpts: ['Lab report due October 31, 2026 at 11:59 PM'],
+      targetIds: [],
+    },
   };
   const result = await scanCourseCollection({
     from: observed,
@@ -483,3 +690,64 @@ it('keeps a valid normalized assignment while a forged item prevents complete re
   expect(result.items[0].content).toMatchObject({ due });
   expect(result.items[0].dateValue).toBeNull();
 });
+
+it.each([true, false])(
+  'keeps same-title assignments distinct when source IDs are present: %s',
+  async (withIds) => {
+    const firstUrl = `${root}/work/1`;
+    const secondUrl = `${root}/work/2`;
+    const request = vi.fn(async (body: AgentRequestSchema) => {
+      if (body.kind === 'choose') return { operation: 'DONE', target: null };
+      if (body.pages[0].url === firstUrl)
+        return {
+          coverage: 'detail',
+          assignments: [
+            {
+              ...card('Essay', firstUrl, 'unknown'),
+              url: firstUrl,
+              sourceId: withIds ? 'one' : null,
+            },
+          ],
+        };
+      return {
+        coverage: 'complete',
+        assignments: [firstUrl, secondUrl].map((url, index) => ({
+          ...card(
+            'Essay',
+            root,
+            index === 0 ? 'unknown' : 'active-unsubmitted',
+          ),
+          url,
+          sourceId: withIds ? (index === 0 ? 'one' : 'two') : null,
+          evidence: {
+            sourceUrl: root,
+            excerpts: ['Essay'],
+            targetIds: [String(index + 1)],
+          },
+        })),
+      };
+    });
+    const { result, openFrom } = run(
+      request,
+      new Map([
+        [
+          root,
+          page(
+            root,
+            [
+              { label: 'Essay', url: firstUrl },
+              { label: 'Essay', url: secondUrl },
+            ],
+            'Essay Essay',
+          ),
+        ],
+        [firstUrl, page(firstUrl, [], 'Essay', 'Essay')],
+      ]),
+    );
+    expect(await result).toMatchObject({
+      status: 'partial',
+      items: [{ url: secondUrl }],
+    });
+    expect(openFrom).toHaveBeenCalledWith(expect.anything(), firstUrl);
+  },
+);

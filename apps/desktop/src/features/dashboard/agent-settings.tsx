@@ -1,10 +1,21 @@
-import { useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react';
 import { CircleAlert, CircleCheck, Loader2 } from 'lucide-react';
 import { Input } from '@scholaros/ui/components/input';
 import { Textarea } from '@scholaros/ui/components/textarea';
 import { settingsUpdateSchema } from '../onboarding/schemas';
-import { errorMessage } from '../../lib/error-message';
 import type { SettingsUpdateSchema } from '../onboarding/schemas';
+import {
+  getSettingsSaveState,
+  queueSettingsSave,
+  reconcileSettingsSaveDraft,
+  subscribeSettingsSaveState,
+} from './settings-save-queue';
 
 type SaveStatus = 'saving' | 'saved' | 'error';
 
@@ -20,42 +31,79 @@ const formatSaveStatus = (status: SaveStatus) => {
 };
 
 export const AgentSettings = ({
+  accountId,
   decisionTimeSeconds,
   blockedWords,
   onSave,
 }: {
+  accountId: string;
   decisionTimeSeconds: number;
   blockedWords: string[];
   onSave: (changes: SettingsUpdateSchema) => Promise<void>;
 }) => {
-  const [seconds, setSeconds] = useState(String(decisionTimeSeconds));
-  const [words, setWords] = useState(blockedWords.join('\n'));
-  const [status, setStatus] = useState<SaveStatus>('saved');
-  const [failure, setFailure] = useState<string | null>(null);
+  const [seconds, setSeconds] = useState(() =>
+    String(
+      getSettingsSaveState(accountId).draft.decisionTimeSeconds ??
+        decisionTimeSeconds,
+    ),
+  );
+  const [words, setWords] = useState(
+    () =>
+      getSettingsSaveState(accountId).draft.blockedWords?.join('\n') ??
+      blockedWords.join('\n'),
+  );
   const [wordsError, setWordsError] = useState<string | null>(null);
-  const queue = useRef(Promise.resolve());
-  const revision = useRef(0);
+  const previousAccountId = useRef(accountId);
+  const subscribe = useCallback(
+    (listener: () => void) => subscribeSettingsSaveState(accountId, listener),
+    [accountId],
+  );
+  const getSnapshot = useCallback(
+    () => getSettingsSaveState(accountId),
+    [accountId],
+  );
+  const sharedSaveState = useSyncExternalStore(
+    subscribe,
+    getSnapshot,
+    getSnapshot,
+  );
+  useEffect(() => {
+    reconcileSettingsSaveDraft(accountId, {
+      decisionTimeSeconds,
+      blockedWords,
+    });
+  }, [
+    accountId,
+    blockedWords,
+    decisionTimeSeconds,
+    sharedSaveState.draft,
+    sharedSaveState.error,
+    sharedSaveState.pending,
+  ]);
+  useEffect(() => {
+    if (previousAccountId.current === accountId) return;
+    previousAccountId.current = accountId;
+    const draft = getSettingsSaveState(accountId).draft;
+    setSeconds(String(draft.decisionTimeSeconds ?? decisionTimeSeconds));
+    setWords(draft.blockedWords?.join('\n') ?? blockedWords.join('\n'));
+    setWordsError(null);
+  }, [accountId, blockedWords, decisionTimeSeconds]);
   const validTime = settingsUpdateSchema.safeParse({
     decisionTimeSeconds: Number(seconds),
   }).success;
   const save = (changes: SettingsUpdateSchema) => {
-    const current = ++revision.current;
-    setStatus('saving');
-    setFailure(null);
-    // Keep queued writes alive after this page closes and prevent older edits winning.
-    queue.current = queue.current.then(async () => {
-      try {
-        await onSave(changes);
-        if (current === revision.current) setStatus('saved');
-      } catch (error) {
-        if (current === revision.current) {
-          setStatus('error');
-          setFailure(errorMessage(error, 'Could not save settings.'));
-        }
-      }
-    });
+    void queueSettingsSave(accountId, changes, () => onSave(changes)).catch(
+      () => undefined,
+    );
   };
-  const { label, Icon } = formatSaveStatus(status);
+  const visibleStatus: SaveStatus =
+    sharedSaveState.pending > 0
+      ? 'saving'
+      : sharedSaveState.error
+        ? 'error'
+        : 'saved';
+  const visibleFailure = sharedSaveState.error;
+  const { label, Icon } = formatSaveStatus(visibleStatus);
   return (
     <div className="flex items-start gap-8">
       <div className="flex w-full max-w-2xl flex-col gap-6">
@@ -148,7 +196,7 @@ export const AgentSettings = ({
           <Icon className="size-5" />
           {label}
         </span>
-        {failure && <p className="text-destructive">{failure}</p>}
+        {visibleFailure && <p className="text-destructive">{visibleFailure}</p>}
       </aside>
     </div>
   );

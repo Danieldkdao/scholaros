@@ -53,19 +53,3 @@ it('rejects past days and combined times while allowing today without a time', a
   expect(isPastDateInput('2026-11-01T12:00:01', now)).toBe(false);
   expect(isPastDateInput('', now)).toBe(false);
 });
-
-it('validates manual date inputs before submitting or persisting records', async () => {
-  const { editCourseChildSchema } = await import('../schemas');
-  const values = { title: 'Reading', body: '', date: '2000-01-01' };
-  expect(editCourseChildSchema.safeParse(values).success).toBe(false);
-  expect(
-    editCourseChildSchema.safeParse({ ...values, date: '2000-01-01T12:00:00Z' })
-      .success,
-  ).toBe(false);
-  expect(
-    editCourseChildSchema.safeParse({ ...values, date: '2999-01-01' }).success,
-  ).toBe(true);
-  expect(editCourseChildSchema.safeParse({ ...values, date: '' }).success).toBe(
-    true,
-  );
-});

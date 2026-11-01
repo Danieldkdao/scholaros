@@ -24,6 +24,7 @@ export const useCourses = (accountId: string | null) => {
     setLoadError(null);
     try {
       const loaded = await window.scholar.getCourses();
+      if (!loaded) throw new Error('Could not load your courses.');
       if (attempt === request.current) {
         setSnapshot(loaded);
         if (loaded?.refreshing !== undefined) setRefreshing(loaded.refreshing);

@@ -1,4 +1,4 @@
-import { useId } from 'react';
+import { useId, useMemo } from 'react';
 import { Controller, useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Button } from '@scholaros/ui/components/button';
@@ -7,7 +7,7 @@ import { Textarea } from '@scholaros/ui/components/textarea';
 import { LoadingSwap } from '@scholaros/ui/components/loading-swap';
 import { DialogFooter } from '@scholaros/ui/components/dialog';
 import { DateTimePicker } from './date-time-picker';
-import { academicDateFor } from '../lib/dates';
+import { academicDateFor, isPastDateInput } from '../lib/dates';
 import {
   editCourseSchema,
   editCourseChildSchema,
@@ -131,6 +131,25 @@ export const CourseChildEditor = ({
   onCancel: () => void;
 }) => {
   const id = useId();
+  const initialDate = (item ? academicDateFor(item) : null)?.original ?? '';
+  const resolver = useMemo(
+    () =>
+      zodResolver(
+        editCourseChildSchema.superRefine((values, context) => {
+          if (
+            kind === 'assignments' &&
+            (!item || values.date !== initialDate) &&
+            isPastDateInput(values.date)
+          )
+            context.addIssue({
+              code: 'custom',
+              path: ['date'],
+              message: 'Choose a date and time in the future.',
+            });
+        }),
+      ),
+    [initialDate, item, kind],
+  );
   const body = item?.content
     ? 'description' in item.content
       ? item.content.description
@@ -142,7 +161,7 @@ export const CourseChildEditor = ({
     handleSubmit,
     formState: { errors, isSubmitting },
   } = useForm<EditCourseChildSchema>({
-    resolver: zodResolver(editCourseChildSchema),
+    resolver,
     defaultValues: {
       title: item?.title ?? '',
       body: body ?? '',
@@ -177,6 +196,10 @@ export const CourseChildEditor = ({
               render={({ field }) => (
                 <DateTimePicker
                   sourceDate={item ? academicDateFor(item) : null}
+                  allowPast={
+                    kind === 'announcements' ||
+                    (!!item && field.value === initialDate)
+                  }
                   id={`${id}-date`}
                   value={field.value}
                   onChange={field.onChange}

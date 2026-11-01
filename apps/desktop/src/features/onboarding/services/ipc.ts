@@ -64,7 +64,7 @@ import {
   subscribePreview,
 } from './preview';
 import { isAcademicUrl, isReadNavigation } from '../lib/browser-policy';
-import { syncFailureMessage } from '../lib/discovery-outcomes';
+import { courseRefreshFailureMessage } from '../lib/discovery-outcomes';
 import { applyLaunchAtLogin, getLaunchAtLoginState } from './preferences';
 import { completeOnboarding } from './completion';
 import { discoverAcademicContext } from './discovery';
@@ -73,10 +73,12 @@ import {
   updateCourseRecord,
   createCourseRecord,
   deleteCourseRecord,
-  getCourseDetail,
-  getCoursesSnapshot,
   subscribeCourseChanges,
 } from '../../courses/services/store';
+import {
+  getCourseAction,
+  getCoursesAction,
+} from '../../courses/services/read-actions';
 import {
   cancelCourseRefresh,
   startCourseRefresh,
@@ -115,13 +117,12 @@ const backgroundSync = createBackgroundSyncController<CourseRefreshResult>({
     return startCourseRefresh(userId, isCurrent, signal);
   },
   syncFailure: (refreshed) =>
-    refreshed.snapshot.courses.some(
-      (course) =>
-        course.assignmentsStatus === 'needs-sign-in' ||
-        course.announcementsStatus === 'needs-sign-in',
-    )
-      ? 'Sign in in your study browser, then resume background sync.'
-      : syncFailureMessage(refreshed.state.discovery),
+    courseRefreshFailureMessage({
+      attemptedConnectionIds: refreshed.attemptedConnectionIds,
+      connections: refreshed.state.connections,
+      discovery: refreshed.state.discovery,
+      courses: refreshed.snapshot.courses,
+    }),
   onChange: (syncState, refreshed) => {
     publish('scholar:backgroundSyncChange', {
       accountId: backgroundSyncAccountId,
@@ -584,32 +585,8 @@ export const registerAcademicActions = (service: {
     requireIdleCourse(userId, data.courseId);
     deleteCourseRecord(userId, data);
   });
-  handle('getCourses', ({ userId }) => {
-    const existingCourses = getCoursesSnapshot(userId);
-    const active = academicTasks.getRefreshState(userId);
-    return {
-      ...existingCourses,
-      activity: academicTasks.getActivity(userId),
-      courses: existingCourses.courses.map((course) => ({
-        ...course,
-        refreshing: active.allCourses || active.courseIds.includes(course.id),
-      })),
-      refreshing: active.allCourses || active.courseIds.length > 0,
-    };
-  });
-  handle('getCourse', ({ userId }, input) => {
-    const courseId = idSchema.parse(input);
-    const course = getCourseDetail(userId, courseId);
-    if (!course) return null;
-    const active = academicTasks.getRefreshState(userId);
-    return {
-      ...course,
-      activity: academicTasks
-        .getActivity(userId)
-        .filter((run) => run.key === 'courses' || run.key === courseId),
-      refreshing: active.allCourses || active.courseIds.includes(courseId),
-    };
-  });
+  handle('getCourses', ({ userId }) => getCoursesAction(userId));
+  handle('getCourse', ({ userId }, input) => getCourseAction(userId, input));
   // A manual refresh takes the study browser over from a scheduled one, exactly
   // like every other foreground browser action.
   handle('refreshCourses', async ({ userId, isCurrent }) => {

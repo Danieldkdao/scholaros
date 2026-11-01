@@ -47,6 +47,7 @@ const course = (
   code: 'BIOL 101',
   term: 'Fall 2026',
   url: `https://canvas.school.edu/courses/${id}`,
+  connectionId: 'canvas',
   active: true,
   sourceName: 'Canvas',
   sourceHost: 'canvas.school.edu',

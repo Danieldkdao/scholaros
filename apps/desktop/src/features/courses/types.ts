@@ -58,6 +58,7 @@ export type CourseSourceScan = {
 };
 
 export type CourseSummary = {
+  connectionId: string | null;
   instructor?: string | null;
   description?: string | null;
   refreshing?: boolean;

@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { eq } from 'drizzle-orm';
 
 vi.mock('electron', async () => {
   const { mkdtempSync } = await import('node:fs');
@@ -37,6 +38,7 @@ const { setCourseResource } =
   await import('../../onboarding/services/connections');
 const { removeAcademicConnection } =
   await import('../../onboarding/services/store');
+const { sortAssignments } = await import('../lib/formatters');
 import type {
   CourseChildItem,
   CourseSourceScan,
@@ -141,6 +143,8 @@ const saveBoth = () =>
   );
 
 beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date('2026-10-01T12:00:00.000Z'));
   db.delete(CourseAnnouncementTable).run();
   db.delete(CourseAssignmentTable).run();
   db.delete(CourseTable).run();
@@ -151,6 +155,8 @@ beforeEach(() => {
   insertConnection(student, 'connection-a', canvasHost);
   insertConnection(student, 'connection-b', portalHost);
 });
+
+afterEach(() => vi.useRealTimers());
 
 describe('saving a course refresh', () => {
   it('restores background-sync eligibility after a previously signed-out source is read', () => {
@@ -1195,6 +1201,166 @@ it('creates owned manual records without a connection', async () => {
       values: { name: '', code: '', term: '', instructor: '', description: '' },
     }),
   ).toThrow();
+});
+
+it('round-trips a timed manual assignment and keeps it in the local-time sorting group', async () => {
+  const { createCourseRecord } = await import('../services/store');
+  const { academicDateFor } = await import('../lib/dates');
+  const courseId = createCourseRecord(student, {
+    kind: 'courses',
+    values: {
+      name: 'Manual biology',
+      code: '',
+      term: '',
+      instructor: '',
+      description: '',
+    },
+  });
+  const id = createCourseRecord(student, {
+    kind: 'assignments',
+    courseId,
+    values: {
+      title: 'Timed assignment',
+      body: '',
+      date: '2026-11-08T23:59',
+    },
+  });
+  const timedAssignment = getCourseDetail(student, courseId)!.assignments.find(
+    (item) => item.id === id,
+  )!;
+  const dateOnly = child('Date only', { dateValue: '2026-11-08' });
+  const unresolved = child('Unresolved', { dateText: 'Friday' });
+
+  expect(timedAssignment).toMatchObject({
+    dateValue: '2026-11-08T23:59',
+    dateText: '2026-11-08T23:59',
+    content: null,
+  });
+  expect(academicDateFor(timedAssignment)).toEqual({
+    kind: 'local',
+    date: '2026-11-08',
+    time: '23:59',
+    original: '2026-11-08T23:59',
+  });
+  expect(
+    sortAssignments([unresolved, timedAssignment, dateOnly]).map(
+      (item) => item.title,
+    ),
+  ).toEqual(['Date only', 'Timed assignment', 'Unresolved']);
+});
+
+it('preserves a local time when editing a content-null record by title only', async () => {
+  const { updateCourseRecord } = await import('../services/store');
+  saveBoth();
+  const saved = detailOf().assignments[0];
+  db.update(CourseAssignmentTable)
+    .set({
+      dateValue: '2026-11-08T11:59',
+      dateText: 'November 8, 2026 at 11:59 AM',
+      content: null,
+    })
+    .where(eq(CourseAssignmentTable.id, saved.id))
+    .run();
+
+  updateCourseRecord(student, {
+    kind: 'assignments',
+    courseId: onlyCourse().id,
+    id: saved.id,
+    values: {
+      title: 'Renamed essay',
+      body: '',
+      date: 'November 8, 2026 at 11:59 AM',
+    },
+  });
+  const updated = detailOf().assignments[0];
+
+  expect(updated).toMatchObject({
+    title: 'Renamed essay',
+    dateValue: '2026-11-08T11:59',
+    dateText: 'November 8, 2026 at 11:59 AM',
+    content: null,
+  });
+});
+
+it('allows historical announcements and unchanged overdue assignments but rejects new past assignment dates', async () => {
+  const { createCourseRecord, updateCourseRecord } =
+    await import('../services/store');
+  saveBoth();
+  const courseId = onlyCourse().id;
+  const overdueAssignment = detailOf().assignments[0];
+  db.update(CourseAssignmentTable)
+    .set({
+      dateValue: '2026-09-30',
+      dateText: 'September 30, 2026',
+      content: null,
+    })
+    .where(eq(CourseAssignmentTable.id, overdueAssignment.id))
+    .run();
+
+  const announcementId = createCourseRecord(student, {
+    kind: 'announcements',
+    courseId,
+    values: {
+      title: 'Yesterday’s update',
+      body: 'A historical announcement.',
+      date: '2026-09-30',
+    },
+  });
+  updateCourseRecord(student, {
+    kind: 'assignments',
+    courseId,
+    id: overdueAssignment.id,
+    values: {
+      title: 'Renamed overdue assignment',
+      body: '',
+      date: 'September 30, 2026',
+    },
+  });
+  updateCourseRecord(student, {
+    kind: 'announcements',
+    courseId,
+    id: announcementId,
+    values: {
+      title: 'Edited yesterday’s update',
+      body: 'Updated history.',
+      date: '2026-09-30',
+    },
+  });
+
+  expect(detailOf().assignments[0]).toMatchObject({
+    title: 'Renamed overdue assignment',
+    dateValue: '2026-09-30',
+  });
+  expect(detailOf().announcements).toContainEqual(
+    expect.objectContaining({
+      id: announcementId,
+      title: 'Edited yesterday’s update',
+      dateValue: '2026-09-30',
+    }),
+  );
+  expect(() =>
+    createCourseRecord(student, {
+      kind: 'assignments',
+      courseId,
+      values: {
+        title: 'Past deadline',
+        body: '',
+        date: '2026-09-30',
+      },
+    }),
+  ).toThrow('Choose a date and time in the future.');
+  expect(() =>
+    updateCourseRecord(student, {
+      kind: 'assignments',
+      courseId,
+      id: overdueAssignment.id,
+      values: {
+        title: 'Renamed overdue assignment',
+        body: '',
+        date: '2026-09-29',
+      },
+    }),
+  ).toThrow('Choose a date and time in the future.');
 });
 
 it('keeps manual children when a complete source sync retires missing source records', async () => {

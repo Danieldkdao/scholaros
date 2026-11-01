@@ -88,6 +88,7 @@ const listFixture = (overrides: Partial<ScanFixture> = {}): ScanFixture => ({
   entries: [{ label: 'Biology 101', url: biologyUrl }],
   listPage: observedPage(listUrl, {
     title: 'Courses',
+    text: 'Biology 101',
     links: [{ label: 'Biology 101', url: biologyUrl }],
   }),
   pages: {
@@ -100,7 +101,7 @@ const listFixture = (overrides: Partial<ScanFixture> = {}): ScanFixture => ({
     }),
     [announcementsUrl]: observedPage(announcementsUrl, {
       title: 'Announcements',
-      text: 'Midterm moved 2026-03-05',
+      text: 'Midterm moved, posted 2026-03-05',
     }),
     [assignmentsUrl]: observedPage(assignmentsUrl, {
       title: 'Assignments',
@@ -277,6 +278,18 @@ describe('choosing what to scan', () => {
     expect(savedCourses()).toHaveLength(1);
   });
 
+  it('returns the connection ids attempted by this refresh run', async () => {
+    insertConnection('marked', host);
+    insertConnection('unmarked', 'portal.school.edu', {
+      isCourseResource: false,
+    });
+    fixtures.set('marked', listFixture());
+
+    const refreshed = await startCourseRefresh(student);
+
+    expect(refreshed.attemptedConnectionIds).toEqual(['marked']);
+  });
+
   it('rechecks a marked source with a previous sign-in status so notes can resume its account picker', async () => {
     insertConnection('signed-out', host, { status: 'needs-sign-in' });
     fixtures.set('signed-out', listFixture());
@@ -364,7 +377,7 @@ describe('saving what the scan really saw', () => {
                         resources: [],
                         evidence: {
                           sourceUrl: announcementsUrl,
-                          excerpts: ['Announcements'],
+                          excerpts: ['Midterm moved, posted 2026-03-05'],
                           targetIds: [],
                         },
                       },
@@ -384,7 +397,7 @@ describe('saving what the scan really saw', () => {
                         resources: [],
                         evidence: {
                           sourceUrl: assignmentsUrl,
-                          excerpts: ['Assignments'],
+                          excerpts: ['Lab report'],
                           targetIds: [],
                         },
                       },
@@ -542,6 +555,110 @@ describe('saving what the scan really saw', () => {
     expect(savedSources()).toEqual([
       expect.objectContaining({ outcome: 'complete' }),
     ]);
+  });
+
+  it('advances collection freshness and retires missing records after a resolved summary scan', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2026-10-31T12:00:00.000Z'));
+      insertConnection('marked', host);
+      fixtures.set(
+        'marked',
+        listFixture({
+          pages: {
+            [biologyUrl]: observedPage(biologyUrl, {
+              title: 'Biology',
+              text: 'Upcoming quiz',
+              links: [
+                { label: 'Announcements', url: announcementsUrl },
+                { label: 'Assignments', url: assignmentsUrl },
+              ],
+            }),
+            [announcementsUrl]: observedPage(announcementsUrl, {
+              title: 'Announcements',
+            }),
+            [assignmentsUrl]: observedPage(assignmentsUrl, {
+              title: 'Assignments',
+              text: 'Old work Upcoming quiz',
+            }),
+          },
+        }),
+      );
+      let pass: 'seed' | 'resolved' = 'seed';
+      const assignmentRecord = (
+        sourceUrl: string,
+        title: string,
+        sourceId: string,
+      ) => ({
+        title,
+        description: null,
+        kind: 'assignment',
+        state: 'active-unsubmitted',
+        due: null,
+        availableFrom: null,
+        availableUntil: null,
+        pointsPossible: null,
+        url: null,
+        sourceId,
+        resources: [],
+        evidence: { sourceUrl, excerpts: [title], targetIds: [] },
+      });
+      mocks.agent.mockImplementation(async (_path, body) => {
+        if (body.kind === 'choose') return { operation: 'DONE', target: null };
+        if (body.kind === 'announcements')
+          return { coverage: 'complete', announcements: [] };
+        if (body.pages[0].url === biologyUrl)
+          return pass === 'seed'
+            ? { coverage: 'complete', assignments: [] }
+            : {
+                coverage: 'partial',
+                assignments: [
+                  assignmentRecord(biologyUrl, 'Upcoming quiz', 'new-1'),
+                ],
+              };
+        return {
+          coverage: 'complete',
+          assignments: [
+            pass === 'seed'
+              ? assignmentRecord(assignmentsUrl, 'Old work', 'old-1')
+              : assignmentRecord(assignmentsUrl, 'Upcoming quiz', 'new-1'),
+          ],
+        };
+      });
+
+      await startCourseRefresh(student);
+      const before = getCoursesSnapshot(student).courses[0].assignmentsSyncedAt;
+      expect(before).toBe('2026-10-31T12:00:00.000Z');
+      expect(
+        db
+          .select()
+          .from(CourseAssignmentTable)
+          .all()
+          .find((assignment) => assignment.content?.sourceId === 'old-1')
+          ?.active,
+      ).toBe(true);
+
+      pass = 'resolved';
+      vi.setSystemTime(new Date('2026-11-01T12:00:00.000Z'));
+      await startCourseRefresh(student);
+      const after = getCoursesSnapshot(student).courses[0].assignmentsSyncedAt;
+      const savedAssignments = db.select().from(CourseAssignmentTable).all();
+
+      expect(after).toBe('2026-11-01T12:00:00.000Z');
+      expect(after).not.toBe(before);
+      expect(
+        savedAssignments.find(
+          (assignment) => assignment.content?.sourceId === 'old-1',
+        )?.active,
+      ).toBe(false);
+      expect(
+        savedAssignments.find(
+          (assignment) => assignment.content?.sourceId === 'new-1',
+        )?.active,
+      ).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('does not open a course the list page never exposed', async () => {
@@ -730,7 +847,7 @@ it('retains assignments in SQLite when cancelled after extraction but before nav
               resources: [],
               evidence: {
                 sourceUrl: assignmentsUrl,
-                excerpts: ['Assignments'],
+                excerpts: ['Lab report'],
                 targetIds: [],
               },
             },
@@ -886,7 +1003,10 @@ it('adds a newly visible assignment during a single-course refresh without repla
   fixture.pages[assignmentsUrl].links = [
     { label: 'New assignment', url: newUrl },
   ];
-  fixture.pages[newUrl] = observedPage(newUrl, { text: 'New assignment' });
+  fixture.pages[newUrl] = observedPage(newUrl, {
+    title: 'New assignment',
+    text: 'New assignment',
+  });
   mocks.scan.mockImplementation(async ({ withCourseList }) => ({
     followed: await withCourseList({
       observed: fixture.pages[biologyUrl],

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   outcomeFromExploration,
   summarizeDiscovery,
+  courseRefreshFailureMessage,
   syncFailureMessage,
   type ConnectionResult,
 } from '../lib/discovery-outcomes';
@@ -203,4 +204,43 @@ describe('background sync reporting', () => {
       );
     },
   );
+
+  it('ignores historical sign-in failures from a source not attempted this run', () => {
+    expect(
+      courseRefreshFailureMessage({
+        attemptedConnectionIds: ['source-b'],
+        connections: [{ id: 'source-a' }, { id: 'source-b' }],
+        discovery: discoveryFor('complete'),
+        courses: [
+          {
+            connectionId: 'source-a',
+            assignmentsStatus: 'needs-sign-in',
+            announcementsStatus: 'needs-sign-in',
+          },
+          {
+            connectionId: 'source-b',
+            assignmentsStatus: 'complete',
+            announcementsStatus: 'complete',
+          },
+        ],
+      }),
+    ).toBeNull();
+  });
+
+  it('keeps current sign-in failures from an attempted source actionable', () => {
+    expect(
+      courseRefreshFailureMessage({
+        attemptedConnectionIds: ['source-b'],
+        connections: [{ id: 'source-b' }],
+        discovery: discoveryFor('complete'),
+        courses: [
+          {
+            connectionId: 'source-b',
+            assignmentsStatus: 'needs-sign-in',
+            announcementsStatus: 'complete',
+          },
+        ],
+      }),
+    ).toBe('Sign in in your study browser, then resume background sync.');
+  });
 });

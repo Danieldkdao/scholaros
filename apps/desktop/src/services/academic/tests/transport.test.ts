@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -51,6 +51,63 @@ it('does not start a second owner in the same directory and can restart after sh
   await expect(
     academicRequest(restarted.endpoint, 'getCourses'),
   ).resolves.toEqual({ courses: ['cached'] });
+});
+
+it('replaces stale endpoint metadata even when its recorded PID is alive', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'scholar-service-'));
+  cleanups.push(() => rm(directory, { recursive: true, force: true }));
+  await writeFile(
+    path.join(directory, 'owner.json'),
+    JSON.stringify({ pid: process.pid }),
+  );
+  await writeFile(
+    path.join(directory, 'endpoint.json'),
+    JSON.stringify({ version: 1, address: 'stale', token: 'stale' }),
+  );
+
+  const service = await createAcademicServer({
+    directory,
+    actions: new Map([['health', async () => ({ ready: true })]]),
+  });
+  cleanups.push(service.close);
+
+  const owner = JSON.parse(
+    await readFile(path.join(directory, 'owner.json'), 'utf8'),
+  ) as { instanceId?: unknown };
+  const endpoint = JSON.parse(
+    await readFile(path.join(directory, 'endpoint.json'), 'utf8'),
+  ) as { instanceId?: unknown };
+  expect(owner.instanceId).toEqual(expect.any(String));
+  expect(endpoint.instanceId).toBe(owner.instanceId);
+  await expect(academicRequest(service.endpoint, 'health')).resolves.toEqual({
+    ready: true,
+  });
+});
+
+it('does not remove endpoint metadata that belongs to a replacement instance', async () => {
+  const service = await server();
+  const replacement = { ...service.endpoint, instanceId: 'replacement' };
+  await writeFile(
+    path.join(service.directory, 'owner.json'),
+    JSON.stringify({ pid: process.pid, instanceId: 'replacement' }),
+  );
+  await writeFile(
+    path.join(service.directory, 'endpoint.json'),
+    JSON.stringify(replacement),
+  );
+
+  await service.close();
+
+  await expect(
+    readFile(path.join(service.directory, 'endpoint.json'), 'utf8'),
+  ).resolves.toBe(JSON.stringify(replacement));
+  await expect(
+    readFile(path.join(service.directory, 'owner.json'), 'utf8'),
+  ).resolves.toBe(
+    JSON.stringify({ pid: process.pid, instanceId: 'replacement' }),
+  );
+  if (process.platform !== 'win32')
+    await rm(service.endpoint.address, { force: true });
 });
 
 it('authenticates subscriptions before delivering scoped events and reports disconnects', async () => {

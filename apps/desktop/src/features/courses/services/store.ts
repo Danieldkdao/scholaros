@@ -6,7 +6,12 @@ import {
   type CourseRecordSchema,
   type UpdateCourseRecordSchema,
 } from '../schemas';
-import { academicDateFor, legacyDateFrom } from '../lib/dates';
+import {
+  academicDateFor,
+  dateValueFrom,
+  isPastDateInput,
+  legacyDateFrom,
+} from '../lib/dates';
 import { randomUUID } from 'node:crypto';
 import { and, eq, or } from 'drizzle-orm';
 import { db } from '../../../db';
@@ -171,6 +176,7 @@ const toSummary = (
   row: CourseRow,
 ): Omit<CourseSummary, 'announcementCount' | 'assignmentCount'> => ({
   id: row.id,
+  connectionId: row.connectionId,
   content: row.content,
   contentChangedAt: row.contentChangedAt,
   name: row.name,
@@ -220,12 +226,12 @@ const uniqueAssignments = <TItem extends { title: string; url: string }>(
 };
 
 export const getCoursesSnapshot = (userId: string) => {
-  const sources = db
+  const existingCourseSources = db
     .select()
     .from(CourseSourceTable)
     .where(eq(CourseSourceTable.userId, userId))
     .all();
-  const announcements = db
+  const existingCourseAnnouncements = db
     .select({ courseId: CourseAnnouncementTable.courseId })
     .from(CourseAnnouncementTable)
     .where(
@@ -235,7 +241,7 @@ export const getCoursesSnapshot = (userId: string) => {
       ),
     )
     .all();
-  const assignments = db
+  const existingCourseAssignments = db
     .select({
       courseId: CourseAssignmentTable.courseId,
       title: CourseAssignmentTable.title,
@@ -252,16 +258,18 @@ export const getCoursesSnapshot = (userId: string) => {
   return {
     courses: readCourseRows(userId).map((row) => ({
       ...toSummary(row),
-      announcementCount: announcements.filter(
+      announcementCount: existingCourseAnnouncements.filter(
         (item) => item.courseId === row.id,
       ).length,
       assignmentCount: uniqueAssignments(
-        assignments.filter((item) => item.courseId === row.id),
+        existingCourseAssignments.filter((item) => item.courseId === row.id),
         row.url,
       ).length,
     })),
-    sources: sources.map(({ userId: _userId, ...source }) => source),
-    lastSuccessfulAt: sources.reduce<string | null>(
+    sources: existingCourseSources.map(
+      ({ userId: _userId, ...source }) => source,
+    ),
+    lastSuccessfulAt: existingCourseSources.reduce<string | null>(
       (latest, source) =>
         source.lastSuccessfulAt && (!latest || source.lastSuccessfulAt > latest)
           ? source.lastSuccessfulAt
@@ -275,9 +283,11 @@ export const getCourseDetail = (
   userId: string,
   courseId: string,
 ): CourseDetail | null => {
-  const courseRow = readCourseRows(userId).find((row) => row.id === courseId);
-  if (!courseRow) return null;
-  const announcements = db
+  const existingCourseRow = readCourseRows(userId).find(
+    (row) => row.id === courseId,
+  );
+  if (!existingCourseRow) return null;
+  const existingCourseAnnouncements = db
     .select()
     .from(CourseAnnouncementTable)
     .where(
@@ -288,7 +298,7 @@ export const getCourseDetail = (
       ),
     )
     .all();
-  const assignments = db
+  const existingCourseAssignments = db
     .select()
     .from(CourseAssignmentTable)
     .where(
@@ -299,18 +309,21 @@ export const getCourseDetail = (
       ),
     )
     .all();
-  const visibleAssignments = uniqueAssignments(assignments, courseRow.url);
+  const visibleAssignments = uniqueAssignments(
+    existingCourseAssignments,
+    existingCourseRow.url,
+  );
   return {
-    ...toSummary(courseRow),
-    announcementCount: announcements.length,
+    ...toSummary(existingCourseRow),
+    announcementCount: existingCourseAnnouncements.length,
     assignmentCount: visibleAssignments.length,
-    instructor: courseRow.content
-      ? courseRow.content.instructors.join(', ') || null
-      : courseRow.instructor,
-    description: courseRow.content
-      ? courseRow.content.description
-      : courseRow.description,
-    announcements: announcements.map(toChild),
+    instructor: existingCourseRow.content
+      ? existingCourseRow.content.instructors.join(', ') || null
+      : existingCourseRow.instructor,
+    description: existingCourseRow.content
+      ? existingCourseRow.content.description
+      : existingCourseRow.description,
+    announcements: existingCourseAnnouncements.map(toChild),
     assignments: visibleAssignments.map(toChild),
   };
 };
@@ -359,7 +372,7 @@ const applyChildren = (
     url: string,
     title: string,
   ) => {
-    const candidates = tx
+    const existingCourseChildren = tx
       .select()
       .from(table)
       .where(and(eq(table.userId, userId), eq(table.courseId, courseId)))
@@ -395,24 +408,24 @@ const applyChildren = (
         );
       });
     const sourceIds = new Set(
-      candidates.flatMap((row) =>
+      existingCourseChildren.flatMap((row) =>
         row.content?.sourceId ? [row.content.sourceId] : [],
       ),
     );
     if (sourceIds.size > 1)
-      return candidates.find((row) => row.sourceKey === sourceKey);
-    const existingChild = candidates.sort(
+      return existingCourseChildren.find((row) => row.sourceKey === sourceKey);
+    const existingCourseChild = existingCourseChildren.sort(
       (a, b) =>
         Number(!!b.content?.sourceId) - Number(!!a.content?.sourceId) ||
         b.url.length - a.url.length,
     )[0];
-    for (const duplicate of candidates)
-      if (duplicate.id !== existingChild.id)
+    for (const duplicate of existingCourseChildren)
+      if (duplicate.id !== existingCourseChild.id)
         tx.update(table)
           .set({ active: false })
           .where(eq(table.id, duplicate.id))
           .run();
-    return existingChild;
+    return existingCourseChild;
   };
   const seen = new Set<string>();
   let untrusted = false;
@@ -424,60 +437,62 @@ const applyChildren = (
       continue;
     }
     const sourceKey = childKey(url, title, item);
-    const existingChild = findExistingChild(item, sourceKey, url, title);
-    seen.add(existingChild?.sourceKey ?? sourceKey);
+    const existingCourseChild = findExistingChild(item, sourceKey, url, title);
+    seen.add(existingCourseChild?.sourceKey ?? sourceKey);
     const fields = {
       title,
-      body: item.body ?? existingChild?.body ?? null,
+      body: item.body ?? existingCourseChild?.body ?? null,
       dateValue:
         item.content || item.dateValue !== null || item.dateText !== null
           ? item.dateValue
-          : (existingChild?.dateValue ?? null),
+          : (existingCourseChild?.dateValue ?? null),
       dateText:
         item.content || item.dateValue !== null || item.dateText !== null
           ? item.dateText
-          : (existingChild?.dateText ?? null),
+          : (existingCourseChild?.dateText ?? null),
       url:
-        existingChild &&
+        existingCourseChild &&
         !item.content?.url &&
-        existingChild.url.startsWith(`${url}/`)
-          ? existingChild.url
+        existingCourseChild.url.startsWith(`${url}/`)
+          ? existingCourseChild.url
           : url,
       content: item.content
         ? {
             ...item.content,
             sourceId:
-              item.content.sourceId ?? existingChild?.content?.sourceId ?? null,
-            url: item.content.url ?? existingChild?.content?.url ?? null,
+              item.content.sourceId ??
+              existingCourseChild?.content?.sourceId ??
+              null,
+            url: item.content.url ?? existingCourseChild?.content?.url ?? null,
           }
-        : (existingChild?.content ?? null),
+        : (existingCourseChild?.content ?? null),
       active: true,
     };
-    const previous = existingChild && {
-      title: existingChild.title,
-      body: existingChild.body,
-      dateValue: existingChild.dateValue,
-      dateText: existingChild.dateText,
-      url: existingChild.url,
-      content: existingChild.content,
-      active: existingChild.active,
+    const previous = existingCourseChild && {
+      title: existingCourseChild.title,
+      body: existingCourseChild.body,
+      dateValue: existingCourseChild.dateValue,
+      dateText: existingCourseChild.dateText,
+      url: existingCourseChild.url,
+      content: existingCourseChild.content,
+      active: existingCourseChild.active,
     };
     const changed =
       !previous || contentFingerprint(fields) !== contentFingerprint(previous);
     const contentChangedAt = changed
       ? now
-      : (existingChild?.contentChangedAt ?? null);
-    if (existingChild)
+      : (existingCourseChild?.contentChangedAt ?? null);
+    if (existingCourseChild)
       tx.update(table)
         .set({
           ...(changed
             ? fields
             : { content: fields.content, dateText: fields.dateText }),
-          sourceKey: existingChild.sourceKey,
+          sourceKey: existingCourseChild.sourceKey,
           lastSeenAt: item.retrievedAt ?? now,
           contentChangedAt,
         })
-        .where(eq(table.id, existingChild.id))
+        .where(eq(table.id, existingCourseChild.id))
         .run();
     else
       tx.insert(table)
@@ -497,29 +512,29 @@ const applyChildren = (
     const title = normalizeTitle(item.title);
     if (!url || !title) continue;
     const sourceKey = childKey(url, title, item);
-    const existingChild = findExistingChild(item, sourceKey, url, title);
-    if (existingChild)
+    const existingCourseChild = findExistingChild(item, sourceKey, url, title);
+    if (existingCourseChild)
       tx.update(table)
         .set({
           active: false,
-          sourceKey: existingChild.sourceKey,
+          sourceKey: existingCourseChild.sourceKey,
           title,
-          content: item.content ?? existingChild.content,
+          content: item.content ?? existingCourseChild.content,
           contentChangedAt:
-            existingChild.active ||
-            existingChild.title !== title ||
-            contentFingerprint(existingChild.content) !==
-              contentFingerprint(item.content ?? existingChild.content)
+            existingCourseChild.active ||
+            existingCourseChild.title !== title ||
+            contentFingerprint(existingCourseChild.content) !==
+              contentFingerprint(item.content ?? existingCourseChild.content)
               ? now
-              : existingChild.contentChangedAt,
+              : existingCourseChild.contentChangedAt,
           lastSeenAt: item.retrievedAt ?? now,
         })
-        .where(eq(table.id, existingChild.id))
+        .where(eq(table.id, existingCourseChild.id))
         .run();
-    seen.delete(existingChild?.sourceKey ?? sourceKey);
+    seen.delete(existingCourseChild?.sourceKey ?? sourceKey);
   }
   if (!complete || untrusted) return;
-  const savedChildren = tx
+  const existingCourseChildren = tx
     .select({ id: table.id, sourceKey: table.sourceKey })
     .from(table)
     .where(
@@ -530,14 +545,14 @@ const applyChildren = (
       ),
     )
     .all();
-  for (const savedChild of savedChildren)
+  for (const existingCourseChild of existingCourseChildren)
     if (
-      !savedChild.sourceKey.startsWith('manual:') &&
-      !seen.has(savedChild.sourceKey)
+      !existingCourseChild.sourceKey.startsWith('manual:') &&
+      !seen.has(existingCourseChild.sourceKey)
     )
       tx.update(table)
         .set({ active: false })
-        .where(eq(table.id, savedChild.id))
+        .where(eq(table.id, existingCourseChild.id))
         .run();
 };
 
@@ -690,7 +705,7 @@ const applyCourseList = (
   }
   // Retirement needs a list we are sure is whole; anything less keeps history.
   if (scan.outcome !== 'complete' || untrusted) return;
-  const savedCourses = tx
+  const existingCourses = tx
     .select({ id: CourseTable.id, sourceKey: CourseTable.sourceKey })
     .from(CourseTable)
     .where(
@@ -701,11 +716,11 @@ const applyCourseList = (
       ),
     )
     .all();
-  for (const savedCourse of savedCourses)
-    if (!seen.has(savedCourse.sourceKey))
+  for (const existingCourse of existingCourses)
+    if (!seen.has(existingCourse.sourceKey))
       tx.update(CourseTable)
         .set({ active: false })
-        .where(eq(CourseTable.id, savedCourse.id))
+        .where(eq(CourseTable.id, existingCourse.id))
         .run();
 };
 
@@ -719,7 +734,7 @@ export const applyCourseRefresh = (
     for (const scan of scans) {
       // Re-read at commit time: a source unmarked or removed while the browser
       // was open must not receive this run's results.
-      const connection = tx
+      const existingConnection = tx
         .select()
         .from(AcademicConnectionTable)
         .where(
@@ -729,15 +744,15 @@ export const applyCourseRefresh = (
           ),
         )
         .get();
-      if (!connection?.isCourseResource) continue;
+      if (!existingConnection?.isCourseResource) continue;
       const succeeded = courseScanSucceeded(scan.outcome);
       if (
-        connection.status === 'needs-sign-in' &&
+        existingConnection.status === 'needs-sign-in' &&
         (succeeded || (scan.outcome === 'partial' && scan.courses.length > 0))
       )
         tx.update(AcademicConnectionTable)
           .set({ status: 'confirmed' })
-          .where(eq(AcademicConnectionTable.id, connection.id))
+          .where(eq(AcademicConnectionTable.id, existingConnection.id))
           .run();
       tx.insert(CourseSourceTable)
         .values({
@@ -759,7 +774,7 @@ export const applyCourseRefresh = (
         })
         .run();
       if (succeeded || scan.outcome === 'partial')
-        applyCourseList(tx, userId, connection, scan, now);
+        applyCourseList(tx, userId, existingConnection, scan, now);
     }
   });
   notifyCourseChanges(userId);
@@ -855,6 +870,8 @@ export const createCourseRecord = (
   } else {
     if (!getCourseRefreshTarget(userId, data.courseId))
       throw new Error('This course is no longer available.');
+    if (data.kind === 'assignments' && isPastDateInput(data.values.date))
+      throw new Error('Choose a date and time in the future.');
     const date = legacyDateFrom({
       dateValue: data.values.date || null,
       dateText: data.values.date || null,
@@ -873,12 +890,7 @@ export const createCourseRecord = (
         title: data.values.title,
         body: data.values.body || null,
         dateText: date?.original ?? null,
-        dateValue:
-          date?.kind === 'date'
-            ? date.date
-            : date?.kind === 'instant'
-              ? date.instant
-              : null,
+        dateValue: dateValueFrom(date),
         lastSeenAt: now,
         contentChangedAt: now,
       })
@@ -930,29 +942,31 @@ export const updateCourseRecord = (
       eq(table.courseId, data.courseId),
       eq(table.id, data.id),
     );
-    const existingChild = db.select().from(table).where(scope).get();
-    if (!existingChild) throw new Error('This item is no longer available.');
+    const existingCourseChild = db.select().from(table).where(scope).get();
+    if (!existingCourseChild)
+      throw new Error('This item is no longer available.');
     const values = data.values;
-    const previousDate = academicDateFor(existingChild);
-    const date =
-      values.date === (previousDate?.original ?? '')
-        ? previousDate
-        : legacyDateFrom({
-            dateValue: values.date || null,
-            dateText: values.date || null,
-          });
-    const content = existingChild.content;
+    const previousDate = academicDateFor(existingCourseChild);
+    const dateChanged = values.date !== (previousDate?.original ?? '');
+    if (
+      data.kind === 'assignments' &&
+      dateChanged &&
+      isPastDateInput(values.date)
+    )
+      throw new Error('Choose a date and time in the future.');
+    const date = dateChanged
+      ? legacyDateFrom({
+          dateValue: values.date || null,
+          dateText: values.date || null,
+        })
+      : previousDate;
+    const content = existingCourseChild.content;
     db.update(table)
       .set({
         title: values.title,
         body: values.body || null,
         dateText: date?.original ?? null,
-        dateValue:
-          date?.kind === 'date'
-            ? date.date
-            : date?.kind === 'instant'
-              ? date.instant
-              : null,
+        dateValue: dateValueFrom(date),
         content: content
           ? 'due' in content
             ? {
@@ -1007,7 +1021,7 @@ export const deleteCourseRecord = (
         data.kind === 'assignments'
           ? CourseAssignmentTable
           : CourseAnnouncementTable;
-      const deletedItem = tx
+      const deletedCourseChild = tx
         .delete(table)
         .where(
           and(
@@ -1018,7 +1032,8 @@ export const deleteCourseRecord = (
         )
         .returning({ id: table.id })
         .get();
-      if (!deletedItem) throw new Error('This item is no longer available.');
+      if (!deletedCourseChild)
+        throw new Error('This item is no longer available.');
     }
   });
   notifyCourseChanges(userId, data.kind === 'courses' ? null : data.courseId);

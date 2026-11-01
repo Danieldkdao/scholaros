@@ -86,6 +86,45 @@ it('ignores a course response after navigating to another course', async () => {
   expect(detail.course).toBeNull();
 });
 
+it('keeps a successful empty catalog distinct from a failed nullable read', async () => {
+  vi.mocked(window.scholar.getCourses).mockResolvedValueOnce({
+    courses: [],
+    sources: [],
+    lastSuccessfulAt: null,
+  });
+  await act(async () =>
+    root.render(createElement(catalogProbe, { id: 'current' })),
+  );
+  expect(catalog.snapshot?.courses).toEqual([]);
+  expect(catalog.loadError).toBeNull();
+
+  vi.mocked(window.scholar.getCourses).mockResolvedValueOnce(
+    snapshot('loaded'),
+  );
+  await act(async () => catalog.reload());
+  expect(catalog.snapshot?.sources[0].connectionId).toBe('loaded');
+
+  vi.mocked(window.scholar.getCourses).mockResolvedValueOnce(null);
+  await act(async () => catalog.reload());
+  expect(catalog.snapshot?.sources[0].connectionId).toBe('loaded');
+  expect(catalog.loadError).toBe('Could not load your courses.');
+
+  vi.mocked(window.scholar.getCourses).mockResolvedValueOnce(
+    snapshot('recovered'),
+  );
+  await act(async () => catalog.reload());
+  expect(catalog.snapshot?.sources[0].connectionId).toBe('recovered');
+  expect(catalog.loadError).toBeNull();
+});
+
+it('keeps a missing detail response as a not-found result', async () => {
+  await act(async () =>
+    root.render(createElement(detailProbe, { id: 'missing' })),
+  );
+  expect(detail.course).toBeNull();
+  expect(detail.loadError).toBeNull();
+});
+
 it('reloads persisted outcomes after a refresh is cancelled or fails', async () => {
   await act(async () =>
     root.render(createElement(catalogProbe, { id: 'current' })),

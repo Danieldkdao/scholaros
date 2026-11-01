@@ -40,6 +40,20 @@ export const legacyDateFrom = ({
   };
 };
 
+export const dateValueFrom = (date: AcademicDateSchema | null) => {
+  if (!date) return null;
+  switch (date.kind) {
+    case 'date':
+      return date.date;
+    case 'instant':
+      return date.instant;
+    case 'local':
+      return `${date.date}T${date.time}`;
+    case 'unresolved':
+      return null;
+  }
+};
+
 export const academicDateFor = (
   item: Pick<CourseChildItem, 'content' | 'dateValue' | 'dateText'>,
 ): AcademicDateSchema | null => {

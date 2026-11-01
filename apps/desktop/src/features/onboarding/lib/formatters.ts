@@ -346,23 +346,27 @@ export const formatWorkspaceStatus = (status: BrowserWorkspaceStatus) => {
   switch (status) {
     case 'ready':
       return {
+        label: 'Workspace ready',
         description: 'This computer has a separate, verified study workspace.',
         Icon: ShieldCheck,
       };
     case 'browser-missing':
       return {
+        label: 'Browser missing',
         description:
           'The browser for this workspace was removed or moved; choose an installed browser again.',
         Icon: CircleAlert,
       };
     case 'profile-missing':
       return {
+        label: 'Study profile missing',
         description:
           'The separate study profile was removed; create the workspace again on this computer.',
         Icon: CircleAlert,
       };
     case 'unverified':
       return {
+        label: 'Workspace unverified',
         description:
           'The study browser was not verified; choose it again to reconnect.',
         Icon: CircleAlert,

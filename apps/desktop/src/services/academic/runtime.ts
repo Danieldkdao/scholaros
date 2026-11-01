@@ -4,6 +4,8 @@ import { createAcademicServer } from './transport';
 import type { AcademicAction } from './contracts';
 
 export const runAcademicService = async () => {
+  if (!app.hasSingleInstanceLock())
+    throw new Error('The academic service requires the single-instance lock.');
   const actions = new Map<string, AcademicAction>();
   const server = await createAcademicServer({
     directory: path.join(app.getPath('userData'), 'academic-service'),

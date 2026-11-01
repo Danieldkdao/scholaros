@@ -1,5 +1,5 @@
-import { useEffect, useRef } from "react";
-import { Activity } from "lucide-react";
+import { useEffect, useRef } from 'react';
+import { Activity } from 'lucide-react';
 import {
   Trace,
   TraceCollapsible,
@@ -8,27 +8,28 @@ import {
   TraceIcon,
   TraceLine,
   TraceTitle,
-} from "@scholaros/ui/components/trace";
-import { toast } from "@scholaros/ui/components/toast";
-import type { CourseRefreshActivity as RefreshActivity } from "../types";
-import { formatRefreshActivity } from "../lib/formatters";
+} from '@scholaros/ui/components/trace';
+import { toast } from '@scholaros/ui/components/toast';
+import { cn } from '@scholaros/ui/lib/utils';
+import type { CourseRefreshActivity as RefreshActivity } from '../types';
+import { formatRefreshActivity } from '../lib/formatters';
 
 export const CourseRefreshActivity = ({
   activity = [],
 }: {
   activity?: RefreshActivity[];
 }) => {
-  const observed = useRef(new Map<string, RefreshActivity["status"]>());
+  const observed = useRef(new Map<string, RefreshActivity['status']>());
   useEffect(() => {
     for (const run of activity) {
       const previous = observed.current.get(run.id);
-      if (previous && previous !== run.status && run.status !== "running") {
+      if (previous && previous !== run.status && run.status !== 'running') {
         const { label } = formatRefreshActivity(run.status);
-        if (run.status === "failed")
+        if (run.status === 'failed')
           toast.error(run.events.at(-1) ?? label, {
             id: `course-refresh-${run.key}`,
           });
-        else if (run.status === "partial")
+        else if (run.status === 'partial')
           toast.warning(label, { id: `course-refresh-${run.key}` });
         else toast.success(label, { id: `course-refresh-${run.key}` });
       }
@@ -66,18 +67,16 @@ export const CourseRefreshActivity = ({
                 <TraceLine
                   className="text-base"
                   status={
-                    run.status === "running"
-                      ? "running"
-                      : run.status === "failed"
-                        ? "error"
+                    run.status === 'running'
+                      ? 'running'
+                      : run.status === 'failed'
+                        ? 'error'
                         : undefined
                   }
                 >
                   <TraceIcon>
                     <status.Icon
-                      className={
-                        run.status === "running" ? "animate-spin" : undefined
-                      }
+                      className={cn(run.status === 'running' && 'animate-spin')}
                     />
                   </TraceIcon>
                   <TraceTitle>{status.label}</TraceTitle>

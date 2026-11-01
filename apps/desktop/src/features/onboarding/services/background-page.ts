@@ -1,4 +1,5 @@
 import { setTimeout as delay } from 'node:timers/promises';
+import WebSocket from 'ws';
 import type { ActiveWorkspace } from './browser-workspace';
 
 export const openBackgroundPage = async (
@@ -23,22 +24,42 @@ export const openBackgroundPage = async (
     throw new Error('Invalid study browser connection.');
   const socket = new WebSocket(address);
   let targetId: string | undefined;
-  const abort = () => socket.close();
+  let targetCloseSent = false;
+  const closeTarget = () => {
+    if (!targetId || targetCloseSent || socket.readyState !== WebSocket.OPEN)
+      return;
+    targetCloseSent = true;
+    socket.send(
+      JSON.stringify({
+        id: 2,
+        method: 'Target.closeTarget',
+        params: { targetId },
+      }),
+    );
+  };
+  const abort = () => {
+    closeTarget();
+    socket.close();
+  };
   signal.addEventListener('abort', abort, { once: true });
+  if (signal.aborted) abort();
   try {
     targetId = await new Promise<string>((resolve, reject) => {
-      const fail = () =>
+      let settled = false;
+      const fail = () => {
+        if (settled) return;
+        settled = true;
         reject(new Error('The background study tab could not be opened.'));
-      socket.addEventListener('error', fail, { once: true });
-      socket.addEventListener('close', fail, { once: true });
-      socket.addEventListener(
-        'open',
-        () => {
-          if (signal.aborted) {
-            socket.close();
-            fail();
-            return;
-          }
+      };
+      socket.once('error', fail);
+      socket.once('close', fail);
+      socket.once('open', () => {
+        if (signal.aborted) {
+          socket.close();
+          fail();
+          return;
+        }
+        try {
           // Stagehand newPage activates its target, so create an inactive target directly.
           socket.send(
             JSON.stringify({
@@ -47,15 +68,38 @@ export const openBackgroundPage = async (
               params: { url: 'about:blank', background: true },
             }),
           );
-        },
-        { once: true },
-      );
-      socket.addEventListener('message', (event) => {
-        const message = JSON.parse(String(event.data));
-        if (message.id !== 1) return;
-        if (typeof message.result?.targetId === 'string')
-          resolve(message.result.targetId);
-        else fail();
+        } catch {
+          fail();
+        }
+      });
+      socket.on('message', (data) => {
+        try {
+          const text = Array.isArray(data)
+            ? Buffer.concat(data).toString('utf8')
+            : data instanceof ArrayBuffer
+              ? Buffer.from(data).toString('utf8')
+              : data.toString('utf8');
+          const message: unknown = JSON.parse(text);
+          if (
+            typeof message !== 'object' ||
+            message === null ||
+            !('id' in message) ||
+            message.id !== 1
+          )
+            return;
+          if (
+            'result' in message &&
+            typeof message.result === 'object' &&
+            message.result !== null &&
+            'targetId' in message.result &&
+            typeof message.result.targetId === 'string'
+          ) {
+            settled = true;
+            resolve(message.result.targetId);
+          } else fail();
+        } catch {
+          fail();
+        }
       });
     });
     while (true) {
@@ -67,14 +111,7 @@ export const openBackgroundPage = async (
       await delay(50, undefined, { signal });
     }
   } catch (error) {
-    if (targetId && socket.readyState === WebSocket.OPEN)
-      socket.send(
-        JSON.stringify({
-          id: 2,
-          method: 'Target.closeTarget',
-          params: { targetId },
-        }),
-      );
+    closeTarget();
     throw error;
   } finally {
     signal.removeEventListener('abort', abort);

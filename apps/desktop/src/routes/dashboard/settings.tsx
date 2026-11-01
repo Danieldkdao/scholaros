@@ -17,6 +17,7 @@ const SettingsPage = () => {
       {state && (
         <AgentSettings
           key={state.accountId}
+          accountId={state.accountId}
           decisionTimeSeconds={state.settings.decisionTimeSeconds}
           blockedWords={state.settings.blockedWords}
           onSave={async (changes) => {

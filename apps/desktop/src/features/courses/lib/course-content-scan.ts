@@ -48,16 +48,53 @@ export const scanCourseCollection = async ({
 }): Promise<CourseChildScan> => {
   const items = new Map<string, CourseChildItem>();
   const inactiveItems = new Map<string, CourseChildItem>();
-  const unresolvedAssignments = new Set<string>();
-  const seen = new Set<string>([from.url]);
+  const unknownAssignments = new Map<
+    string,
+    { aliases: string[]; url: string | null }
+  >();
+  const rootIdentity = academicPageIdentity(from.url) ?? from.url;
+  const direct = childPageTarget(from, kind, host);
+  const directIdentity = direct
+    ? (academicPageIdentity(direct) ?? direct)
+    : null;
+  const excludedIdentities = excludedUrls
+    .map((url) => academicPageIdentity(url))
+    .filter((url): url is string => !!url);
+  const isExcluded = (url: string) => {
+    const identity = academicPageIdentity(url);
+    return (
+      !!identity &&
+      excludedIdentities.some(
+        (excluded) =>
+          identity === excluded ||
+          (!rootIdentity.startsWith(`${excluded}/`) &&
+            identity.startsWith(`${excluded}/`)),
+      )
+    );
+  };
+  const seen = new Set<string>([rootIdentity]);
+  const visitedPages = new Set<string>();
   const frontier = new Map<
     string,
     { from: ObservedPage; label: string; url: string }
   >();
   const revealedStates = new Set<string>();
+  const collectionGaps = new Map<
+    string,
+    { collection: string; summary: boolean; truncated: boolean }
+  >();
+  const collectionByPage = new Map<string, string>([
+    [rootIdentity, directIdentity ?? rootIdentity],
+  ]);
+  if (directIdentity) collectionByPage.set(directIdentity, directIdentity);
+  const navigationGaps = new Set<string>();
+  const disclosureGaps = new Set<string>();
+  const navigationFailures = new Set<string>();
+  const extractionFailures = new Set<string>();
   let saving = false;
   let verified = false;
-  let incomplete = false;
+  let pendingNavigation: string | null = null;
+  let currentIdentity = rootIdentity;
   let calls = 0;
   const pagination = new Set<string>();
   const requestBounded = (body: AgentRequestSchema) => {
@@ -80,27 +117,63 @@ export const scanCourseCollection = async ({
       ? { inactiveItems: [...inactiveItems.values()] }
       : {}),
   });
+  const assignmentAliases = (record: {
+    sourceId: string | null;
+    url: string | null;
+    title: string;
+    evidence: { sourceUrl: string };
+  }) => {
+    const aliases = [
+      ...(record.sourceId ? [`id:${record.sourceId}`] : []),
+      ...(record.url
+        ? [`url:${academicPageIdentity(record.url) ?? record.url}`]
+        : []),
+      `item:${academicPageIdentity(record.evidence.sourceUrl) ?? record.evidence.sourceUrl}\n${record.title.toLowerCase()}`,
+    ];
+    return aliases;
+  };
+  const matchingUnknown = (aliases: string[]) =>
+    [...unknownAssignments.entries()].find(([, unknown]) => {
+      for (const prefix of ['id:', 'url:']) {
+        const current = aliases.find((alias) => alias.startsWith(prefix));
+        const previous = unknown.aliases.find((alias) =>
+          alias.startsWith(prefix),
+        );
+        if (current && previous) return current === previous;
+      }
+      return unknown.aliases.some((alias) => aliases.includes(alias));
+    })?.[0];
+  const hasUnknownUrl = (url: string) => {
+    const identity = academicPageIdentity(url) ?? url;
+    return [...unknownAssignments.values()].some(
+      (unknown) => unknown.url === identity,
+    );
+  };
   try {
     let current = from;
-    const direct = childPageTarget(from, kind, host);
     while (true) {
       assertActive();
-      seen.add(current.url);
-      frontier.delete(current.url);
-      incomplete ||= !!current.linksTruncated;
+      currentIdentity = academicPageIdentity(current.url) ?? current.url;
+      seen.add(currentIdentity);
+      visitedPages.add(currentIdentity);
+      frontier.delete(currentIdentity);
+      if (current.linksTruncated) navigationGaps.add(currentIdentity);
+      else navigationGaps.delete(currentIdentity);
       for (const link of current.links) {
         if (pageHasMorePages({ ...current, links: [link] }))
           pagination.add(academicPageIdentity(link.url) ?? link.url);
         const identity = academicPageIdentity(link.url);
+        if (identity && !collectionByPage.has(identity))
+          collectionByPage.set(
+            identity,
+            pageHasMorePages({ ...current, links: [link] })
+              ? (collectionByPage.get(currentIdentity) ?? currentIdentity)
+              : identity,
+          );
         if (
           !identity ||
           seen.has(identity) ||
-          excludedUrls.some(
-            (url) =>
-              identity === url ||
-              (!from.url.startsWith(`${url}/`) &&
-                identity.startsWith(`${url}/`)),
-          ) ||
+          isExcluded(link.url) ||
           !isReadNavigation(link.url, [host])
         )
           continue;
@@ -118,12 +191,7 @@ export const scanCourseCollection = async ({
           page: {
             ...current,
             text: text.slice(offset, offset + 12000),
-            links: current.links.filter(
-              (link) =>
-                !excludedUrls.some(
-                  (url) => link.url === url || link.url.startsWith(`${url}/`),
-                ),
-            ),
+            links: current.links.filter((link) => !isExcluded(link.url)),
           },
           kind,
           goal,
@@ -134,11 +202,35 @@ export const scanCourseCollection = async ({
           courseName,
           truncated: text.length > 12000,
         });
-        const output = await requestBounded(body);
-        assertActive();
-        const result = validateResourceExtraction(body, kind, output);
-        verified ||= result.coverage === 'complete';
-        incomplete ||= result.coverage === 'partial';
+        let result: ReturnType<typeof validateResourceExtraction>;
+        try {
+          const output = await requestBounded(body);
+          assertActive();
+          result = validateResourceExtraction(body, kind, output);
+        } catch (error) {
+          extractionFailures.add(currentIdentity);
+          throw error;
+        }
+        if (result.coverage === 'complete') {
+          verified = true;
+          collectionGaps.delete(currentIdentity);
+          if (directIdentity && currentIdentity === directIdentity) {
+            for (const [pageIdentity, gap] of collectionGaps)
+              if (
+                gap.summary &&
+                gap.collection === directIdentity &&
+                (!gap.truncated || gap.collection === currentIdentity)
+              )
+                collectionGaps.delete(pageIdentity);
+          }
+        } else if (result.coverage === 'partial') {
+          collectionGaps.set(currentIdentity, {
+            collection:
+              collectionByPage.get(currentIdentity) ?? currentIdentity,
+            summary: currentIdentity === rootIdentity && !!directIdentity,
+            truncated: !!body.context?.truncated,
+          });
+        }
         const records =
           'assignments' in result ? result.assignments : result.announcements;
         for (const record of records) {
@@ -149,9 +241,22 @@ export const scanCourseCollection = async ({
               ? `url:${record.url}`
               : `${item.url}\n${item.title.toLowerCase()}`;
           if ('state' in record) {
+            const aliases = assignmentAliases(record);
+            const previousUnknown = matchingUnknown(aliases);
             if (record.state === 'unknown') {
-              incomplete = true;
-              if (record.url) unresolvedAssignments.add(record.url);
+              if (previousUnknown) unknownAssignments.delete(previousUnknown);
+              const identity =
+                aliases.find((alias) => alias.startsWith('id:')) ??
+                aliases.find((alias) => alias.startsWith('url:')) ??
+                aliases[0];
+              unknownAssignments.set(identity, {
+                aliases,
+                url: record.url
+                  ? (academicPageIdentity(record.url) ?? record.url)
+                  : null,
+              });
+            } else if (previousUnknown) {
+              unknownAssignments.delete(previousUnknown);
             }
             if (record.state === 'submitted' || record.state === 'inactive') {
               items.delete(key);
@@ -165,21 +270,27 @@ export const scanCourseCollection = async ({
         onProgress?.(finish('partial'));
         saving = false;
       }
-      if (direct && !seen.has(direct)) {
+      if (direct && directIdentity && !seen.has(directIdentity)) {
+        pendingNavigation = directIdentity;
         current = await context.openFrom(from, direct);
-        seen.add(direct);
-        frontier.delete(direct);
+        pendingNavigation = null;
+        navigationFailures.delete(directIdentity);
+        seen.add(directIdentity);
+        frontier.delete(directIdentity);
         continue;
       }
       // Unknown work needs detail evidence before the model can end the scan.
       const unresolved = [...frontier.entries()].find(([, link]) =>
-        unresolvedAssignments.has(link.url),
+        hasUnknownUrl(link.url),
       );
       if (unresolved) {
         const [identity, link] = unresolved;
         frontier.delete(identity);
+        pendingNavigation = identity;
         seen.add(identity);
         current = await context.openFrom(link.from, link.url);
+        pendingNavigation = null;
+        navigationFailures.delete(identity);
         continue;
       }
       if (context.revealContent) {
@@ -202,7 +313,7 @@ export const scanCourseCollection = async ({
               current = revealed;
               continue;
             }
-            incomplete = true;
+            disclosureGaps.add(currentIdentity);
           }
         }
       }
@@ -238,24 +349,34 @@ export const scanCourseCollection = async ({
           if (index < 0) throw new Error('The agent chose an unobserved page.');
           const [identity, selected] = batch[index];
           frontier.delete(identity);
+          pendingNavigation = identity;
           seen.add(identity);
           next = selected;
         } else {
-          incomplete ||= choice.operation === 'BLOCKED';
+          if (choice.operation === 'BLOCKED')
+            navigationGaps.add(currentIdentity);
           for (const [identity] of batch) frontier.delete(identity);
         }
       }
       if (!next)
         return finish(
           verified &&
-            !incomplete &&
-            ![...pagination].some((url) => !seen.has(url))
+            collectionGaps.size === 0 &&
+            unknownAssignments.size === 0 &&
+            navigationGaps.size === 0 &&
+            disclosureGaps.size === 0 &&
+            navigationFailures.size === 0 &&
+            extractionFailures.size === 0 &&
+            ![...pagination].some((identity) => !visitedPages.has(identity))
             ? 'complete'
             : 'partial',
         );
       current = await context.openFrom(next.from, next.url);
+      pendingNavigation = null;
+      navigationFailures.delete(academicPageIdentity(next.url) ?? next.url);
     }
   } catch (error) {
+    if (pendingNavigation) navigationFailures.add(pendingNavigation);
     if (saving || signal.aborted || !isCurrent()) throw error;
     return finish(
       items.size || inactiveItems.size ? 'partial' : outcomeFromError(error),

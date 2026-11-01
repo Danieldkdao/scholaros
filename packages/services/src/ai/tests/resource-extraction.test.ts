@@ -14,6 +14,11 @@ vi.mock('@scholaros/env/server', () => ({ serverEnv }));
 afterEach(() => vi.unstubAllGlobals());
 const url = 'https://school.example/courses/1';
 const evidence = { sourceUrl: url, excerpts: ['Biology'], targetIds: ['1'] };
+const assignmentEvidence = {
+  sourceUrl: url,
+  excerpts: ['Biology assignment due November 3, 2026 at 11:59 pm.'],
+  targetIds: ['1'],
+};
 const course = {
   name: 'Biology',
   code: null,
@@ -52,7 +57,7 @@ describe.each(['baseten', 'meta'])('%s resource extraction', (provider) => {
             url: null,
             sourceId: null,
             resources: [],
-            evidence,
+            evidence: assignmentEvidence,
           },
         ],
         coverage: 'partial',
@@ -129,7 +134,7 @@ describe.each(['baseten', 'meta'])('%s resource extraction', (provider) => {
             {
               url,
               title: 'Biology',
-              text: 'November 3, 2026 Assignment. Biology 11:59 pm',
+              text: 'Biology assignment due November 3, 2026 at 11:59 pm.',
             },
           ],
           targets: [{ id: '1', label: 'Biology', url }],

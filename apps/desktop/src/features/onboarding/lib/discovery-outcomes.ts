@@ -1,5 +1,10 @@
 import { errorMessage } from '../../../lib/error-message';
-import type { AcademicDiscovery, DiscoveryStatus } from '../types';
+import type {
+  AcademicConnection,
+  AcademicDiscovery,
+  DiscoveryStatus,
+} from '../types';
+import type { CourseSummary } from '../../courses/types';
 
 export type ConnectionOutcome =
   | 'courses'
@@ -152,4 +157,38 @@ export const syncFailureMessage = (
         'Background sync could not read your selected course sources.'
       );
   }
+};
+
+export const courseRefreshFailureMessage = ({
+  attemptedConnectionIds,
+  connections,
+  discovery,
+  courses,
+}: {
+  attemptedConnectionIds: string[];
+  connections: Array<Pick<AcademicConnection, 'id'>>;
+  discovery: AcademicDiscovery;
+  courses: Array<
+    Pick<
+      CourseSummary,
+      'connectionId' | 'assignmentsStatus' | 'announcementsStatus'
+    >
+  >;
+}) => {
+  const attempted = new Set(attemptedConnectionIds);
+  const attemptedSources = new Set(
+    connections
+      .filter((connection) => attempted.has(connection.id))
+      .map((connection) => connection.id),
+  );
+  const sourceNeedsSignIn = courses.some(
+    (course) =>
+      course.connectionId !== null &&
+      attemptedSources.has(course.connectionId) &&
+      (course.assignmentsStatus === 'needs-sign-in' ||
+        course.announcementsStatus === 'needs-sign-in'),
+  );
+  return sourceNeedsSignIn
+    ? 'Sign in in your study browser, then resume background sync.'
+    : syncFailureMessage(discovery);
 };

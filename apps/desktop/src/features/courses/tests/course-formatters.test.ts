@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   formatCourseDate,
+  formatAcademicDateResolution,
   formatCourseScanStatus,
   formatCourseSourceState,
   isPastDate,
@@ -64,6 +65,17 @@ describe('showing a date the way the source meant it', () => {
         dateText: null,
       }),
     ).toContain('2026');
+  });
+
+  it('shows the numeric source offset as the date timezone label', () => {
+    expect(
+      formatAcademicDateResolution({
+        kind: 'instant',
+        instant: '2026-11-10T04:59:00Z',
+        timezone: '-05:00',
+        original: '2026-11-09T23:59:00-05:00',
+      }).label,
+    ).toBe('-05:00');
   });
 
   it('falls back to the wording the source used', () => {
