@@ -1,5 +1,14 @@
+import {
+  courseRecordSchema,
+  createCourseRecordSchema,
+  type CreateCourseRecordSchema,
+  updateCourseRecordSchema,
+  type CourseRecordSchema,
+  type UpdateCourseRecordSchema,
+} from '../schemas';
+import { academicDateFor, legacyDateFrom } from '../lib/dates';
 import { randomUUID } from 'node:crypto';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, or } from 'drizzle-orm';
 import { db } from '../../../db';
 import {
   AcademicConnectionTable,
@@ -19,6 +28,7 @@ import type {
   CourseAssignmentSelectData,
 } from '../../../db/schema';
 import type {
+  CourseChildItem,
   CourseChildScan,
   CourseDetail,
   CourseSourceScan,
@@ -26,6 +36,30 @@ import type {
   CourseSummary,
   ObservedCourse,
 } from '../types';
+
+const changeListeners = new Set<
+  (change: { accountId: string; courseId: string | null }) => void
+>();
+export const subscribeCourseChanges = (
+  listener: (change: { accountId: string; courseId: string | null }) => void,
+) => {
+  changeListeners.add(listener);
+  return () => {
+    changeListeners.delete(listener);
+  };
+};
+const notifyCourseChanges = (
+  accountId: string,
+  courseId: string | null = null,
+) => {
+  for (const listener of changeListeners) {
+    try {
+      listener({ accountId, courseId });
+    } catch {
+      /* Notifications cannot roll back a completed write. */
+    }
+  }
+};
 
 type CourseChildTable =
   | typeof CourseAnnouncementTable
@@ -45,10 +79,40 @@ const courseKey = (
   url: string,
 ) => `${connectionId} ${externalId ?? url}`;
 
-// One list page carries many items, so the page plus its own wording is the only
-// stable identity an extraction can offer.
-const childKey = (url: string, title: string) =>
-  `${url} ${title.toLowerCase()}`;
+// Items without platform IDs or individual links fall back to their source page and title.
+const childKey = (url: string, title: string, item?: CourseChildItem) =>
+  item?.content?.sourceId
+    ? `id:${item.content.sourceId}`
+    : item?.content?.url
+      ? `url:${url}`
+      : `${url} ${title.toLowerCase()}`;
+
+const meaningfulContent = (value: unknown): unknown => {
+  if (typeof value === 'string') return value.replace(/\s+/g, ' ').trim();
+  if (Array.isArray(value))
+    return value
+      .map(meaningfulContent)
+      .sort((left, right) =>
+        JSON.stringify(left).localeCompare(JSON.stringify(right)),
+      );
+  if (!value || typeof value !== 'object') return value;
+  const fields = value as Record<string, unknown>;
+  return Object.fromEntries(
+    Object.entries(fields)
+      .filter(
+        ([key]) =>
+          key !== 'evidence' &&
+          key !== 'targetId' &&
+          key !== 'sourceId' &&
+          !(key === 'original' && fields.kind !== 'unresolved') &&
+          !(fields.content && (key === 'dateText' || key === 'dateValue')),
+      )
+      .sort(([first], [second]) => first.localeCompare(second))
+      .map(([key, field]) => [key, meaningfulContent(field)]),
+  );
+};
+const contentFingerprint = (value: unknown) =>
+  JSON.stringify(meaningfulContent(value));
 
 // A url the source did not really expose is dropped rather than stored, and it
 // stops the scan from counting as complete enough to retire anything.
@@ -59,6 +123,8 @@ const observedUrl = (url: string, host: string) => {
 
 const courseColumns = {
   id: CourseTable.id,
+  content: CourseTable.content,
+  contentChangedAt: CourseTable.contentChangedAt,
   connectionId: CourseTable.connectionId,
   name: CourseTable.name,
   code: CourseTable.code,
@@ -96,6 +162,7 @@ const readCourseRows = (userId: string) => {
 };
 
 const sourceStateOf = (row: CourseRow): CourseSourceState => {
+  if (!row.url && !row.connectionId) return 'manual';
   if (!row.connectionId || !row.connected) return 'removed';
   return row.marked ? 'connected' : 'unmarked';
 };
@@ -104,9 +171,15 @@ const toSummary = (
   row: CourseRow,
 ): Omit<CourseSummary, 'announcementCount' | 'assignmentCount'> => ({
   id: row.id,
+  content: row.content,
+  contentChangedAt: row.contentChangedAt,
   name: row.name,
-  code: row.code,
-  term: row.term,
+  instructor: row.content
+    ? row.content.instructors.join(', ') || null
+    : row.instructor,
+  description: row.content ? row.content.description : row.description,
+  code: row.content ? row.content.code : row.code,
+  term: row.content ? row.content.term : row.term,
   url: row.url,
   active: row.active,
   sourceName: row.sourceName,
@@ -138,7 +211,7 @@ const uniqueAssignments = <TItem extends { title: string; url: string }>(
       .map((item) => normalizeTitle(item.title).toLowerCase()),
   );
   return assignments.filter((item) => {
-    if (item.url.split('#')[0] !== coursePageUrl) return true;
+    if (!item.url || item.url.split('#')[0] !== coursePageUrl) return true;
     const title = normalizeTitle(item.title).toLowerCase();
     if (assignmentTitles.has(title)) return false;
     assignmentTitles.add(title);
@@ -231,8 +304,12 @@ export const getCourseDetail = (
     ...toSummary(courseRow),
     announcementCount: announcements.length,
     assignmentCount: visibleAssignments.length,
-    instructor: courseRow.instructor,
-    description: courseRow.description,
+    instructor: courseRow.content
+      ? courseRow.content.instructors.join(', ') || null
+      : courseRow.instructor,
+    description: courseRow.content
+      ? courseRow.content.description
+      : courseRow.description,
     announcements: announcements.map(toChild),
     assignments: visibleAssignments.map(toChild),
   };
@@ -276,6 +353,67 @@ const applyChildren = (
   const complete = courseScanSucceeded(scan.status);
   const read = complete || scan.status === 'partial';
   if (!read) return;
+  const findExistingChild = (
+    item: CourseChildItem,
+    sourceKey: string,
+    url: string,
+    title: string,
+  ) => {
+    const candidates = tx
+      .select()
+      .from(table)
+      .where(and(eq(table.userId, userId), eq(table.courseId, courseId)))
+      .all()
+      .filter((row) => {
+        if (row.sourceKey.startsWith('manual:')) return false;
+        if (
+          row.content?.sourceId &&
+          item.content?.sourceId &&
+          row.content.sourceId !== item.content.sourceId
+        )
+          return false;
+        if (
+          item.content?.sourceId &&
+          row.content?.sourceId === item.content.sourceId
+        )
+          return true;
+        if (
+          row.sourceKey === sourceKey ||
+          row.sourceKey === childKey(url, title)
+        )
+          return true;
+        if (row.url === url && (row.content?.url || item.content?.url))
+          return true;
+        // A collection entry can become a detail link without becoming a new item.
+        return (
+          (url.startsWith(`${row.url}/`) ||
+            row.url.startsWith(`${url}/`) ||
+            row.url === url) &&
+          normalizeTitle(row.title).toLowerCase() === title.toLowerCase() &&
+          ((!row.content?.sourceId && !row.content?.url) ||
+            (!item.content?.sourceId && !item.content?.url))
+        );
+      });
+    const sourceIds = new Set(
+      candidates.flatMap((row) =>
+        row.content?.sourceId ? [row.content.sourceId] : [],
+      ),
+    );
+    if (sourceIds.size > 1)
+      return candidates.find((row) => row.sourceKey === sourceKey);
+    const existingChild = candidates.sort(
+      (a, b) =>
+        Number(!!b.content?.sourceId) - Number(!!a.content?.sourceId) ||
+        b.url.length - a.url.length,
+    )[0];
+    for (const duplicate of candidates)
+      if (duplicate.id !== existingChild.id)
+        tx.update(table)
+          .set({ active: false })
+          .where(eq(table.id, duplicate.id))
+          .run();
+    return existingChild;
+  };
   const seen = new Set<string>();
   let untrusted = false;
   for (const item of scan.items) {
@@ -285,30 +423,59 @@ const applyChildren = (
       untrusted = true;
       continue;
     }
-    const sourceKey = childKey(url, title);
-    seen.add(sourceKey);
-    const existingChild = tx
-      .select()
-      .from(table)
-      .where(
-        and(
-          eq(table.userId, userId),
-          eq(table.courseId, courseId),
-          eq(table.sourceKey, sourceKey),
-        ),
-      )
-      .get();
+    const sourceKey = childKey(url, title, item);
+    const existingChild = findExistingChild(item, sourceKey, url, title);
+    seen.add(existingChild?.sourceKey ?? sourceKey);
+    const fields = {
+      title,
+      body: item.body ?? existingChild?.body ?? null,
+      dateValue:
+        item.content || item.dateValue !== null || item.dateText !== null
+          ? item.dateValue
+          : (existingChild?.dateValue ?? null),
+      dateText:
+        item.content || item.dateValue !== null || item.dateText !== null
+          ? item.dateText
+          : (existingChild?.dateText ?? null),
+      url:
+        existingChild &&
+        !item.content?.url &&
+        existingChild.url.startsWith(`${url}/`)
+          ? existingChild.url
+          : url,
+      content: item.content
+        ? {
+            ...item.content,
+            sourceId:
+              item.content.sourceId ?? existingChild?.content?.sourceId ?? null,
+            url: item.content.url ?? existingChild?.content?.url ?? null,
+          }
+        : (existingChild?.content ?? null),
+      active: true,
+    };
+    const previous = existingChild && {
+      title: existingChild.title,
+      body: existingChild.body,
+      dateValue: existingChild.dateValue,
+      dateText: existingChild.dateText,
+      url: existingChild.url,
+      content: existingChild.content,
+      active: existingChild.active,
+    };
+    const changed =
+      !previous || contentFingerprint(fields) !== contentFingerprint(previous);
+    const contentChangedAt = changed
+      ? now
+      : (existingChild?.contentChangedAt ?? null);
     if (existingChild)
       tx.update(table)
         .set({
-          title,
-          body: item.body ?? existingChild.body,
-          ...(item.dateValue !== null || item.dateText !== null
-            ? { dateValue: item.dateValue, dateText: item.dateText }
-            : {}),
-          url,
-          active: true,
-          lastSeenAt: now,
+          ...(changed
+            ? fields
+            : { content: fields.content, dateText: fields.dateText }),
+          sourceKey: existingChild.sourceKey,
+          lastSeenAt: item.retrievedAt ?? now,
+          contentChangedAt,
         })
         .where(eq(table.id, existingChild.id))
         .run();
@@ -319,13 +486,9 @@ const applyChildren = (
           userId,
           courseId,
           sourceKey,
-          title,
-          body: item.body,
-          dateValue: item.dateValue,
-          dateText: item.dateText,
-          url,
-          active: true,
-          lastSeenAt: now,
+          ...fields,
+          lastSeenAt: item.retrievedAt ?? now,
+          contentChangedAt,
         })
         .run();
   }
@@ -333,18 +496,27 @@ const applyChildren = (
     const url = observedUrl(item.url, host);
     const title = normalizeTitle(item.title);
     if (!url || !title) continue;
-    const sourceKey = childKey(url, title);
-    tx.update(table)
-      .set({ active: false })
-      .where(
-        and(
-          eq(table.userId, userId),
-          eq(table.courseId, courseId),
-          eq(table.sourceKey, sourceKey),
-        ),
-      )
-      .run();
-    seen.delete(sourceKey);
+    const sourceKey = childKey(url, title, item);
+    const existingChild = findExistingChild(item, sourceKey, url, title);
+    if (existingChild)
+      tx.update(table)
+        .set({
+          active: false,
+          sourceKey: existingChild.sourceKey,
+          title,
+          content: item.content ?? existingChild.content,
+          contentChangedAt:
+            existingChild.active ||
+            existingChild.title !== title ||
+            contentFingerprint(existingChild.content) !==
+              contentFingerprint(item.content ?? existingChild.content)
+              ? now
+              : existingChild.contentChangedAt,
+          lastSeenAt: item.retrievedAt ?? now,
+        })
+        .where(eq(table.id, existingChild.id))
+        .run();
+    seen.delete(existingChild?.sourceKey ?? sourceKey);
   }
   if (!complete || untrusted) return;
   const savedChildren = tx
@@ -359,7 +531,10 @@ const applyChildren = (
     )
     .all();
   for (const savedChild of savedChildren)
-    if (!seen.has(savedChild.sourceKey))
+    if (
+      !savedChild.sourceKey.startsWith('manual:') &&
+      !seen.has(savedChild.sourceKey)
+    )
       tx.update(table)
         .set({ active: false })
         .where(eq(table.id, savedChild.id))
@@ -399,7 +574,11 @@ const upsertCourse = (
     .select()
     .from(CourseTable)
     .where(
-      and(eq(CourseTable.userId, userId), eq(CourseTable.sourceKey, sourceKey)),
+      and(
+        eq(CourseTable.userId, userId),
+        eq(CourseTable.connectionId, connection.id),
+        or(eq(CourseTable.sourceKey, sourceKey), eq(CourseTable.url, url)),
+      ),
     )
     .get();
   const coverage = coverageOf(observed, now);
@@ -412,6 +591,7 @@ const upsertCourse = (
     instructor: observed.instructor ?? existingCourse?.instructor ?? null,
     description: observed.description ?? existingCourse?.description ?? null,
     externalId: observed.externalId ?? existingCourse?.externalId ?? null,
+    content: observed.content ?? existingCourse?.content ?? null,
     sourceName: connection.name,
     sourceHost: connection.host,
     url,
@@ -422,9 +602,28 @@ const upsertCourse = (
       : {}),
     ...coverage,
   };
+  const changed =
+    !existingCourse ||
+    [
+      'name',
+      'code',
+      'term',
+      'instructor',
+      'description',
+      'content',
+      'url',
+    ].some(
+      (key) =>
+        contentFingerprint(fields[key as keyof typeof fields]) !==
+        contentFingerprint(existingCourse[key as keyof typeof existingCourse]),
+    );
   if (existingCourse) {
     tx.update(CourseTable)
-      .set(fields)
+      .set({
+        ...fields,
+        sourceKey,
+        contentChangedAt: changed ? now : existingCourse.contentChangedAt,
+      })
       .where(eq(CourseTable.id, existingCourse.id))
       .run();
     return existingCourse.id;
@@ -437,6 +636,7 @@ const upsertCourse = (
       connectionId: connection.id,
       sourceKey,
       firstSeenAt: now,
+      contentChangedAt: now,
       ...fields,
     })
     .run();
@@ -562,5 +762,66 @@ export const applyCourseRefresh = (
         applyCourseList(tx, userId, connection, scan, now);
     }
   });
+  notifyCourseChanges(userId);
   return getCoursesSnapshot(userId);
+};
+
+export const getCourseRefreshTarget = (userId: string, courseId: string) =>
+  db
+    .select()
+    .from(CourseTable)
+    .where(and(eq(CourseTable.userId, userId), eq(CourseTable.id, courseId)))
+    .get();
+
+export const applySingleCourseRefresh = (
+  userId: string,
+  courseId: string,
+  observed: ObservedCourse,
+) => {
+  db.transaction((tx) => {
+    const existingCourse = getCourseRefreshTarget(userId, courseId);
+    if (!existingCourse?.connectionId) return;
+    const existingConnection = tx
+      .select()
+      .from(AcademicConnectionTable)
+      .where(
+        and(
+          eq(AcademicConnectionTable.userId, userId),
+          eq(AcademicConnectionTable.id, existingCourse.connectionId),
+        ),
+      )
+      .get();
+    if (!existingConnection?.isCourseResource) return;
+    const url = observedUrl(observed.url, existingConnection.host);
+    if (!url || url !== existingCourse.url) return;
+    const now = new Date().toISOString();
+    upsertCourse(
+      tx,
+      userId,
+      existingConnection,
+      existingCourse.sourceKey,
+      url,
+      observed,
+      now,
+    );
+    applyChildren(
+      tx,
+      CourseAnnouncementTable,
+      userId,
+      courseId,
+      existingConnection.host,
+      observed.announcements,
+      now,
+    );
+    applyChildren(
+      tx,
+      CourseAssignmentTable,
+      userId,
+      courseId,
+      existingConnection.host,
+      observed.assignments,
+      now,
+    );
+  });
+  notifyCourseChanges(userId, courseId);
 };
