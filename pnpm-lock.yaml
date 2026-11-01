@@ -184,6 +184,9 @@ importers:
       '@browserbasehq/stagehand':
         specifier: 4.3.0
         version: 4.3.0
+      '@hookform/resolvers':
+        specifier: ^6.0.1
+        version: 6.0.1(@standard-schema/spec@1.1.0)(ajv-formats@2.1.1(ajv@8.20.0))(ajv@8.20.0)(react-hook-form@7.91.0(@types/react@19.3.0)(react@19.3.1))(zod@4.6.7)
       '@scholaros/assets':
         specifier: workspace:*
         version: link:../../packages/assets
@@ -214,6 +217,9 @@ importers:
       conf:
         specifier: ^15.0.2
         version: 15.1.0
+      date-fns:
+        specifier: ^4.4.0
+        version: 4.4.0
       drizzle-orm:
         specifier: ^0.45.4
         version: 0.45.4(@opentelemetry/api@1.9.1)(@types/better-sqlite3@7.6.13)(@types/pg@8.23.1)(better-sqlite3@13.0.3)(kysely@0.29.7)(pg@8.23.1)
@@ -232,6 +238,9 @@ importers:
       react-dom:
         specifier: ^19.3.1
         version: 19.3.1(react@19.3.1)
+      react-hook-form:
+        specifier: ^7.91.0
+        version: 7.91.0(@types/react@19.3.0)(react@19.3.1)
       zod:
         specifier: 4.6.7
         version: 4.6.7
