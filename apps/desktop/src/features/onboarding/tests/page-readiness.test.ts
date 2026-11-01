@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { waitForMissionPage } from '../services/page-readiness';
 
+vi.mock('../services/page-evidence', () => ({
+  readPageEvidence: async () => ({ hasPasswordField: true }),
+}));
+
 const ready = {
   ready: true,
   signIn: false,

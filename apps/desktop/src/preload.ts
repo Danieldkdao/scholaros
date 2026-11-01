@@ -9,6 +9,16 @@ import type {
 
 setupRenderer();
 const bridge: ScholarBridge = {
+  onCoursesChange: (listener) => {
+    const handler = (
+      _event: unknown,
+      change: { accountId: string; courseId: string | null },
+    ) => listener(change);
+    ipcRenderer.on('scholar:coursesChange', handler);
+    return () => {
+      ipcRenderer.removeListener('scholar:coursesChange', handler);
+    };
+  },
   getCurrentUser: () => ipcRenderer.invoke('scholar:getCurrentUser'),
   resolveConnections: (prompt) =>
     ipcRenderer.invoke('scholar:resolveConnections', prompt),
@@ -37,10 +47,25 @@ const bridge: ScholarBridge = {
   previewResource: () => ipcRenderer.invoke('scholar:previewResource'),
   saveConnectionNotes: (id, notes) =>
     ipcRenderer.invoke('scholar:saveConnectionNotes', { id, notes }),
+  setCourseResource: (id, isCourseResource) =>
+    ipcRenderer.invoke('scholar:setCourseResource', { id, isCourseResource }),
   confirmResource: (id) => ipcRenderer.invoke('scholar:confirmResource', id),
   removeResource: (id) => ipcRenderer.invoke('scholar:removeResource', id),
   setPrimaryLms: (id) => ipcRenderer.invoke('scholar:setPrimaryLms', id),
   discoverContext: () => ipcRenderer.invoke('scholar:discoverContext'),
+  createCourseRecord: (input) =>
+    ipcRenderer.invoke('scholar:createCourseRecord', input),
+  updateCourseRecord: (input) =>
+    ipcRenderer.invoke('scholar:updateCourseRecord', input),
+  deleteCourseRecord: (input) =>
+    ipcRenderer.invoke('scholar:deleteCourseRecord', input),
+  getCourses: () => ipcRenderer.invoke('scholar:getCourses'),
+  getCourse: (courseId) => ipcRenderer.invoke('scholar:getCourse', courseId),
+  refreshCourses: () => ipcRenderer.invoke('scholar:refreshCourses'),
+  refreshCourse: (courseId) =>
+    ipcRenderer.invoke('scholar:refreshCourse', courseId),
+  cancelCourseRefresh: (courseId) =>
+    ipcRenderer.invoke('scholar:cancelCourseRefresh', courseId),
   pauseBackgroundSync: () => ipcRenderer.invoke('scholar:pauseBackgroundSync'),
   resumeBackgroundSync: () =>
     ipcRenderer.invoke('scholar:resumeBackgroundSync'),

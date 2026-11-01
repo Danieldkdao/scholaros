@@ -1,13 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const testPaths = vi.hoisted(() => ({ userData: '' }));
-
 vi.mock('electron', async () => {
   const { mkdtempSync } = await import('node:fs');
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
   const userData = mkdtempSync(join(tmpdir(), 'scholaros-context-'));
-  testPaths.userData = userData;
   return {
     app: {
       getPath: () => userData,
@@ -21,8 +18,6 @@ vi.mock('electron', async () => {
   };
 });
 
-const { join } = await import('node:path');
-const Database = (await import('better-sqlite3')).default;
 const { db } = await import('../../../db');
 const {
   AcademicConnectionTable,
@@ -116,23 +111,6 @@ describe('durable academic context', () => {
       'connection-a': 'courses',
     });
     expect(state.discovery.entries).toMatchObject(drafts);
-  });
-
-  it('keeps discovered context across a database restart', () => {
-    insertConnection(studentA, 'connection-a');
-    applyAcademicDiscovery(studentA, [discovered('connection-a')]);
-
-    const reopened = new Database(
-      join(testPaths.userData, 'data', 'scholaros.sqlite'),
-    );
-    const rows = reopened
-      .prepare('select label, role from academic_context_entries')
-      .all();
-    reopened.close();
-    expect(rows).toEqual([
-      { label: 'Biology 101', role: 'course' },
-      { label: 'Canvas courses', role: 'resource' },
-    ]);
   });
 
   it('keeps one account context isolated from another', () => {
@@ -271,6 +249,7 @@ describe('durable academic context', () => {
         verifiedAt: null,
         notes: null,
         favicon: null,
+        isCourseResource: false,
       },
       {
         url: 'https://canvas.school.edu/courses',

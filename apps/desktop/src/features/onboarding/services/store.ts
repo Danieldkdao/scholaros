@@ -1,3 +1,5 @@
+import { configureBrowserPolicy } from '../lib/browser-policy';
+import { missionTraffic } from './mission-traffic';
 import { app } from 'electron';
 import { existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
@@ -6,6 +8,7 @@ import { db } from '../../../db';
 import { profileDirectoryFor } from '../lib/profile-directory';
 import { summarizeDiscovery } from '../lib/discovery-outcomes';
 import { getLaunchAtLoginState } from './preferences';
+import { detachCourseSource } from '../../courses/services/store';
 import type { ConnectionOutcome } from '../lib/discovery-outcomes';
 import type {
   AcademicContextEntryDraft,
@@ -96,6 +99,8 @@ export const getOnboardingState = (userId: string): OnboardingState => {
     .from(AcademicContextEntryTable)
     .where(eq(AcademicContextEntryTable.userId, userId))
     .all();
+  configureBrowserPolicy(existingSettings.blockedWords);
+  missionTraffic.setIntervalSeconds(existingSettings.decisionTimeSeconds);
   return {
     accountId: userId,
     settings: {
@@ -103,6 +108,8 @@ export const getOnboardingState = (userId: string): OnboardingState => {
       consent: existingSettings.consent,
       launchAtLogin: existingSettings.launchAtLogin,
       backgroundSync: existingSettings.backgroundSync,
+      decisionTimeSeconds: existingSettings.decisionTimeSeconds,
+      blockedWords: existingSettings.blockedWords,
       localSetupCompletedAt: existingSettings.localSetupCompletedAt,
       notes: existingContext.notes,
     },
@@ -198,6 +205,9 @@ export const removeAcademicConnection = (userId: string, id: string) => {
         ),
       )
       .run();
+    // Saved courses outlive the connection and are labelled as coming from a
+    // removed source instead of being deleted with it.
+    detachCourseSource(userId, id);
     tx.update(AcademicContextTable)
       .set({ primaryLms: null })
       .where(

@@ -1,3 +1,4 @@
+import { TooltipWrapper } from '@scholaros/ui/components/tooltip-wrapper';
 import { useEffect, useState } from 'react';
 import {
   Check,
@@ -50,16 +51,17 @@ export const BrowserStep = ({ state, busy, run, update }: BrowserStepProps) => {
         <p className="text-muted-foreground">
           Supported browsers on this computer
         </p>
-        <Button
-          variant="ghost"
-          size="icon"
-          title="Find browsers again"
-          aria-label="Find browsers again"
-          disabled={busy}
-          onClick={() => void run(refresh)}
-        >
-          <RefreshCw className={cn('size-5', searching && 'animate-spin')} />
-        </Button>
+        <TooltipWrapper content="Find browsers again">
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="Find browsers again"
+            disabled={busy}
+            onClick={() => void run(refresh)}
+          >
+            <RefreshCw className={cn('size-5', searching && 'animate-spin')} />
+          </Button>
+        </TooltipWrapper>
       </div>
       <div className="flex flex-col gap-3">
         {browsers.map((browser) => {
@@ -178,8 +180,9 @@ export const BrowserStep = ({ state, busy, run, update }: BrowserStepProps) => {
             <li className="flex items-start gap-2">
               <ScanSearchIcon className="mt-0.5 size-4 shrink-0" />
               <span>
-                Let your agent revisit connected courses and read deadlines,
-                announcements, and assigned work without another sign-in.
+                Let your agent revisit connected resources and read study
+                materials, announcements, and assigned work without another
+                sign-in.
               </span>
             </li>
             <li className="flex items-start gap-2">

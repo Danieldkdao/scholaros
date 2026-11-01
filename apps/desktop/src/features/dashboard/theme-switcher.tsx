@@ -1,3 +1,4 @@
+import { TooltipWrapper } from '@scholaros/ui/components/tooltip-wrapper';
 import { useEffect, useState } from 'react';
 import { useTheme } from 'next-themes';
 import { Button } from '@scholaros/ui/components/button';
@@ -23,18 +24,19 @@ export const ThemeSwitcher = () => {
   const { label, Icon } = formatTheme(current);
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger
-        render={
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            aria-label={`Theme ${label}`}
-            title={`Theme ${label}`}
-          />
-        }
-      >
-        <Icon />
-      </DropdownMenuTrigger>
+      <TooltipWrapper content={`Theme ${label}`}>
+        <DropdownMenuTrigger
+          render={
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label={`Theme ${label}`}
+            />
+          }
+        >
+          <Icon />
+        </DropdownMenuTrigger>
+      </TooltipWrapper>
       <DropdownMenuContent
         align="end"
         sideOffset={8}

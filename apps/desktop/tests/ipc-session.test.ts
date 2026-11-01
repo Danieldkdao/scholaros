@@ -14,6 +14,14 @@ const mocks = vi.hoisted(() => ({
   startPreview: vi.fn(),
   getPreview: vi.fn(),
   discoverAcademicContext: vi.fn(),
+  startCourseRefresh: vi.fn(),
+  getCoursesSnapshot: vi.fn(() => ({
+    courses: [],
+    sources: [],
+    lastSuccessfulAt: null,
+  })),
+  getCourseDetail: vi.fn(() => null),
+  subscribeCourseChanges: vi.fn(() => () => undefined),
   resolveConnections: vi.fn(),
   connectWorkspace: vi.fn(),
   workspace: vi.fn(),
@@ -40,6 +48,7 @@ vi.mock('../src/lib/auth/main', () => ({
   getCurrentUser: mocks.getCurrentUser,
   accountRequest: vi.fn(),
   markLocalSignOut: vi.fn(),
+  isAccountSessionCurrent: (cookie: string) => cookie === mocks.getCookie(),
 }));
 vi.mock('../src/db', () => ({ db: {} }));
 vi.mock('../src/features/onboarding/services/store', () => ({
@@ -66,6 +75,15 @@ vi.mock('../src/features/onboarding/services/store', () => ({
     };
     return mocks.state;
   },
+}));
+vi.mock('../src/features/courses/services/refresh', () => ({
+  startCourseRefresh: mocks.startCourseRefresh,
+  cancelCourseRefresh: vi.fn(),
+}));
+vi.mock('../src/features/courses/services/store', () => ({
+  getCoursesSnapshot: mocks.getCoursesSnapshot,
+  getCourseDetail: mocks.getCourseDetail,
+  subscribeCourseChanges: mocks.subscribeCourseChanges,
 }));
 vi.mock('../src/features/onboarding/services/browser-discovery', () => ({
   chooseBrowser: vi.fn(),
@@ -105,7 +123,7 @@ vi.mock('../src/features/onboarding/services/connection-resolver', () => ({
 vi.mock('../src/features/onboarding/services/discovery', () => ({
   discoverAcademicContext: mocks.discoverAcademicContext,
 }));
-const { registerOnboardingIpc } =
+const { registerAcademicActions } =
   await import('../src/features/onboarding/services/ipc');
 const frame = {};
 const event = { sender: { mainFrame: frame }, senderFrame: frame };
@@ -139,6 +157,7 @@ const readyState = () =>
         kind: 'canvas',
         status: 'confirmed',
         verifiedAt: null,
+        isCourseResource: true,
       },
     ],
     primaryLms: null,
@@ -155,15 +174,27 @@ const readyState = () =>
     },
   }) as unknown as typeof mocks.state;
 
+const refreshed = () => ({
+  state: mocks.state as unknown as OnboardingState,
+  snapshot: { courses: [], sources: [], lastSuccessfulAt: null },
+});
+
 beforeEach(async () => {
   vi.clearAllMocks();
   mocks.getCookie.mockReturnValue('initial-cookie');
   mocks.state = { settings: { consent: true, localSetupCompletedAt: null } };
-  if (!mocks.handlers.size) registerOnboardingIpc();
+  if (!mocks.handlers.size)
+    registerAcademicActions({
+      register: (method, action) =>
+        mocks.handlers.set(`scholar:${method}`, async (_event, input) =>
+          action(input),
+        ),
+      publish: () => undefined,
+    });
   await invoke('signOut');
 });
 
-describe('main-process IPC session boundaries', () => {
+describe('academic service session boundaries', () => {
   it('never starts an old-account preview when authentication resolves after sign-out', async () => {
     let release!: (value: unknown) => void;
     mocks.getCurrentUser.mockReturnValueOnce(
@@ -251,6 +282,7 @@ describe('foreground browser work and background sync', () => {
       hasCompletedOnboarding: true,
     });
     mocks.discoverAcademicContext.mockImplementation(async () => mocks.state);
+    mocks.startCourseRefresh.mockImplementation(async () => refreshed());
     await invoke('getState');
   });
 
@@ -278,28 +310,71 @@ describe('foreground browser work and background sync', () => {
       expect(mocks.discoverAcademicContext).toHaveBeenCalledOnce(),
     );
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(mocks.discoverAcademicContext).toHaveBeenCalledOnce();
+    expect(mocks.startCourseRefresh).not.toHaveBeenCalled();
     finish(mocks.state);
     await expect(refreshing).resolves.toMatchObject({
       preferences: { backgroundSync: { status: 'waiting' } },
     });
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(mocks.discoverAcademicContext).toHaveBeenCalledTimes(2);
+    expect(mocks.startCourseRefresh).toHaveBeenCalledOnce();
   });
 
   it('keeps sync suspended until the preview task settles', async () => {
     await invoke('startPreview', 'courses');
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(mocks.discoverAcademicContext).not.toHaveBeenCalled();
+    expect(mocks.startCourseRefresh).not.toHaveBeenCalled();
     const onSettled = mocks.startPreview.mock.calls.at(-1)?.[2];
     expect(onSettled).toBeTypeOf('function');
     onSettled();
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(mocks.discoverAcademicContext).toHaveBeenCalledOnce();
+    expect(mocks.startCourseRefresh).toHaveBeenCalledOnce();
+  });
+
+  it('leaves scheduled work off until a connection is a course resource', async () => {
+    mocks.state.connections[0].isCourseResource = false;
+    await expect(invoke('getState')).resolves.toMatchObject({
+      preferences: { backgroundSync: { status: 'off' } },
+    });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(mocks.startCourseRefresh).not.toHaveBeenCalled();
+  });
+
+  it('leaves scheduled work off when the marked resource needs sign-in', async () => {
+    mocks.state.connections[0].status = 'needs-sign-in';
+    await expect(invoke('getState')).resolves.toMatchObject({
+      preferences: { backgroundSync: { status: 'off' } },
+    });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(mocks.startCourseRefresh).not.toHaveBeenCalled();
+  });
+
+  it('runs one pipeline for both the schedule and the manual button', async () => {
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(mocks.startCourseRefresh).toHaveBeenCalledOnce();
+    expect(mocks.startCourseRefresh.mock.calls[0]?.[0]).toBe('student-a');
+    await expect(invoke('refreshCourses')).resolves.toEqual({
+      activity: [],
+      courses: [],
+      sources: [],
+      lastSuccessfulAt: null,
+    });
+    expect(mocks.startCourseRefresh).toHaveBeenCalledTimes(2);
+    expect(mocks.discoverAcademicContext).not.toHaveBeenCalled();
+  });
+
+  it('reads the saved catalog without touching the study browser', async () => {
+    await expect(invoke('getCourses')).resolves.toEqual({
+      activity: [],
+      refreshing: false,
+      courses: [],
+      sources: [],
+      lastSuccessfulAt: null,
+    });
+    expect(mocks.workspace).not.toHaveBeenCalled();
   });
 
   it('waits for a paused refresh to persist cancellation before returning state', async () => {
-    mocks.discoverAcademicContext.mockImplementationOnce(
+    mocks.startCourseRefresh.mockImplementationOnce(
       (userId: string, isCurrent: () => boolean, signal: AbortSignal) =>
         academicTasks.run(
           userId,
@@ -527,4 +602,39 @@ it('does not capture for the previous account when its cookie changes during a r
   completeInspection({ status: 'readable', host: 'school.edu' });
   await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
   expect(capture).not.toHaveBeenCalled();
+});
+
+it('joins duplicate manual all-course refresh commands without cancelling the first', async () => {
+  mocks.state = readyState();
+  mocks.getCurrentUser.mockResolvedValue({
+    id: 'student-a',
+    hasCompletedOnboarding: true,
+  });
+  await invoke('getState');
+  let resolve!: (value: unknown) => void;
+  mocks.startCourseRefresh.mockReturnValueOnce(
+    new Promise((yes) => {
+      resolve = yes;
+    }),
+  );
+  const first = invoke('refreshCourses');
+  await vi.waitFor(() =>
+    expect(mocks.startCourseRefresh).toHaveBeenCalledOnce(),
+  );
+  const second = invoke('refreshCourses');
+  await Promise.resolve();
+  resolve({
+    state: mocks.state,
+    snapshot: { courses: [], sources: [], lastSuccessfulAt: null },
+  });
+  await Promise.all([first, second]);
+  expect(mocks.startCourseRefresh).toHaveBeenCalledOnce();
+});
+
+it('can cancel academic work after cloud authentication expires', async () => {
+  const { cancelCourseRefresh } =
+    await import('../src/features/courses/services/refresh');
+  mocks.getCurrentUser.mockResolvedValue(null);
+  await expect(invoke('cancelCourseRefresh')).resolves.toBeUndefined();
+  expect(cancelCourseRefresh).toHaveBeenCalledOnce();
 });

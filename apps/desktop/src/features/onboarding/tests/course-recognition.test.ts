@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { configureBrowserPolicy } from '../lib/browser-policy';
+import { beforeEach, describe, expect, it } from 'vitest';
 import {
   discoveryEntriesFromPage,
   nextCourseListTarget,
@@ -20,6 +21,7 @@ const connection = (
   verifiedAt: null,
   notes: null,
   favicon: null,
+  isCourseResource: false,
   ...overrides,
 });
 
@@ -217,3 +219,5 @@ it.each([
     )?.url,
   ).toBe(`https://${schoology}/home/course-dashboard`);
 });
+
+beforeEach(() => configureBrowserPolicy(['submit']));

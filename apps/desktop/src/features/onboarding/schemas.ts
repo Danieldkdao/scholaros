@@ -16,6 +16,11 @@ export const settingsUpdateSchema = z
     consent: z.boolean().optional(),
     launchAtLogin: z.boolean().optional(),
     backgroundSync: z.boolean().optional(),
+    decisionTimeSeconds: z.number().positive().max(5).optional(),
+    blockedWords: z
+      .array(z.string().trim().min(1).max(100).toLowerCase())
+      .max(100)
+      .optional(),
     notes: z.string().max(2000).optional(),
   })
   .strict();
@@ -34,18 +39,3 @@ export const previewCardKinds = [
   'announcement',
 ] as const;
 export type PreviewCardKind = (typeof previewCardKinds)[number];
-export const previewResultSchema = z.object({
-  cards: z
-    .array(
-      z.object({
-        kind: z.enum(previewCardKinds),
-        title: z.string().min(1).max(180),
-        course: z.string().max(180).nullable(),
-        detail: z.string().max(600).nullable(),
-        date: z.string().max(100).nullable(),
-        sourceUrl: z.url(),
-      }),
-    )
-    .max(20),
-});
-export type PreviewResultSchema = z.infer<typeof previewResultSchema>;

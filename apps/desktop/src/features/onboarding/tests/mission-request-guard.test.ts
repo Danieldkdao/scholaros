@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from 'vitest';
+import { configureBrowserPolicy } from '../lib/browser-policy';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   handleMissionRequest,
   type BlockedRequest,
@@ -13,6 +14,7 @@ const decide = async (
   method = 'GET',
   hosts = [schoology, canvas],
   onBlocked?: (blocked: BlockedRequest) => void,
+  mainFrame?: boolean,
 ) => {
   const send = vi.fn(
     async (_method: string, _params: Record<string, unknown>) => ({}),
@@ -20,13 +22,118 @@ const decide = async (
   const allowed = await handleMissionRequest(
     send,
     hosts,
-    { requestId: '1', resourceType, request: { url, method } },
+    { requestId: '1', resourceType, request: { url, method }, mainFrame },
     onBlocked,
   );
   return { allowed, method: send.mock.calls[0]![0] };
 };
 
 describe('mission request protections', () => {
+  it.each(['upcoming', 'overdue'])(
+    'loads Schoology %s assignments without allowing submissions',
+    async (kind) => {
+      const url = `https://${schoology}/home/${kind}_submissions_ajax`;
+      expect((await decide('XHR', url)).allowed).toBe(true);
+      expect((await decide('Fetch', url)).allowed).toBe(true);
+      expect((await decide('Document', url)).allowed).toBe(false);
+      expect((await decide('XHR', url, 'POST')).allowed).toBe(false);
+      expect((await decide('XHR', `${url}?action=delete`)).allowed).toBe(false);
+      expect((await decide('XHR', `${url}?token=secret`)).allowed).toBe(false);
+      expect((await decide('XHR', url, 'GET', [canvas])).allowed).toBe(false);
+      expect(
+        (await decide('XHR', `https://${canvas}/home/${kind}_submissions_ajax`))
+          .allowed,
+      ).toBe(false);
+      expect((await decide('XHR', `${url}/submit`)).allowed).toBe(false);
+    },
+  );
+
+  it.each([
+    'https://docs.google.com/presentation/d/deck/edit',
+    'https://docs.google.com/presentation/d/deck/embed?action=delete',
+    'https://docs.google.com/presentation/d/deck/embed?token=secret',
+    'https://docs.google.com.evil.example/presentation/d/deck/embed',
+    'https://docs.google.com/presentation/d/deck/embed/../../edit',
+    'https://docs.google.com/forms/d/form/viewform',
+    'https://127.0.0.1/presentation/d/deck/embed',
+  ])('keeps unsafe or unrelated frames blocked: %s', async (url) => {
+    expect(
+      (await decide('Document', url, 'GET', [schoology], undefined, false))
+        .allowed,
+    ).toBe(false);
+  });
+
+  it.each([
+    'https://docs.google.com/presentation/d/teacher-deck/embed?start=false&loop=false',
+    'https://docs.google.com/presentation/d/e/published-deck/pubembed',
+  ])(
+    'loads a read-only Slides banner only as a child frame: %s',
+    async (url) => {
+      expect(
+        (await decide('Document', url, 'GET', [schoology], undefined, false))
+          .allowed,
+      ).toBe(true);
+      expect(
+        (await decide('Document', url, 'GET', [schoology], undefined, true))
+          .allowed,
+      ).toBe(false);
+      expect((await decide('Document', url)).allowed).toBe(false);
+      expect(
+        (await decide('Document', url, 'POST', [schoology], undefined, false))
+          .allowed,
+      ).toBe(false);
+    },
+  );
+
+  it.each([
+    'https://asset-cdn.schoology.com/assets/s_grade_item_add_form.js',
+    'https://asset-cdn.schoology.com/assets/assessment.mjs',
+  ])(
+    'loads a rendering script whose filename names an action: %s',
+    async (url) => {
+      expect((await decide('Script', url)).allowed).toBe(true);
+      expect((await decide('Document', url)).allowed).toBe(false);
+      expect((await decide('XHR', url)).allowed).toBe(false);
+      expect((await decide('Script', url, 'POST')).allowed).toBe(false);
+      expect((await decide('Script', `${url}?action=delete`)).allowed).toBe(
+        false,
+      );
+    },
+  );
+
+  it.each([
+    'https://asset-cdn.schoology.com/assets/s_grade_item_add_form.css',
+    'https://asset-cdn.schoology.com/css/assessment.css',
+    'https://asset-cdn.schoology.com/css/test-quiz.css',
+  ])(
+    'loads a stylesheet whose filename describes an academic action: %s',
+    async (url) => {
+      expect((await decide('Stylesheet', url)).allowed).toBe(true);
+      expect((await decide('Document', url)).allowed).toBe(false);
+      expect((await decide('Stylesheet', url, 'POST')).allowed).toBe(false);
+      expect((await decide('Stylesheet', url + '?action=delete')).allowed).toBe(
+        false,
+      );
+    },
+  );
+  it.each([
+    [
+      'Stylesheet',
+      'https://asset-cdn.schoology.com/theme/site.css?Signature=abc&Key-Pair-Id=public-id',
+    ],
+    [
+      'Script',
+      'https://asset-cdn.schoology.com/theme/site.js?token=signed-asset',
+    ],
+  ])(
+    'loads a signed passive %s without treating its CDN signature as academic navigation credentials',
+    async (type, url) => {
+      expect((await decide(type, url)).allowed).toBe(true);
+      expect((await decide('Document', url)).allowed).toBe(false);
+      expect((await decide('XHR', url)).allowed).toBe(false);
+    },
+  );
+
   it.each([
     [`https://${schoology}/iapi/course/active`, 'XHR'],
     [`https://${schoology}/home/upcoming_ajax`, 'Fetch'],
@@ -148,3 +255,15 @@ describe('passive request actions', () => {
     },
   );
 });
+
+beforeEach(() =>
+  configureBrowserPolicy([
+    'submit',
+    'submissions',
+    'delete',
+    'logout',
+    'drop',
+    'new',
+    'login',
+  ]),
+);

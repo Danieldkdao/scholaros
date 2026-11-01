@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { configureBrowserPolicy } from '../lib/browser-policy';
+import { beforeEach, describe, expect, it } from 'vitest';
 import {
   academicPageIdentity,
   isAcademicUrl,
@@ -227,4 +228,90 @@ it('refuses unknown action selectors while permitting explicit read operations',
       'school.example',
     ]),
   ).toBe(true);
+});
+
+beforeEach(() =>
+  configureBrowserPolicy([
+    'accept',
+    'add',
+    'admin',
+    'assessment',
+    'assessments',
+    'authenticate',
+    'callback',
+    'cancel',
+    'cas',
+    'checkout',
+    'comment',
+    'compose',
+    'confirm',
+    'create',
+    'decline',
+    'delete',
+    'destroy',
+    'discard',
+    'drop',
+    'edit',
+    'enroll',
+    'enrollment',
+    'erase',
+    'exam',
+    'exams',
+    'import',
+    'inbox',
+    'login',
+    'logout',
+    'logoff',
+    'manage',
+    'message',
+    'messages',
+    'new',
+    'oauth',
+    'outbox',
+    'override',
+    'pay',
+    'post',
+    'preferences',
+    'publish',
+    'purchase',
+    'purge',
+    'quiz',
+    'quizzes',
+    'reject',
+    'remove',
+    'reply',
+    'respond',
+    'save',
+    'send',
+    'settings',
+    'signin',
+    'signout',
+    'submission',
+    'submissions',
+    'submit',
+    'sso',
+    'take',
+    'update',
+    'upload',
+    'withdraw',
+    'unenroll',
+    'dosomething',
+  ]),
+);
+
+it('allows exam and test preparation URLs by default and applies only user-selected words', () => {
+  configureBrowserPolicy([]);
+  for (const path of [
+    '/courses/1/quizzes',
+    '/exams',
+    '/assessments',
+    '/submission',
+    '/api?action=doSomething',
+  ]) {
+    expect(readOn(canvas, `https://${canvas}${path}`)).toBe(true);
+  }
+  configureBrowserPolicy(['quiz']);
+  expect(readOn(canvas, `https://${canvas}/quiz/1`)).toBe(false);
+  expect(readOn(canvas, `https://${canvas}/exams`)).toBe(true);
+  configureBrowserPolicy([]);
 });

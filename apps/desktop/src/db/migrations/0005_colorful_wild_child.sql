@@ -1,0 +1,1 @@
+ALTER TABLE `academic_connections` ADD `is_course_resource` integer DEFAULT false NOT NULL;

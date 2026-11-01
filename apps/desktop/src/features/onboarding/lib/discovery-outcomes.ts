@@ -1,4 +1,10 @@
-import type { AcademicDiscovery, DiscoveryStatus } from '../types';
+import { errorMessage } from '../../../lib/error-message';
+import type {
+  AcademicConnection,
+  AcademicDiscovery,
+  DiscoveryStatus,
+} from '../types';
+import type { CourseSummary } from '../../courses/types';
 
 export type ConnectionOutcome =
   | 'courses'
@@ -40,6 +46,12 @@ export const outcomeFromExploration = (
 
 const readableOutcomes: ConnectionOutcome[] = ['courses', 'empty'];
 const signInOutcomes: ConnectionOutcome[] = ['needs-sign-in'];
+
+// Both outcome vocabularies share these two words, so one reader serves them.
+export const outcomeFromError = (error: unknown): 'needs-sign-in' | 'blocked' =>
+  /sign in|password/i.test(errorMessage(error, ''))
+    ? 'needs-sign-in'
+    : 'blocked';
 
 // A finished attempt is not the same as an up-to-date course map: freshness and
 // success follow only the resources that were actually read.
@@ -142,7 +154,41 @@ export const syncFailureMessage = (
     case 'failed':
       return (
         discovery.message?.trim() ||
-        'Background sync could not read your course resources.'
+        'Background sync could not read your selected course sources.'
       );
   }
+};
+
+export const courseRefreshFailureMessage = ({
+  attemptedConnectionIds,
+  connections,
+  discovery,
+  courses,
+}: {
+  attemptedConnectionIds: string[];
+  connections: Array<Pick<AcademicConnection, 'id'>>;
+  discovery: AcademicDiscovery;
+  courses: Array<
+    Pick<
+      CourseSummary,
+      'connectionId' | 'assignmentsStatus' | 'announcementsStatus'
+    >
+  >;
+}) => {
+  const attempted = new Set(attemptedConnectionIds);
+  const attemptedSources = new Set(
+    connections
+      .filter((connection) => attempted.has(connection.id))
+      .map((connection) => connection.id),
+  );
+  const sourceNeedsSignIn = courses.some(
+    (course) =>
+      course.connectionId !== null &&
+      attemptedSources.has(course.connectionId) &&
+      (course.assignmentsStatus === 'needs-sign-in' ||
+        course.announcementsStatus === 'needs-sign-in'),
+  );
+  return sourceNeedsSignIn
+    ? 'Sign in in your study browser, then resume background sync.'
+    : syncFailureMessage(discovery);
 };

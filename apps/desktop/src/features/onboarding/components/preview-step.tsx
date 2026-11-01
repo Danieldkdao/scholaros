@@ -1,3 +1,4 @@
+import { TooltipWrapper } from '@scholaros/ui/components/tooltip-wrapper';
 import { useEffect, useMemo, useState } from 'react';
 import {
   CalendarDays,
@@ -151,19 +152,20 @@ export const PreviewStep = ({
             />
             <p className="flex-1 font-medium">{status.label}</p>
             {running && (
-              <Button
-                size="icon"
-                variant="ghost"
-                title="Stop preview"
-                aria-label="Stop preview"
-                onClick={() =>
-                  void run(async () => {
-                    await window.scholar.cancelPreview(accountId);
-                  })
-                }
-              >
-                <Square className="size-5" />
-              </Button>
+              <TooltipWrapper content="Stop preview">
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  aria-label="Stop preview"
+                  onClick={() =>
+                    void run(async () => {
+                      await window.scholar.cancelPreview(accountId);
+                    })
+                  }
+                >
+                  <Square className="size-5" />
+                </Button>
+              </TooltipWrapper>
             )}
           </div>
           {preview.events.slice(-5).map((event, index) => {

@@ -1,3 +1,4 @@
+import { intlFormat } from 'date-fns';
 import {
   Ban,
   Check,
@@ -14,10 +15,7 @@ import {
   Globe,
   KeyRound,
   ShieldCheck,
-  MessageSquare,
-  SlidersHorizontal,
   Sparkles,
-  Flag,
   Layers,
   Monitor,
   RefreshCw,
@@ -66,18 +64,19 @@ export const formatAgentActivity = (event: AgentActivity) => {
       return {
         label: event.detail
           ? `Reading ${event.detail}`
-          : 'Reading course information',
+          : 'Reading your connected resources',
         Icon: BookOpen,
       };
     case 'checking':
       return {
         label:
-          event.detail ?? 'Checking the results against your course materials',
+          event.detail ??
+          'Checking the results against your connected materials',
         Icon: ListChecks,
       };
     case 'complete':
       return {
-        label: `Checked ${event.detail ?? 'your'} results against your course pages`,
+        label: `Checked ${event.detail ?? 'your'} results against your connected resources`,
         Icon: CircleCheck,
       };
     case 'blocked':
@@ -91,59 +90,45 @@ export const formatOnboardingStep = (step: OnboardingStep) => {
   switch (step) {
     case 'welcome':
       return {
-        label: 'Your workspace',
         title: 'Your classes, connected.',
         description:
           'A private study workspace that learns your classes so it can help you learn.',
-        Icon: ShieldCheck,
       };
     case 'browser':
       return {
-        label: 'Study browser',
         title: 'Make room for learning.',
         description:
           'Choose a browser for your separate ScholarOS study workspace.',
-        Icon: Globe,
       };
     case 'resources':
       return {
-        label: 'Your resources',
         title: 'Bring your classes together.',
         description:
           'Find your school or a service, sign in, then connect the site you want to share.',
-        Icon: BookOpen,
       };
     case 'context':
       return {
-        label: 'A little context',
         title: 'You know your classes best.',
         description:
           'Add any optional details that would help ScholarOS understand your classes.',
-        Icon: MessageSquare,
       };
     case 'preferences':
       return {
-        label: 'Your preferences',
         title: 'On your terms.',
         description:
           'Choose when ScholarOS can help; you can change these preferences later.',
-        Icon: SlidersHorizontal,
       };
     case 'preview':
       return {
-        label: 'Meet your agent',
         title: 'See your agent in action.',
         description:
           'Try one quick task with your connected resources, or skip for now.',
-        Icon: Sparkles,
       };
     case 'review':
       return {
-        label: 'Ready to learn',
         title: 'A good place to start.',
         description:
           'Your study workspace is ready; everything here stays under your control.',
-        Icon: Flag,
       };
   }
 };
@@ -221,7 +206,7 @@ export const formatPreviewStatus = (status: PreviewState['status']) => {
       return { label: 'Your agent is exploring', Icon: Compass };
     case 'complete':
       return {
-        label: 'Results checked against your course pages',
+        label: 'Results checked against your connected resources',
         Icon: CircleCheck,
       };
     case 'blocked':
@@ -349,25 +334,25 @@ export const formatContextUrl = (value: string) => {
 export const formatObservedAt = (value: string) => {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return 'Unknown time';
-  return new Intl.DateTimeFormat(undefined, {
+  return intlFormat(date, {
     month: 'short',
     day: 'numeric',
     hour: 'numeric',
     minute: '2-digit',
-  }).format(date);
+  });
 };
 
 export const formatWorkspaceStatus = (status: BrowserWorkspaceStatus) => {
   switch (status) {
     case 'ready':
       return {
-        label: 'Study browser verified',
+        label: 'Workspace ready',
         description: 'This computer has a separate, verified study workspace.',
         Icon: ShieldCheck,
       };
     case 'browser-missing':
       return {
-        label: 'Browser not found',
+        label: 'Browser missing',
         description:
           'The browser for this workspace was removed or moved; choose an installed browser again.',
         Icon: CircleAlert,
@@ -381,7 +366,7 @@ export const formatWorkspaceStatus = (status: BrowserWorkspaceStatus) => {
       };
     case 'unverified':
       return {
-        label: 'Connection not verified',
+        label: 'Workspace unverified',
         description:
           'The study browser was not verified; choose it again to reconnect.',
         Icon: CircleAlert,

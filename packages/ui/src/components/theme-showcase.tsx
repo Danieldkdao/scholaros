@@ -1,5 +1,7 @@
 'use client';
 
+import { TooltipWrapper } from '@scholaros/ui/components/tooltip-wrapper';
+
 import { useEffect, useState, type ReactNode } from 'react';
 import { useTheme } from 'next-themes';
 import {
@@ -73,39 +75,42 @@ export const ThemeShowcase = ({ account }: { account?: ReactNode }) => {
             role="group"
             aria-label="Color mode"
           >
-            <Button
-              className="text-base"
-              variant={mounted && theme === 'light' ? 'secondary' : 'ghost'}
-              size="icon"
-              aria-label="Light theme"
-              title="Light theme"
-              aria-pressed={mounted && theme === 'light'}
-              onClick={() => setTheme('light')}
-            >
-              <Sun aria-hidden="true" />
-            </Button>
-            <Button
-              className="text-base"
-              variant={mounted && theme === 'dark' ? 'secondary' : 'ghost'}
-              size="icon"
-              aria-label="Dark theme"
-              title="Dark theme"
-              aria-pressed={mounted && theme === 'dark'}
-              onClick={() => setTheme('dark')}
-            >
-              <Moon aria-hidden="true" />
-            </Button>
-            <Button
-              className="text-base"
-              variant={mounted && theme === 'system' ? 'secondary' : 'ghost'}
-              size="icon"
-              aria-label="System theme"
-              title="System theme"
-              aria-pressed={mounted && theme === 'system'}
-              onClick={() => setTheme('system')}
-            >
-              <Monitor aria-hidden="true" />
-            </Button>
+            <TooltipWrapper content="Light theme">
+              <Button
+                className="text-base"
+                variant={mounted && theme === 'light' ? 'secondary' : 'ghost'}
+                size="icon"
+                aria-label="Light theme"
+                aria-pressed={mounted && theme === 'light'}
+                onClick={() => setTheme('light')}
+              >
+                <Sun aria-hidden="true" />
+              </Button>
+            </TooltipWrapper>
+            <TooltipWrapper content="Dark theme">
+              <Button
+                className="text-base"
+                variant={mounted && theme === 'dark' ? 'secondary' : 'ghost'}
+                size="icon"
+                aria-label="Dark theme"
+                aria-pressed={mounted && theme === 'dark'}
+                onClick={() => setTheme('dark')}
+              >
+                <Moon aria-hidden="true" />
+              </Button>
+            </TooltipWrapper>
+            <TooltipWrapper content="System theme">
+              <Button
+                className="text-base"
+                variant={mounted && theme === 'system' ? 'secondary' : 'ghost'}
+                size="icon"
+                aria-label="System theme"
+                aria-pressed={mounted && theme === 'system'}
+                onClick={() => setTheme('system')}
+              >
+                <Monitor aria-hidden="true" />
+              </Button>
+            </TooltipWrapper>
           </div>
         </div>
       </header>

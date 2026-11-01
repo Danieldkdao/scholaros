@@ -3,10 +3,13 @@ import type { AcademicConnection, AcademicContextEntryDraft } from '../types';
 
 export type ObservedLink = { label: string; url: string; context?: string };
 export type ObservedPage = {
+  retrievedAt?: string;
+  locale?: string | null;
   url: string;
   title: string;
   text?: string;
   links: ObservedLink[];
+  linksTruncated?: boolean;
 };
 
 const courseListWords = [
@@ -77,8 +80,8 @@ const utilityWords = [
 
 // Subject names run long ("Geology 101", "Anthropology 200"), so the code
 // allows up to twelve letters before the catalogue number.
-const courseCodePattern = /\b[a-z]{2,12}[ -]?\d{2,4}\b/i;
-const termPattern = /\b(?:fall|spring|summer|winter)\s+\d{4}\b/i;
+export const courseCodePattern = /\b[a-z]{2,12}[ -]?\d{2,4}\b/i;
+export const termPattern = /\b(?:fall|spring|summer|winter)\s+\d{4}\b/i;
 const sectionPattern =
   /\b(?:section|period|block|honors|ap|ib|prep|seminar|lab|elective)\b/i;
 const notEnrollmentPattern =
@@ -174,7 +177,7 @@ export const discoveryEntriesFromPage = (
       role: 'resource',
       evidenceUrl: ownUrl,
     });
-  return [...entries.values()].slice(0, 30);
+  return [...entries.values()];
 };
 
 // One bounded step from a home page toward the platform's course list, chosen

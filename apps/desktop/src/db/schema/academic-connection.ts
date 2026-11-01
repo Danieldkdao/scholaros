@@ -1,4 +1,4 @@
-import { sqliteTable, text, index } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, index, integer } from 'drizzle-orm/sqlite-core';
 import type {
   AcademicConnection,
   ConnectionStatus,
@@ -17,6 +17,10 @@ export const AcademicConnectionTable = sqliteTable(
     verifiedAt: text('verified_at'),
     notes: text('notes'),
     favicon: text('favicon'),
+    // Separate from status: a marked site that needs sign-in stays marked.
+    isCourseResource: integer('is_course_resource', { mode: 'boolean' })
+      .notNull()
+      .default(false),
   },
   (table) => [index('academic_connections_user_idx').on(table.userId)],
 );

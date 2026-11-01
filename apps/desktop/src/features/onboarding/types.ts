@@ -1,5 +1,11 @@
+import type {
+  CourseRecordSchema,
+  CreateCourseRecordSchema,
+  UpdateCourseRecordSchema,
+} from '../courses/schemas';
 import type { ConnectRunState } from './services/connect-run';
 import type { ConnectionCandidateSchema } from '@scholaros/services/ai/schemas';
+import type { CourseDetail, CoursesSnapshot } from '../courses/types';
 import type { OnboardingStep, PreviewCardKind, PreviewPrompt } from './schemas';
 
 export type { OnboardingStep, PreviewCardKind, PreviewPrompt };
@@ -33,6 +39,7 @@ export type AcademicConnection = {
   verifiedAt: string | null;
   notes: string | null;
   favicon: string | null;
+  isCourseResource: boolean;
 };
 // What the study browser is showing right now, before anything is stored.
 export type PreviewedConnection = Pick<
@@ -108,6 +115,8 @@ export type OnboardingSettings = {
   consent: boolean;
   launchAtLogin: boolean;
   backgroundSync: boolean;
+  decisionTimeSeconds: number;
+  blockedWords: string[];
   notes: string;
   localSetupCompletedAt: string | null;
 };
@@ -153,7 +162,13 @@ export type PreviewCard = {
   courseVerified: boolean;
   dateVerified: boolean;
 };
-export type EvidencePage = { url: string; title: string; text: string };
+export type EvidencePage = {
+  url: string;
+  title: string;
+  text: string;
+  retrievedAt?: string;
+  locale?: string | null;
+};
 export type PreviewState = {
   accountId: string | null;
   status: 'idle' | 'running' | 'complete' | 'blocked' | 'cancelled';
@@ -166,6 +181,9 @@ export type ConnectionProposal = {
   candidates: ConnectionCandidateSchema[];
 };
 export type ScholarBridge = {
+  onCoursesChange: (
+    listener: (change: { accountId: string; courseId: string | null }) => void,
+  ) => () => void;
   getCurrentUser: () => Promise<CurrentUser | null>;
   resolveConnections: (prompt: string) => Promise<ConnectionProposal>;
   reviseConnectionProposal: (
@@ -196,10 +214,22 @@ export type ScholarBridge = {
     connectionId: string,
     notes: string,
   ) => Promise<OnboardingState>;
+  setCourseResource: (
+    connectionId: string,
+    isCourseResource: boolean,
+  ) => Promise<OnboardingState>;
   confirmResource: (connectionId: string) => Promise<OnboardingState>;
   removeResource: (connectionId: string) => Promise<OnboardingState>;
   setPrimaryLms: (connectionId: string) => Promise<OnboardingState>;
   discoverContext: () => Promise<OnboardingState>;
+  createCourseRecord: (input: CreateCourseRecordSchema) => Promise<string>;
+  updateCourseRecord: (input: UpdateCourseRecordSchema) => Promise<void>;
+  deleteCourseRecord: (input: CourseRecordSchema) => Promise<void>;
+  getCourses: () => Promise<CoursesSnapshot | null>;
+  getCourse: (courseId: string) => Promise<CourseDetail | null>;
+  refreshCourses: () => Promise<CoursesSnapshot>;
+  refreshCourse: (courseId: string) => Promise<CourseDetail | null>;
+  cancelCourseRefresh: (courseId?: string) => Promise<void>;
   pauseBackgroundSync: () => Promise<OnboardingState>;
   resumeBackgroundSync: () => Promise<OnboardingState>;
   onBackgroundSyncChange: (

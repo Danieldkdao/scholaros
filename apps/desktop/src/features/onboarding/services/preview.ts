@@ -1,3 +1,5 @@
+import { isReadNavigation } from '../lib/browser-policy';
+import type { AgentRequestSchema } from '@scholaros/services/ai/schemas';
 import { composeAgentNotes } from '../lib/agent-notes';
 import { createMissionNavigator } from './mission-navigation';
 import {
@@ -10,10 +12,7 @@ import { accountRequest } from '../../../lib/auth/main';
 import { getWorkspace } from './browser-workspace';
 import { getOnboardingState } from './store';
 import { resolveMissionEntry } from '../lib/mission-policy';
-import {
-  previewKindForPrompt,
-  validatePreviewCards,
-} from '../lib/preview-validation';
+import { validatePreviewCards } from '../lib/preview-validation';
 import { runReadOnlyMission } from './mission';
 import { readPage, revealCourseNavigation } from './page-content';
 import { waitForMissionPage } from './page-readiness';
@@ -199,23 +198,33 @@ const runPreview = async (
     signal.throwIfAborted();
     releaseProtection?.assertReadable?.();
     addActivity({ type: 'checking' });
-    const extracted = await accountRequest(
-      '/api/agent',
-      {
-        kind: 'extract',
-        goal,
-        notes: composedNotes.notes,
-        pages: mission.evidence,
+    const links = mission.snapshots
+      .flatMap((snapshot) => snapshot.links)
+      .filter((link) => isReadNavigation(link.url, hosts));
+    const request: AgentRequestSchema = {
+      kind: prompt,
+      goal,
+      notes: composedNotes.notes,
+      pages: mission.evidence,
+      context: {
+        retrievedAt:
+          mission.evidence.at(-1)?.retrievedAt ?? new Date().toISOString(),
+        observedTimezone: null,
+        locale: mission.evidence.at(-1)?.locale ?? null,
+        courseUrl: null,
+        courseName: null,
+        truncated: links.length > 80 || mission.outcome === 'budget',
       },
-      signal,
-    );
+      targets: links.slice(0, 80).map((link, index) => ({
+        id: String(index + 1),
+        label: link.label.slice(0, 300),
+        url: link.url,
+      })),
+    };
+    const extracted = await accountRequest('/api/agent', request, signal);
     signal.throwIfAborted();
     releaseProtection?.assertReadable?.();
-    const cards = validatePreviewCards(
-      extracted,
-      mission.evidence,
-      previewKindForPrompt(prompt),
-    );
+    const cards = validatePreviewCards(extracted, request);
     if (!cards.length) {
       if (mission.outcome === 'empty')
         throw new Error(

@@ -3,6 +3,7 @@ import { createFileRoute, Link } from '@tanstack/react-router';
 import { useDebouncedCallback } from '@tanstack/react-pacer';
 import {
   Check,
+  CircleAlert,
   FilterIcon,
   Globe,
   Loader2,
@@ -11,6 +12,8 @@ import {
 } from 'lucide-react';
 import { Button } from '@scholaros/ui/components/button';
 import { Input } from '@scholaros/ui/components/input';
+import { Switch } from '@scholaros/ui/components/switch';
+import { Card, CardContent } from '@scholaros/ui/components/card';
 import { Alert, AlertDescription } from '@scholaros/ui/components/alert';
 import {
   AlertDialog,
@@ -56,11 +59,7 @@ import {
   formatResourceKind,
 } from '../../../features/onboarding/lib/formatters';
 import type { AcademicConnection } from '../../../features/onboarding/types';
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@scholaros/ui/components/tooltip';
+import { TooltipWrapper } from '@scholaros/ui/components/tooltip-wrapper';
 
 const ConnectionsPage = () => {
   const search = Route.useSearch();
@@ -98,7 +97,7 @@ const ConnectionsPage = () => {
   );
   const filtered = state ? filterConnections(state.connections, search) : [];
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-6 @container">
       <PageHeading page="connections">
         <Button
           nativeButton={false}
@@ -232,79 +231,118 @@ const ConnectionsPage = () => {
               const status = formatConnectionStatus(connection.status);
               const kind = formatResourceKind(connection.kind);
               return (
-                <div
-                  key={connection.id}
-                  data-slot="connection-card"
-                  className="flex flex-col gap-3 rounded-xl border bg-card p-4"
-                >
-                  <div className="flex items-center gap-2">
-                    <div className="size-11 rounded-full bg-muted border flex items-center justify-center">
-                      {connection.favicon ? (
-                        <img
-                          src={connection.favicon}
-                          alt=""
-                          className="size-5 shrink-0 rounded-sm object-contain"
-                        />
-                      ) : (
-                        <Globe className="size-5 shrink-0" />
-                      )}
-                    </div>
-                    <div className="flex flex-1 flex-col">
-                      <div className="flex items-center gap-3">
-                        <p>{connection.name}</p>
-                        <div className="flex items-center gap-2">
-                          <Tooltip>
-                            <TooltipTrigger>
-                              <kind.Icon className="size-4" />
-                            </TooltipTrigger>
-                            <TooltipContent>{kind.label}</TooltipContent>
-                          </Tooltip>
-                          <Tooltip>
-                            <TooltipTrigger>
-                              <status.Icon className="size-4" />
-                            </TooltipTrigger>
-                            <TooltipContent>{status.label}</TooltipContent>
-                          </Tooltip>
-                        </div>
+                <Card key={connection.id} size="sm" className="text-base">
+                  <CardContent data-slot="connection-card">
+                    <div className="flex items-center gap-2">
+                      <div className="size-11 rounded-full bg-muted border flex items-center justify-center">
+                        {connection.favicon ? (
+                          <img
+                            src={connection.favicon}
+                            alt=""
+                            className="size-5 shrink-0 rounded-sm object-contain"
+                          />
+                        ) : (
+                          <Globe className="size-5 shrink-0" />
+                        )}
                       </div>
-                      <p className="text-muted-foreground">{connection.host}</p>
+                      <div className="flex flex-1 flex-col">
+                        <div className="flex items-center gap-3">
+                          <p>{connection.name}</p>
+                          <div className="flex items-center gap-2">
+                            <TooltipWrapper content={kind.label}>
+                              <span tabIndex={0} aria-label={kind.label}>
+                                <kind.Icon className="size-4" />
+                              </span>
+                            </TooltipWrapper>
+                            <TooltipWrapper content={status.label}>
+                              <span tabIndex={0} aria-label={status.label}>
+                                <status.Icon className="size-4" />
+                              </span>
+                            </TooltipWrapper>
+                          </div>
+                        </div>
+                        <p className="text-muted-foreground">
+                          {connection.host}
+                        </p>
+                      </div>
+
+                      <TooltipWrapper content="Remove connection">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          aria-label={`Remove ${connection.name}`}
+                          disabled={busy}
+                          onClick={() => requestRemoval(connection)}
+                        >
+                          <Trash2 />
+                        </Button>
+                      </TooltipWrapper>
                     </div>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      title="Remove connection"
-                      aria-label={`Remove ${connection.name}`}
-                      disabled={busy}
-                      onClick={() => requestRemoval(connection)}
-                    >
-                      <Trash2 />
-                    </Button>
-                  </div>
-                  {connection.status === 'needs-sign-in' && (
-                    <Button
-                      variant="outline"
-                      disabled={busy}
-                      onClick={() =>
-                        void run(async () =>
-                          setState(
-                            await window.scholar.confirmResource(connection.id),
-                          ),
-                        )
-                      }
-                    >
-                      <Check />
-                      I’m signed in
-                    </Button>
-                  )}
-                  <ConnectionNotesEditor
-                    id={connection.id}
-                    notes={connection.notes}
-                    save={async (id, notes) => {
-                      await window.scholar.saveConnectionNotes(id, notes);
-                      updateConnectionNotes(id, notes.trim());
-                    }}
-                  />
-                </div>
+                    {connection.status === 'needs-sign-in' && (
+                      <Button
+                        variant="outline"
+                        className="self-start"
+                        disabled={busy}
+                        onClick={() =>
+                          void run(async () =>
+                            setState(
+                              await window.scholar.confirmResource(
+                                connection.id,
+                              ),
+                            ),
+                          )
+                        }
+                      >
+                        <Check />
+                        I’m signed in
+                      </Button>
+                    )}
+                    <ConnectionNotesEditor
+                      id={connection.id}
+                      notes={connection.notes}
+                      save={async (id, notes) => {
+                        await window.scholar.saveConnectionNotes(id, notes);
+                        updateConnectionNotes(id, notes.trim());
+                      }}
+                    />
+                    <div className="flex items-center justify-between @3xl:justify-start gap-4">
+                      <div className="flex flex-col">
+                        <label
+                          htmlFor={`course-resource-${connection.id}`}
+                          className="font-medium cursor-pointer"
+                        >
+                          Course resource
+                        </label>
+                        <p className="text-muted-foreground">
+                          Find courses from this site.
+                        </p>
+                        {connection.isCourseResource &&
+                          connection.status === 'needs-sign-in' && (
+                            <p className="flex items-center gap-2 text-muted-foreground">
+                              <CircleAlert className="size-4 shrink-0" />
+                              Sign in here before courses can refresh.
+                            </p>
+                          )}
+                      </div>
+                      <Switch
+                        id={`course-resource-${connection.id}`}
+                        className="shrink-0 cursor-pointer"
+                        checked={connection.isCourseResource === true}
+                        disabled={busy}
+                        onCheckedChange={(checked) =>
+                          void run(async () =>
+                            setState(
+                              await window.scholar.setCourseResource(
+                                connection.id,
+                                checked === true,
+                              ),
+                            ),
+                          )
+                        }
+                      />
+                    </div>
+                  </CardContent>
+                </Card>
               );
             })}
           </div>

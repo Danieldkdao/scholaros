@@ -1,6 +1,7 @@
 import { missionTraffic } from './mission-traffic';
 import type { Page } from '@browserbasehq/stagehand';
 import { isAcademicUrl, isReadNavigation } from '../lib/browser-policy';
+import type { AccountContinuation } from './account-continuation';
 
 type PolicyContext = {
   setDomainPolicy: (policy: {
@@ -11,9 +12,13 @@ type PolicyContext = {
 
 type MissionNavigationOptions = {
   scopeId?: string;
+  onNavigate?: (url: string) => void;
   onWait?: (milliseconds: number) => void;
 };
-const renderingCache = new Map<string, string[]>();
+const browserRenderingCaches = new WeakMap<
+  PolicyContext,
+  Map<string, Set<string>>
+>();
 
 // Stagehand applies its domain policy to subresources too. Learn only observed
 // rendering origins; the mission guard retains the original navigation hosts.
@@ -24,34 +29,62 @@ export const createMissionNavigator = (
   isCurrent: () => boolean = () => true,
   options: MissionNavigationOptions = {},
 ) => {
+  // A relaunched browser must bootstrap its own rendering dependencies.
+  let renderingCache = browserRenderingCaches.get(context);
+  if (!renderingCache) {
+    renderingCache = new Map();
+    browserRenderingCaches.set(context, renderingCache);
+  }
   const cacheKey = options.scopeId
     ? JSON.stringify([options.scopeId, [...hosts].sort()])
     : null;
-  const cachedHosts = cacheKey ? (renderingCache.get(cacheKey) ?? []) : [];
-  const renderingHosts = new Set([...hosts, ...cachedHosts]);
+  const renderingHosts =
+    (cacheKey && renderingCache.get(cacheKey)) || new Set(hosts);
+  const cachedHosts = [...renderingHosts].filter(
+    (host) => !hosts.includes(host),
+  );
+  if (cacheKey) {
+    if (renderingCache.size >= 100 && !renderingCache.has(cacheKey))
+      renderingCache.delete(renderingCache.keys().next().value!);
+    renderingCache.set(cacheKey, renderingHosts);
+  }
   let initialized = false;
   const assertActive = () => {
     signal.throwIfAborted();
     if (!isCurrent()) throw new Error('Your session changed; sign in again.');
   };
-  return async (page: Page, url: string) => {
+  return async (
+    page: Page,
+    url: string,
+    continuation?: AccountContinuation,
+  ) => {
     assertActive();
     if (!isReadNavigation(url, hosts))
       throw new Error(
         'This destination is outside your connected academic resources.',
       );
+    const continuationDomains = continuation?.domains ?? [];
+    for (const domain of continuationDomains) renderingHosts.add(domain);
     if (!initialized) {
       initialized = true;
-      if (cachedHosts.length)
+      if (cachedHosts.length && !continuation)
         await context.setDomainPolicy({
           allowedDomains: [...renderingHosts],
           blockedDomains: [],
         });
     }
-    const goTo = async () => {
-      await missionTraffic.waitForTurn(url, signal, options.onWait);
+    if (continuation)
+      await context.setDomainPolicy({
+        allowedDomains: [...renderingHosts],
+        blockedDomains: [],
+      });
+    const goTo = async (reload = false) => {
+      const destination = reload ? await page.url() : url;
+      await missionTraffic.waitForTurn(destination, signal, options.onWait);
       assertActive();
-      const response = await page.goto(url, { timeout: 12_000 });
+      const response = reload
+        ? await page.reload({ timeout: 12_000 })
+        : await page.goto(url, { timeout: 12_000 });
       if (response) {
         const retryAfter = Object.entries(response.headers()).find(
           ([name]) => name.toLowerCase() === 'retry-after',
@@ -60,19 +93,24 @@ export const createMissionNavigator = (
           response.status() === 429 ||
           (response.status() === 503 && retryAfter)
         )
-          throw missionTraffic.recordRateLimit(url, retryAfter);
+          throw missionTraffic.recordRateLimit(destination, retryAfter);
       }
     };
+    options.onNavigate?.(url);
     await goTo();
-    for (let attempt = 0; attempt < 2; attempt += 1) {
+    for (let attempt = 0; attempt < (continuation ? 4 : 2); attempt += 1) {
       assertActive();
-      if (!isReadNavigation(await page.url(), hosts))
+      const currentUrl = await page.url();
+      if (
+        !isReadNavigation(currentUrl, hosts) &&
+        !continuation?.isAuthenticationUrl(currentUrl)
+      )
         throw new Error('The page left your connected academic resources.');
       const origins = await page.evaluate(() => {
         const urls = [
           ...[
             ...document.querySelectorAll<HTMLElement>(
-              'script[src], link[rel="stylesheet"][href], link[rel="preload"][href], link[rel="modulepreload"][href], img[src], source[src], video[src], audio[src]',
+              'script[src], link[rel="stylesheet"][href], link[rel="preload"][href], link[rel="modulepreload"][href], img[src], source[src], video[src], audio[src], iframe[src]',
             ),
           ].map(
             (element) =>
@@ -81,9 +119,15 @@ export const createMissionNavigator = (
           ...performance
             .getEntriesByType('resource')
             .filter((entry) =>
-              ['script', 'link', 'img', 'css', 'audio', 'video'].includes(
-                (entry as PerformanceResourceTiming).initiatorType,
-              ),
+              [
+                'script',
+                'link',
+                'img',
+                'css',
+                'audio',
+                'video',
+                'iframe',
+              ].includes((entry as PerformanceResourceTiming).initiatorType),
             )
             .map((entry) => entry.name),
         ];
@@ -108,19 +152,21 @@ export const createMissionNavigator = (
         renderingHosts.add(host);
         changed = true;
       }
-      if (!changed) return;
+      if (!changed) {
+        if (continuation?.isAuthenticationUrl(currentUrl)) {
+          await continuation.resume(page, signal, isCurrent);
+          continue;
+        }
+        return;
+      }
       await context.setDomainPolicy({
         allowedDomains: [...renderingHosts],
         blockedDomains: [],
       });
-      if (cacheKey) {
-        if (renderingCache.size >= 100 && !renderingCache.has(cacheKey))
-          renderingCache.delete(renderingCache.keys().next().value!);
-        renderingCache.set(cacheKey, [...renderingHosts]);
-      }
       assertActive();
-      await goTo();
+      await goTo(true);
     }
+    await continuation?.resume(page, signal, isCurrent);
     assertActive();
   };
 };

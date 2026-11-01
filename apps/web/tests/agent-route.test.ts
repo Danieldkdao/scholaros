@@ -65,7 +65,7 @@ beforeEach(() => {
   mocks.env.BASETEN_API_KEY = 'test-baseten';
   mocks.env.TYPESAFE_API_KEY = 'test-typesafe';
   mocks.choose.mockResolvedValue({ operation: 'NAVIGATE', target: '1' });
-  mocks.extract.mockResolvedValue({ cards: [] });
+  mocks.extract.mockResolvedValue({ assignments: [], coverage: 'complete' });
 });
 
 afterEach(() => vi.unstubAllGlobals());
@@ -83,9 +83,12 @@ describe('authenticated academic AI endpoint', () => {
   });
 
   it('routes extraction through the shared Meta service', async () => {
-    const response = await POST(request({ ...body, kind: 'extract' }));
+    const response = await POST(request({ ...body, kind: 'assignments' }));
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ cards: [] });
+    expect(await response.json()).toEqual({
+      assignments: [],
+      coverage: 'complete',
+    });
     expect(mocks.extract).toHaveBeenCalledOnce();
     expect(mocks.choose).not.toHaveBeenCalled();
   });
@@ -113,7 +116,7 @@ describe('authenticated academic AI endpoint', () => {
   it('preserves skippable setup errors for missing server credentials', async () => {
     mocks.env.BASETEN_API_KEY = undefined;
     expect((await POST(request())).status).toBe(503);
-    expect((await POST(request({ ...body, kind: 'extract' }))).status).toBe(
+    expect((await POST(request({ ...body, kind: 'assignments' }))).status).toBe(
       503,
     );
     expect(mocks.choose).not.toHaveBeenCalled();
@@ -185,24 +188,35 @@ it('routes a bounded connection request to the resolver', async () => {
   ).toBe(400);
 });
 
-it.each(['choose', 'extract', 'discover', 'resolve'])(
-  'accepts a Meta-only configuration for %s',
-  async (kind) => {
-    mocks.env.INFERENCE_PROVIDER = 'meta';
-    mocks.env.BASETEN_API_KEY = undefined;
-    mocks.env.TYPESAFE_API_KEY = undefined;
-    mocks.resolve.mockResolvedValue({ candidates: [] });
-    mocks.classify.mockResolvedValue({ courseTargetIds: [] });
-    const response = await POST(
-      request(
-        kind === 'resolve' ? { kind, prompt: 'My school' } : { ...body, kind },
-      ),
-    );
-    expect(response.status).toBe(200);
-  },
-);
+it.each([
+  'choose',
+  'courses',
+  'assignments',
+  'announcements',
+  'discover',
+  'resolve',
+])('accepts a Meta-only configuration for %s', async (kind) => {
+  mocks.env.INFERENCE_PROVIDER = 'meta';
+  mocks.env.BASETEN_API_KEY = undefined;
+  mocks.env.TYPESAFE_API_KEY = undefined;
+  mocks.resolve.mockResolvedValue({ candidates: [] });
+  mocks.classify.mockResolvedValue({ courseTargetIds: [] });
+  const response = await POST(
+    request(
+      kind === 'resolve' ? { kind, prompt: 'My school' } : { ...body, kind },
+    ),
+  );
+  expect(response.status).toBe(200);
+});
 
-it.each(['choose', 'extract', 'discover', 'resolve'])(
+it.each([
+  'choose',
+  'courses',
+  'assignments',
+  'announcements',
+  'discover',
+  'resolve',
+])(
   'rejects missing Meta credentials for %s without falling back to Baseten',
   async (kind) => {
     mocks.env.INFERENCE_PROVIDER = 'meta';
@@ -219,3 +233,49 @@ it.each(['choose', 'extract', 'discover', 'resolve'])(
     expect(mocks.classify).not.toHaveBeenCalled();
   },
 );
+
+it('keeps deep scans running across request windows while rejecting bursts', async () => {
+  const now = vi.spyOn(Date, 'now').mockReturnValue(1000000);
+  try {
+    for (let index = 0; index < 120; index += 1)
+      expect(
+        (await POST(request({ ...body, kind: 'assignments' }))).status,
+      ).toBe(200);
+    expect((await POST(request())).status).toBe(429);
+    now.mockReturnValue(1060001);
+    expect((await POST(request({ ...body, kind: 'assignments' }))).status).toBe(
+      200,
+    );
+  } finally {
+    now.mockRestore();
+  }
+});
+
+it('allows bounded slow course extraction while retaining request cancellation', async () => {
+  const deadline = new AbortController();
+  const timeout = vi
+    .spyOn(AbortSignal, 'timeout')
+    .mockReturnValue(deadline.signal);
+  try {
+    await POST(request({ ...body, kind: 'assignments' }));
+    expect(timeout).toHaveBeenLastCalledWith(60_000);
+    const extractionSignal = mocks.extract.mock.calls[0][1] as AbortSignal;
+    deadline.abort();
+    expect(extractionSignal.aborted).toBe(true);
+    await POST(request());
+    expect(timeout).toHaveBeenLastCalledWith(25_000);
+  } finally {
+    timeout.mockRestore();
+  }
+});
+
+it('does not log academic content or provider response bodies on inference errors', async () => {
+  const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  mocks.extract.mockRejectedValueOnce(new Error('PRIVATE COURSE CONTENT'));
+  await POST(request({ ...body, kind: 'assignments' }));
+  expect(logged.mock.calls[0][1]).toEqual({
+    kind: 'assignments',
+    name: 'Error',
+  });
+  logged.mockRestore();
+});

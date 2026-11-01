@@ -3,3 +3,7 @@ export * from './browser-workspace';
 export * from './academic-connection';
 export * from './academic-context';
 export * from './academic-context-entry';
+export * from './course';
+export * from './course-announcement';
+export * from './course-assignment';
+export * from './course-source';

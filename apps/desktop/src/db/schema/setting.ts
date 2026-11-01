@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, real } from 'drizzle-orm/sqlite-core';
 import type { OnboardingStep } from '../../features/onboarding/types';
 
 export const SettingTable = sqliteTable('settings', {
@@ -11,6 +11,11 @@ export const SettingTable = sqliteTable('settings', {
   backgroundSync: integer('background_sync', { mode: 'boolean' })
     .notNull()
     .default(false),
+  decisionTimeSeconds: real('decision_time_seconds').notNull().default(1),
+  blockedWords: text('blocked_words', { mode: 'json' })
+    .$type<string[]>()
+    .notNull()
+    .default([]),
   localSetupCompletedAt: text('local_setup_completed_at'),
   updatedAt: text('updated_at').notNull(),
 });

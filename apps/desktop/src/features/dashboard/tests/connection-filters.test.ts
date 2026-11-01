@@ -15,6 +15,7 @@ const connections: AcademicConnection[] = [
     verifiedAt: null,
     notes: 'Biology lab',
     favicon: null,
+    isCourseResource: false,
   },
   {
     id: 'b',
@@ -26,6 +27,7 @@ const connections: AcademicConnection[] = [
     verifiedAt: null,
     notes: null,
     favicon: null,
+    isCourseResource: false,
   },
 ];
 describe('connection filters', () => {

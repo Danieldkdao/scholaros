@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from 'vitest';
+import { configureBrowserPolicy } from '../lib/browser-policy';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { runReadOnlyMission } from '../services/mission';
 import type { AcademicConnection } from '../types';
 
@@ -14,6 +15,7 @@ const connection: AcademicConnection = {
   verifiedAt: null,
   notes: null,
   favicon: null,
+  isCourseResource: false,
 };
 
 type PageState = {
@@ -370,3 +372,5 @@ it('does not revisit the connected home URL after its redirect', async () => {
   });
   expect(page.goto.mock.calls.map(([url]) => url)).toEqual([root, courses]);
 });
+
+beforeEach(() => configureBrowserPolicy(['login']));

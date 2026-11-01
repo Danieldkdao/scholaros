@@ -1,15 +1,36 @@
-import { app, BrowserWindow } from 'electron';
+import './lib/application-paths';
+import { app, BrowserWindow, dialog } from 'electron';
 import path from 'node:path';
 import started from 'electron-squirrel-startup';
+import { mkdirSync } from 'node:fs';
 import { authClient } from './lib/auth/client';
 import { protectWindowNavigation } from './lib/window-navigation';
+import {
+  registerAcademicClient,
+  requestAcademicService,
+  stopAcademicService,
+  disconnectAcademicService,
+} from './services/academic/client';
+
+const serviceMode = app.commandLine.hasSwitch('academic-service');
+if (serviceMode) {
+  // Separate the Chromium session and singleton lease while preserving existing data paths.
+  const userData = app.getPath('userData');
+  const runtimeDirectory = path.join(userData, 'academic-service-runtime');
+  mkdirSync(runtimeDirectory, { recursive: true, mode: 0o700 });
+  app.setPath('userData', runtimeDirectory);
+  app.setPath('sessionData', runtimeDirectory);
+  const ownsServiceLock = app.requestSingleInstanceLock();
+  if (!ownsServiceLock) app.exit(0);
+  app.setPath('userData', userData);
+}
 
 // Handle creating/removing shortcuts on Windows when installing/uninstalling.
 if (started) {
   app.quit();
 }
 
-if (!started && !app.commandLine.hasSwitch('migrate-db')) {
+if (!started && !serviceMode && !app.commandLine.hasSwitch('migrate-db')) {
   // Explicit flags retain plugin behavior when supplying a window resolver.
   authClient.setupMain({
     csp: true,
@@ -59,16 +80,21 @@ const createWindow = () => {
 app
   .whenReady()
   .then(async () => {
-    await import('./db');
+    if (serviceMode) {
+      const { runAcademicService } =
+        await import('./services/academic/runtime');
+      await runAcademicService();
+      return;
+    }
 
     if (app.commandLine.hasSwitch('migrate-db')) {
+      await registerAcademicClient();
+      await stopAcademicService();
       console.log('Local database migrations applied.');
       app.quit();
       return;
     }
-    const { registerOnboardingIpc } =
-      await import('./features/onboarding/services/ipc');
-    registerOnboardingIpc();
+    await registerAcademicClient();
     createWindow();
 
     // On OS X it's common to re-create a window in the app when the
@@ -80,18 +106,39 @@ app
     });
   })
   .catch((error: unknown) => {
-    console.error('Unable to initialize the local database:', error);
+    console.error('Unable to start the academic service:', error);
+    if (!serviceMode)
+      dialog.showErrorBox(
+        'ScholarOS could not start',
+        error instanceof Error
+          ? error.message
+          : 'The academic service is unavailable.',
+      );
     app.exit(1);
   });
 
-// Quit when all windows are closed, except on macOS. There, it's common
-// for applications and their menu bar to stay active until the user quits
-// explicitly with Cmd + Q.
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
+let quitting = false;
+let keepService = false;
+app.on('before-quit', (event) => {
+  if (serviceMode || quitting) return;
+  event.preventDefault();
+  quitting = true;
+  void (async () => {
+    if (keepService) disconnectAcademicService();
+    else await stopAcademicService();
+  })()
+    .catch(() => undefined)
+    .finally(() => app.quit());
 });
 
-// In this file you can include the rest of your app's specific main process
-// code. You can also put them in separate files and import them here.
+app.on('window-all-closed', () => {
+  if (serviceMode || quitting) return;
+  void requestAcademicService('getState')
+    .then((state) => {
+      keepService =
+        (state as { settings?: { backgroundSync?: boolean } })?.settings
+          ?.backgroundSync === true;
+    })
+    .catch(() => undefined)
+    .finally(() => app.quit());
+});

@@ -377,3 +377,33 @@ describe('temporary browser work', () => {
     );
   });
 });
+
+it('waits for explicit resume after authentication expires instead of scheduling another sign-in attempt', async () => {
+  const harness = setup();
+  enable(harness.controller);
+  harness.timers[0].callback();
+  harness.finishRun({ failure: 'Please sign in again.' });
+  await vi.waitFor(() =>
+    expect(harness.controller.getState().status).toBe('blocked'),
+  );
+  expect(harness.timers).toHaveLength(1);
+  enable(harness.controller);
+  expect(harness.timers).toHaveLength(1);
+  harness.controller.resume();
+  expect(harness.timers).toHaveLength(2);
+});
+
+it('backs off transient failures and stops after three failed scheduled attempts', async () => {
+  const harness = setup();
+  enable(harness.controller);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    harness.timers.at(-1)!.callback();
+    harness.finishRun({ failure: 'The resource is unavailable.' });
+    await vi.waitFor(() =>
+      expect(harness.controller.getState().status).toBe('blocked'),
+    );
+  }
+  expect(harness.timers.map((timer) => timer.delayMs)).toEqual([
+    5000, 60000, 120000,
+  ]);
+});

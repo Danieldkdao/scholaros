@@ -29,7 +29,7 @@ const AccountIdentity = ({ name, email, image }: AccountIdentityProps) => (
       name={name}
       image={image}
       className="size-10 group-data-[collapsible=icon]:size-7"
-      textClassName="group-data-[collapsible=icon]:text-xs"
+      textClassName="group-data-[collapsible=icon]:text-base"
     />
     <div className="flex min-w-0 flex-1 flex-col text-left leading-tight group-data-[collapsible=icon]:hidden">
       <span className="truncate text-base font-medium">{name}</span>

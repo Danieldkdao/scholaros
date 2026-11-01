@@ -30,6 +30,7 @@ describe('launch at login', () => {
   });
 
   it('reports the exact blocker when the OS rejects the change', () => {
+    loginItem.settings = { openAtLogin: false };
     loginItem.setError = new Error('Login items are managed by MDM.');
     const status = applyLaunchAtLogin(true);
     expect(status).toMatchObject({
@@ -57,4 +58,12 @@ describe('launch at login', () => {
       message: 'This computer still starts ScholarOS at login.',
     });
   });
+});
+
+it('does not keep reapplying an already accepted login preference during background state polling', async () => {
+  const { app } = await import('electron');
+  vi.mocked(app.setLoginItemSettings).mockClear();
+  loginItem.settings = { openAtLogin: true };
+  expect(applyLaunchAtLogin(true).applied).toBe(true);
+  expect(app.setLoginItemSettings).not.toHaveBeenCalled();
 });

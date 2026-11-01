@@ -29,16 +29,25 @@ const input = {
     },
   ],
 };
-const cards = [
-  {
-    kind: 'course',
-    title: 'Biology',
-    course: null,
-    detail: null,
-    date: null,
+const assignment = {
+  title: 'Biology',
+  description: null,
+  kind: 'assignment',
+  state: 'active-unsubmitted',
+  due: null,
+  availableFrom: null,
+  availableUntil: null,
+  pointsPossible: null,
+  url: null,
+  sourceId: null,
+  resources: [],
+  evidence: {
     sourceUrl: input.pages[0].url,
+    excerpts: ['Biology'],
+    targetIds: [],
   },
-];
+};
+const extracted = { assignments: [assignment], coverage: 'complete' };
 const decisionResponse = (operation = 'NAVIGATE', target = '1') =>
   completion({ operation, target });
 const completion = (value: unknown) => ({
@@ -96,6 +105,7 @@ describe.each(['baseten', 'meta'] as const)(
       expect(request.headers.get('authorization')).toBe(expectedKey);
       expect(request.body.model).toBe(expectedModel);
       expect(request.body.response_format.type).toBe('json_schema');
+      expect(request.body.reasoning_effort).toBe('low');
     });
 
     it('returns DONE without sending a request when there are no targets', async () => {
@@ -125,13 +135,13 @@ describe.each(['baseten', 'meta'] as const)(
     });
 
     it('uses the configured Meta model with typed JSON extraction', async () => {
-      fetchMock.mockResolvedValue(Response.json(completion({ cards })));
+      fetchMock.mockResolvedValue(Response.json(completion(extracted)));
       expect(
         await extractAcademicEvidence(
-          { ...input, kind: 'extract' },
+          { ...input, kind: 'assignments' },
           new AbortController().signal,
         ),
-      ).toEqual({ cards });
+      ).toEqual(extracted);
       const request = sent();
       expect(request.url).toBe(expectedUrl);
       expect(request.headers.get('authorization')).toBe(expectedKey);
@@ -143,23 +153,21 @@ describe.each(['baseten', 'meta'] as const)(
       });
     });
 
-    it('rejects malformed evidence and source URLs not in the supplied pages', async () => {
-      for (const value of [
-        { cards: [{ title: 'Missing fields' }] },
-        {
-          cards: [
-            { ...cards[0], sourceUrl: 'https://unconnected.example/course' },
-          ],
-        },
-      ]) {
-        fetchMock.mockResolvedValueOnce(Response.json(completion(value)));
-        await expect(
-          extractAcademicEvidence(
-            { ...input, kind: 'extract' },
-            new AbortController().signal,
-          ),
-        ).rejects.toThrow();
-      }
+    it('rejects malformed resource output', async () => {
+      fetchMock.mockResolvedValue(
+        Response.json(
+          completion({
+            assignments: [{ title: 'Missing fields' }],
+            coverage: 'complete',
+          }),
+        ),
+      );
+      await expect(
+        extractAcademicEvidence(
+          { ...input, kind: 'assignments' },
+          new AbortController().signal,
+        ),
+      ).rejects.toThrow();
     });
 
     it('does not retry failed provider calls', async () => {
@@ -168,7 +176,7 @@ describe.each(['baseten', 'meta'] as const)(
       );
       await expect(
         extractAcademicEvidence(
-          { ...input, kind: 'extract' },
+          { ...input, kind: 'assignments' },
           new AbortController().signal,
         ),
       ).rejects.toThrow();
@@ -183,11 +191,29 @@ describe.each(['baseten', 'meta'] as const)(
       ).rejects.toThrow();
       await expect(
         extractAcademicEvidence(
-          { ...input, kind: 'extract' },
+          { ...input, kind: 'assignments' },
           controller.signal,
         ),
       ).rejects.toThrow();
       expect(fetchMock).not.toHaveBeenCalled();
     });
+  },
+);
+
+it.each(['baseten', 'meta'] as const)(
+  'preserves eligibility and coverage through %s extraction',
+  async (provider) => {
+    env.INFERENCE_PROVIDER = provider;
+    fetchMock.mockResolvedValue(Response.json(completion(extracted)));
+    expect(
+      await extractAcademicEvidence(
+        { ...input, kind: 'assignments' },
+        new AbortController().signal,
+      ),
+    ).toEqual(extracted);
+    expect(JSON.stringify(sent().body)).toContain('active-unsubmitted');
+    expect(JSON.stringify(sent().body)).toContain(
+      'Keep due separate from availableUntil',
+    );
   },
 );

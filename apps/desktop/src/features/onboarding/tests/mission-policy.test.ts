@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { configureBrowserPolicy } from '../lib/browser-policy';
+import { beforeEach, describe, expect, it } from 'vitest';
 import {
   assertMissionNavigation,
   isStaleNavigation,
@@ -26,6 +27,7 @@ const connection = (
   verifiedAt: null,
   notes: null,
   favicon: null,
+  isCourseResource: false,
   ...overrides,
 });
 
@@ -257,3 +259,14 @@ describe('mission entry policy', () => {
     ).toBe(true);
   });
 });
+
+beforeEach(() =>
+  configureBrowserPolicy([
+    'settings',
+    'logout',
+    'login',
+    'edit',
+    'submission',
+    'submit',
+  ]),
+);

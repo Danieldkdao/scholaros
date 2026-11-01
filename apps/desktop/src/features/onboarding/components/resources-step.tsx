@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
-import { ConnectionNotesEditor } from "./connection-notes-editor";
-import { Check, ExternalLink, Link as LinkIcon, Trash2 } from "lucide-react";
-import { Button } from "@scholaros/ui/components/button";
-import { toast } from "@scholaros/ui/components/toast";
+import { TooltipWrapper } from '@scholaros/ui/components/tooltip-wrapper';
+import { useEffect, useState } from 'react';
+import { ConnectionNotesEditor } from './connection-notes-editor';
+import { Check, ExternalLink, Link as LinkIcon, Trash2 } from 'lucide-react';
+import { Button } from '@scholaros/ui/components/button';
+import { toast } from '@scholaros/ui/components/toast';
 import {
   Combobox,
   ComboboxContent,
@@ -10,17 +11,17 @@ import {
   ComboboxInput,
   ComboboxItem,
   ComboboxList,
-} from "@scholaros/ui/components/combobox";
-import { LoadingSwap } from "@scholaros/ui/components/loading-swap";
-import { academicResources, type AcademicResource } from "../constants";
-import { formatConnectionStatus, formatResourceKind } from "../lib/formatters";
+} from '@scholaros/ui/components/combobox';
+import { LoadingSwap } from '@scholaros/ui/components/loading-swap';
+import { academicResources, type AcademicResource } from '../constants';
+import { formatConnectionStatus, formatResourceKind } from '../lib/formatters';
 import type {
   AcademicConnection,
   OnboardingState,
   PreviewedConnection,
-} from "../types";
-import { Card, CardContent } from "@scholaros/ui/components/card";
-import { Separator } from "@scholaros/ui/components/separator";
+} from '../types';
+import { Card, CardContent } from '@scholaros/ui/components/card';
+import { Separator } from '@scholaros/ui/components/separator';
 
 const resources: AcademicResource[] = [...academicResources];
 
@@ -62,11 +63,11 @@ export const ResourcesStep = ({
     // Navigation happens in a separate browser, including when both windows
     // stay visible, so focus events alone cannot keep the label current.
     const timer = setInterval(() => void read(), 2_000);
-    window.addEventListener("focus", read);
+    window.addEventListener('focus', read);
     return () => {
       disposed = true;
       clearInterval(timer);
-      window.removeEventListener("focus", read);
+      window.removeEventListener('focus', read);
     };
   }, [state.accountId]);
   useEffect(() => {
@@ -130,12 +131,12 @@ export const ResourcesStep = ({
               className="self-start text-base w-full @3xl:w-auto"
               disabled={busy || !resource}
               onClick={() =>
-                void act("open", async () => {
+                void act('open', async () => {
                   if (resource) await window.scholar.openResource(resource.id);
                 })
               }
             >
-              <LoadingSwap isLoading={pendingAction === "open"}>
+              <LoadingSwap isLoading={pendingAction === 'open'}>
                 <span className="flex items-center gap-2">
                   <ExternalLink className="size-5" />
                   Open in study browser
@@ -167,7 +168,7 @@ export const ResourcesStep = ({
               className="self-start text-base w-full @3xl:w-auto"
               disabled={busy}
               onClick={() =>
-                void act("capture", async () => {
+                void act('capture', async () => {
                   const connection = await window.scholar.captureResource();
                   update(await window.scholar.getState());
                   setAddedSite(connection);
@@ -175,13 +176,13 @@ export const ResourcesStep = ({
                 })
               }
             >
-              <LoadingSwap isLoading={pendingAction === "capture"}>
+              <LoadingSwap isLoading={pendingAction === 'capture'}>
                 <span className="flex items-center gap-2">
                   <LinkIcon className="size-5 shrink-0" />
                   <span className="truncate">
                     {preview
                       ? `Connect "${preview.name}"`
-                      : "Start connecting resources"}
+                      : 'Start connecting resources'}
                   </span>
                 </span>
               </LoadingSwap>
@@ -225,22 +226,23 @@ export const ResourcesStep = ({
                       {connection.host}
                     </p>
                   </div>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    aria-label={`Remove ${connection.name}`}
-                    title="Remove resource"
-                    disabled={busy}
-                    onClick={() =>
-                      void act(`remove:${connection.id}`, async () => {
-                        update(
-                          await window.scholar.removeResource(connection.id),
-                        );
-                      })
-                    }
-                  >
-                    <Trash2 className="size-5" />
-                  </Button>
+                  <TooltipWrapper content="Remove resource">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      aria-label={`Remove ${connection.name}`}
+                      disabled={busy}
+                      onClick={() =>
+                        void act(`remove:${connection.id}`, async () => {
+                          update(
+                            await window.scholar.removeResource(connection.id),
+                          );
+                        })
+                      }
+                    >
+                      <Trash2 className="size-5" />
+                    </Button>
+                  </TooltipWrapper>
                 </div>
                 <ConnectionNotesEditor
                   id={connection.id}
@@ -252,7 +254,7 @@ export const ResourcesStep = ({
                 <div className="flex flex-wrap items-center gap-3 text-muted-foreground">
                   <status.Icon className="size-5" />
                   <span>{status.label}</span>
-                  {connection.status === "needs-sign-in" && (
+                  {connection.status === 'needs-sign-in' && (
                     <Button
                       variant="outline"
                       disabled={busy}
@@ -276,11 +278,8 @@ export const ResourcesStep = ({
       )}
       {showConnections && (
         <p className="text-muted-foreground text-base">
-          Your classes live spread across a few sites: the LMS, a school portal,
-          maybe a textbook. ScholarOS can only read the ones you connect here,
-          so this list is the whole world your agent can see. With each one
-          signed in, it revisits those course pages to keep your classes, due
-          dates, and announcements current instead of asking you to retype them.
+          Connect resources such as your school portal, textbooks, and reference
+          sites so your agent can use them to find study materials.
         </p>
       )}
     </div>

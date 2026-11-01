@@ -7,6 +7,8 @@ import {
 import type { AcademicConnection, AgentActivity, EvidencePage } from '../types';
 
 export type MissionSnapshot = {
+  retrievedAt?: string;
+  locale?: string | null;
   url: string;
   title: string;
   text: string;
@@ -104,6 +106,8 @@ export const runReadOnlyMission = async ({
     addActivity({ type: 'reading', detail: snapshot.title });
     snapshots.push(snapshot);
     const observedEvidence = {
+      retrievedAt: snapshot.retrievedAt,
+      locale: snapshot.locale,
       url: snapshot.url,
       title: snapshot.title,
       text: snapshot.text,

@@ -46,6 +46,7 @@
     "@types/node": "^24.0.0",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
+    "@types/ws": "^8.18.2",
     "@vitejs/plugin-react": "^6.1.2",
     "drizzle-kit": "^0.31.11",
     "electron": "45.0.0",
@@ -58,6 +59,7 @@
   "dependencies": {
     "@better-auth/electron": "1.7.14",
     "@browserbasehq/stagehand": "4.3.0",
+    "@hookform/resolvers": "^6.0.1",
     "@scholaros/assets": "workspace:*",
     "@scholaros/auth": "workspace:*",
     "@scholaros/env": "workspace:*",
@@ -68,11 +70,14 @@
     "better-auth": "1.7.14",
     "better-sqlite3": "^13.0.3",
     "conf": "^15.0.2",
+    "date-fns": "^4.4.0",
     "drizzle-orm": "^0.45.4",
     "electron-squirrel-startup": "^1.0.1",
     "lucide-react": "1.61.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
+    "react-hook-form": "^7.91.0",
+    "ws": "^8.22.0",
     "zod": "4.6.7"
   }
 }

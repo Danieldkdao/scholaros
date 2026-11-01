@@ -38,7 +38,13 @@ const matchedRouteIds = (router: Awaited<ReturnType<typeof loadRoute>>) =>
   router.state.matches.map((match) => match.routeId);
 
 const nestedDashboardPaths = [
-  { path: '/dashboard/courses', routeId: '/dashboard/courses' },
+  // The list moved into a folder so a course page can nest beside it, which
+  // leaves the list as an index route with a trailing-slash id.
+  { path: '/dashboard/courses', routeId: '/dashboard/courses/' },
+  {
+    path: '/dashboard/courses/course-1',
+    routeId: '/dashboard/courses/$courseId',
+  },
   { path: '/dashboard/study', routeId: '/dashboard/study' },
   { path: '/dashboard/planner', routeId: '/dashboard/planner' },
   // The list moved into a folder so the add page can nest beside it, which

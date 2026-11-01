@@ -45,6 +45,7 @@ export const exploreForCourses = async ({
 }: ExplorationFixtures): Promise<ExplorationResult> => {
   const entries = new Map<string, AcademicContextEntryDraft>();
   const visited: string[] = [];
+  const requested = new Set<string>();
   let disclosed = false;
   let reReadPending = false;
   let sawExplicitEmptyList = false;
@@ -105,12 +106,33 @@ export const exploreForCourses = async ({
       entries.set(entry.url, entry);
       if (entry.role === 'course') foundCourses = true;
     }
-    if (foundCourses || sawExplicitEmptyList || step + 1 >= maxPages) break;
-    const target = nextCourseListTarget(observed, new Set(visited));
+    if (sawExplicitEmptyList || step + 1 >= maxPages) break;
+    if (foundCourses) {
+      const pagination = observed.links.find(
+        (link) =>
+          /^(?:next|more|load more|show more|[›»>])/i.test(link.label.trim()) &&
+          isReadNavigation(link.url, [connection.host]) &&
+          !visited.includes(link.url) &&
+          !requested.has(link.url),
+      );
+      if (!pagination) break;
+      requested.add(pagination.url);
+      await navigate(pagination.url);
+      assertActive();
+      reReadPending = true;
+      continue;
+    }
+    const target = nextCourseListTarget(
+      observed,
+      new Set([...visited, ...requested]),
+    );
     if (target && target.url !== observed.url) {
       assertActive();
+      // Remember requests too: a redirect can restore a sign-in fragment.
+      requested.add(target.url);
       await navigate(target.url);
       assertActive();
+      reReadPending = true;
       continue;
     }
     assertActive();
@@ -130,9 +152,9 @@ export const exploreForCourses = async ({
       : sawExplicitEmptyList
         ? 'empty'
         : 'inconclusive',
-    entries: [...entries.values()]
-      .sort((a, b) => Number(b.role === 'course') - Number(a.role === 'course'))
-      .slice(0, 30),
+    entries: [...entries.values()].sort(
+      (a, b) => Number(b.role === 'course') - Number(a.role === 'course'),
+    ),
     visited,
     disclosed,
   };
