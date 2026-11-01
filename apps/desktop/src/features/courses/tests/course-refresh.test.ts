@@ -1,3 +1,4 @@
+import { academicTasks } from '../../onboarding/services/academic-tasks';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('electron', async () => {
@@ -57,7 +58,7 @@ const {
   CourseTable,
 } = await import('../../../db/schema');
 const { getCoursesSnapshot } = await import('../services/store');
-const { cancelCourseRefresh, startCourseRefresh } =
+const { cancelCourseRefresh, startCourseRefresh, refreshSingleCourse } =
   await import('../services/refresh');
 import type { ObservedPage } from '../../onboarding/lib/academic-discovery';
 
@@ -99,8 +100,12 @@ const listFixture = (overrides: Partial<ScanFixture> = {}): ScanFixture => ({
     }),
     [announcementsUrl]: observedPage(announcementsUrl, {
       title: 'Announcements',
+      text: 'Midterm moved 2026-03-05',
     }),
-    [assignmentsUrl]: observedPage(assignmentsUrl, { title: 'Assignments' }),
+    [assignmentsUrl]: observedPage(assignmentsUrl, {
+      title: 'Assignments',
+      text: 'Lab report',
+    }),
   },
   ...overrides,
 });
@@ -179,7 +184,7 @@ beforeEach(() => {
     body.kind === 'choose'
       ? { operation: 'DONE', target: null }
       : {
-          cards: [],
+          [body.kind]: [],
           coverage: body.pages[0].text.includes('no announcements')
             ? 'complete'
             : 'unavailable',
@@ -339,30 +344,49 @@ describe('saving what the scan really saw', () => {
         body.kind === 'choose'
           ? { operation: 'DONE', target: null }
           : body.pages[0].url === biologyUrl
-            ? { coverage: 'unavailable', cards: [] }
+            ? { coverage: 'unavailable', [body.kind]: [] }
             : {
                 coverage: 'complete',
-                cards: body.goal.includes('announcement')
+                [body.kind]: body.goal.includes('announcement')
                   ? [
                       {
-                        kind: 'announcement',
-                        assignmentState: 'unknown',
                         title: 'Midterm moved',
-                        course: null,
-                        detail: null,
-                        date: '2026-03-05',
-                        sourceUrl: announcementsUrl,
+                        body: null,
+                        author: null,
+                        published: {
+                          kind: 'date',
+                          date: '2026-03-05',
+                          original: '2026-03-05',
+                        },
+                        updated: null,
+                        url: null,
+                        sourceId: null,
+                        resources: [],
+                        evidence: {
+                          sourceUrl: announcementsUrl,
+                          excerpts: ['Announcements'],
+                          targetIds: [],
+                        },
                       },
                     ]
                   : [
                       {
-                        kind: 'assignment',
-                        assignmentState: 'active-unsubmitted',
                         title: 'Lab report',
-                        course: null,
-                        detail: null,
-                        date: null,
-                        sourceUrl: assignmentsUrl,
+                        description: null,
+                        kind: 'assignment',
+                        state: 'active-unsubmitted',
+                        due: null,
+                        availableFrom: null,
+                        availableUntil: null,
+                        pointsPossible: null,
+                        url: null,
+                        sourceId: null,
+                        resources: [],
+                        evidence: {
+                          sourceUrl: assignmentsUrl,
+                          excerpts: ['Assignments'],
+                          targetIds: [],
+                        },
                       },
                     ],
               },
@@ -415,7 +439,7 @@ describe('saving what the scan really saw', () => {
       body.kind === 'choose'
         ? { operation: 'DONE', target: null }
         : {
-            cards: [],
+            [body.kind]: [],
             coverage: body.pages[0].text.includes('no announcements')
               ? 'complete'
               : 'unavailable',
@@ -492,6 +516,10 @@ describe('saving what the scan really saw', () => {
     expect(savedSources()).toEqual([
       expect.objectContaining({ outcome: 'partial' }),
     ]);
+    expect(
+      academicTasks.getActivity(student).find((run) => run.key === 'courses')
+        ?.status,
+    ).toBe('complete');
     expect(savedCourses().map((course) => course.active)).toEqual([true, true]);
   });
 
@@ -556,7 +584,7 @@ describe('saving what the scan really saw', () => {
     await startCourseRefresh(student);
     expect(savedCourses()).toHaveLength(25);
     expect(mocks.opened.length).toBe(50);
-    expect(mocks.agent).toHaveBeenCalledTimes(50);
+    expect(mocks.agent).toHaveBeenCalledTimes(51);
     expect(
       savedCourses().filter((course) => course.overviewSyncedAt === null),
     ).toHaveLength(0);
@@ -648,12 +676,12 @@ it('starts independent assignment and announcement workers for every course befo
   mocks.agent.mockImplementation(async (_path, body) => {
     expect(body.notes).toContain('Read the weekly modules');
     await gate;
-    return { coverage: 'complete', cards: [] };
+    return { coverage: 'complete', [body.kind]: [] };
   });
   const running = startCourseRefresh(student);
   try {
     await vi.waitFor(() => expect(mocks.workers).toHaveBeenCalledTimes(4));
-    expect(mocks.agent).toHaveBeenCalledTimes(4);
+    expect(mocks.agent).toHaveBeenCalledTimes(5);
   } finally {
     release();
     await running;
@@ -670,6 +698,7 @@ it('retains assignments in SQLite when cancelled after extraction but before nav
           links: [{ label: 'Assignments', url: assignmentsUrl }],
         }),
         [assignmentsUrl]: observedPage(assignmentsUrl, {
+          text: 'Lab report',
           links: [{ label: 'Details', url: `${biologyUrl}/detail` }],
         }),
       },
@@ -685,16 +714,25 @@ it('retains assignments in SQLite when cancelled after extraction but before nav
     }
     return {
       coverage: 'complete',
-      cards: body.goal.includes('assignments')
+      [body.kind]: body.goal.includes('assignments')
         ? [
             {
-              kind: 'assignment',
-              assignmentState: 'active-unsubmitted',
               title: 'Lab report',
-              course: null,
-              detail: null,
-              date: null,
-              sourceUrl: assignmentsUrl,
+              description: null,
+              kind: 'assignment',
+              state: 'active-unsubmitted',
+              due: null,
+              availableFrom: null,
+              availableUntil: null,
+              pointsPossible: null,
+              url: null,
+              sourceId: null,
+              resources: [],
+              evidence: {
+                sourceUrl: assignmentsUrl,
+                excerpts: ['Assignments'],
+                targetIds: [],
+              },
             },
           ]
         : [],
@@ -706,4 +744,274 @@ it('retains assignments in SQLite when cancelled after extraction but before nav
   expect(db.select().from(CourseAssignmentTable).all()).toEqual([
     expect.objectContaining({ title: 'Lab report', active: true }),
   ]);
+});
+
+it('refreshes only the saved course directly, preserving other courses and source coverage', async () => {
+  insertConnection('lms', host);
+  fixtures.set('lms', listFixture());
+  await startCourseRefresh(student);
+  const target = savedCourses()[0];
+  const sources = savedSources();
+  const other = {
+    ...db.select().from(CourseTable).get()!,
+    id: 'other-course',
+    sourceKey: 'other-course',
+    name: 'Other',
+    url: `https://${host}/courses/2`,
+  };
+  db.insert(CourseTable).values(other).run();
+  mocks.scan.mockClear();
+  mocks.policy.mockClear();
+  mocks.scan.mockImplementation(async ({ courseUrl, withCourseList }) => {
+    expect(courseUrl).toBe(target.url);
+    return {
+      followed: await withCourseList({
+        observed: listFixture().pages[biologyUrl],
+        assertReadable: () => undefined,
+        openFrom: async (_from: unknown, url: string) =>
+          listFixture().pages[url],
+      }),
+    };
+  });
+  const refreshed = await refreshSingleCourse(student, target.id);
+  expect(refreshed?.id).toBe(target.id);
+  expect(mocks.scan).toHaveBeenCalledOnce();
+  expect(mocks.policy).not.toHaveBeenCalled();
+  expect(savedCourses().find((course) => course.id === other.id)?.active).toBe(
+    true,
+  );
+  expect(savedSources()).toEqual(sources);
+  await expect(
+    refreshSingleCourse('another-student', target.id),
+  ).rejects.toThrow('no longer available');
+});
+
+it('uses one authenticated tab for both collections after account selection', async () => {
+  insertConnection('lms', host);
+  fixtures.set('lms', listFixture());
+  await startCourseRefresh(student);
+  const target = savedCourses()[0];
+  mocks.scan.mockClear();
+  mocks.agent.mockImplementation(async (_path, body) =>
+    body.kind === 'choose'
+      ? { operation: 'DONE', target: null }
+      : { coverage: 'complete', [body.kind]: [] },
+  );
+  mocks.scan.mockImplementation(async ({ withCourseList }) => {
+    if (mocks.scan.mock.calls.length > 1)
+      return {
+        outcome: 'needs-sign-in',
+        message: 'Sign in again.',
+        followed: null,
+      };
+    return {
+      followed: await withCourseList({
+        observed: listFixture().pages[biologyUrl],
+        assertReadable: () => undefined,
+        openFrom: async (_from: ObservedPage, url: string) =>
+          listFixture().pages[url],
+      }),
+    };
+  });
+  const refreshed = await refreshSingleCourse(student, target.id);
+  expect(refreshed).toMatchObject({
+    assignmentsStatus: 'complete',
+    announcementsStatus: 'complete',
+  });
+  expect(mocks.scan).toHaveBeenCalledOnce();
+});
+
+it('adds a newly visible assignment during a single-course refresh without replacing the saved assignment', async () => {
+  insertConnection('lms', host);
+  fixtures.set('lms', listFixture());
+  const newUrl = `${assignmentsUrl}/2`;
+  const assignment = (title: string) => ({
+    title,
+    description: null,
+    kind: 'assignment',
+    state: 'active-unsubmitted',
+    due: null,
+    availableFrom: null,
+    availableUntil: null,
+    pointsPossible: null,
+    url: null,
+    sourceId: null,
+    resources: [],
+    evidence: { sourceUrl: assignmentsUrl, excerpts: [title], targetIds: [] },
+  });
+  mocks.agent.mockImplementation(async (_path, body) => {
+    if (body.kind === 'choose') return { operation: 'DONE', target: null };
+    if (body.kind === 'assignments' && body.pages[0].url === newUrl)
+      return {
+        coverage: 'detail',
+        assignments: [
+          {
+            ...assignment('New assignment'),
+            url: newUrl,
+            evidence: {
+              sourceUrl: newUrl,
+              excerpts: ['New assignment'],
+              targetIds: [],
+            },
+          },
+        ],
+      };
+    return {
+      coverage: 'complete',
+      [body.kind]:
+        body.kind === 'assignments' && body.pages[0].url === assignmentsUrl
+          ? body.pages[0].text.split('\n').map((title: string) =>
+              title === 'New assignment'
+                ? {
+                    ...assignment(title),
+                    state: 'unknown',
+                    url: newUrl,
+                    evidence: {
+                      sourceUrl: assignmentsUrl,
+                      excerpts: [title],
+                      targetIds: ['1'],
+                    },
+                  }
+                : assignment(title),
+            )
+          : [],
+    };
+  });
+  await startCourseRefresh(student);
+  const target = savedCourses()[0];
+  const saved = db.select().from(CourseAssignmentTable).all();
+  expect(saved).toHaveLength(1);
+  const fixture = listFixture();
+  fixture.pages[assignmentsUrl].text = 'Lab report\nNew assignment';
+  fixture.pages[assignmentsUrl].links = [
+    { label: 'New assignment', url: newUrl },
+  ];
+  fixture.pages[newUrl] = observedPage(newUrl, { text: 'New assignment' });
+  mocks.scan.mockImplementation(async ({ withCourseList }) => ({
+    followed: await withCourseList({
+      observed: fixture.pages[biologyUrl],
+      assertReadable: () => undefined,
+      openFrom: async (_from: ObservedPage, url: string) => fixture.pages[url],
+    }),
+  }));
+  const refreshed = await refreshSingleCourse(student, target.id);
+  expect(refreshed?.assignments).toHaveLength(2);
+  expect(refreshed?.assignments).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ id: saved[0].id, title: 'Lab report' }),
+      expect.objectContaining({ title: 'New assignment' }),
+    ]),
+  );
+});
+
+it('starts separate course refreshes before either finishes and keeps completed work isolated', async () => {
+  insertConnection('lms', host);
+  fixtures.set('lms', listFixture());
+  await startCourseRefresh(student);
+  const target = savedCourses()[0];
+  db.insert(CourseTable)
+    .values({
+      ...db.select().from(CourseTable).get()!,
+      id: 'other-course',
+      sourceKey: 'other-course',
+      url: `https://${host}/courses/2`,
+    })
+    .run();
+  const releases: (() => void)[] = [];
+  mocks.scan.mockImplementation(
+    () =>
+      new Promise((resolve) =>
+        releases.push(() => resolve({ followed: true })),
+      ),
+  );
+  const a = refreshSingleCourse(student, target.id);
+  const b = refreshSingleCourse(student, 'other-course');
+  await vi.waitFor(() => expect(releases).toHaveLength(2));
+  for (const release of releases) release();
+  await Promise.all([a, b]);
+});
+
+it('extracts explicit course metadata from observed list links instead of parsing the course name', async () => {
+  insertConnection('lms', host);
+  fixtures.set('lms', listFixture());
+  mocks.agent.mockImplementation(async (_path, body) =>
+    body.kind === 'courses'
+      ? {
+          coverage: 'complete',
+          courses: [
+            {
+              name: 'Biology 101',
+              code: 'BIO',
+              section: 'A',
+              term: 'Autumn',
+              description: null,
+              instructors: ['Dr. Teacher'],
+              sourceId: 'course-1',
+              url: biologyUrl,
+              evidence: {
+                sourceUrl: listUrl,
+                excerpts: ['Biology 101'],
+                targetIds: ['1'],
+              },
+            },
+          ],
+        }
+      : body.kind === 'choose'
+        ? { operation: 'DONE', target: null }
+        : { [body.kind]: [], coverage: 'unavailable' },
+  );
+  await startCourseRefresh(student);
+  expect(savedCourses()[0]).toMatchObject({
+    code: 'BIO',
+    term: 'Autumn',
+    content: { section: 'A', instructors: ['Dr. Teacher'] },
+  });
+});
+
+it('refreshes explicit course metadata directly without rediscovering the other courses', async () => {
+  insertConnection('lms', host);
+  fixtures.set('lms', listFixture());
+  await startCourseRefresh(student);
+  const saved = savedCourses()[0];
+  mocks.scan.mockImplementation(async ({ withCourseList }) => ({
+    followed: await withCourseList({
+      observed: observedPage(biologyUrl, {
+        title: 'Biology 101',
+        text: 'Biology 101 section A BIO Autumn',
+      }),
+      assertReadable: () => undefined,
+      openFrom: vi.fn(),
+    }),
+  }));
+  mocks.agent.mockImplementation(async (_path, body) =>
+    body.kind === 'courses'
+      ? {
+          coverage: 'detail',
+          courses: [
+            {
+              name: 'Biology 101',
+              code: 'BIO',
+              section: 'A',
+              term: 'Autumn',
+              description: null,
+              instructors: [],
+              sourceId: 'course-1',
+              url: biologyUrl,
+              evidence: {
+                sourceUrl: biologyUrl,
+                excerpts: ['Biology 101'],
+                targetIds: [],
+              },
+            },
+          ],
+        }
+      : { [body.kind]: [], coverage: 'complete' },
+  );
+  const refreshed = await refreshSingleCourse(student, saved.id);
+  expect(refreshed).toMatchObject({
+    id: saved.id,
+    code: 'BIO',
+    term: 'Autumn',
+    content: { section: 'A' },
+  });
 });

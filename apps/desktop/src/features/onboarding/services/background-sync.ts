@@ -45,6 +45,8 @@ export const createBackgroundSyncController = <TResult>({
   const suspensions = new Set<symbol>();
   let running = false;
   let error: string | null = null;
+  let failures = 0;
+  let retryBlocked = false;
   let lastSyncedAt: string | null = null;
   let timer: unknown = null;
   let active: AbortController | null = null;
@@ -148,8 +150,15 @@ export const createBackgroundSyncController = <TResult>({
       if (runGeneration === generation) {
         running = false;
         active = null;
-        if (isScheduled() && !suspensions.size && !userPaused)
-          scheduleTick(intervalMs);
+        if (error) {
+          failures += 1;
+          retryBlocked = /sign in|password/i.test(error) || failures >= 3;
+        } else {
+          failures = 0;
+          retryBlocked = false;
+        }
+        if (isScheduled() && !suspensions.size && !userPaused && !retryBlocked)
+          scheduleTick(intervalMs * 2 ** Math.max(0, failures - 1));
         notify(completedResult);
       }
     }
@@ -166,6 +175,8 @@ export const createBackgroundSyncController = <TResult>({
     configurationKey = key;
     halt();
     error = null;
+    failures = 0;
+    retryBlocked = false;
     userPaused = false;
     if (isScheduled() && !suspensions.size) scheduleTick(initialDelayMs);
     notify();
@@ -182,6 +193,9 @@ export const createBackgroundSyncController = <TResult>({
 
   const resume = () => {
     if (!isScheduled()) return getState();
+    failures = 0;
+    retryBlocked = false;
+    error = null;
     userPaused = false;
     halt();
     if (!suspensions.size) scheduleTick(initialDelayMs);
@@ -198,7 +212,7 @@ export const createBackgroundSyncController = <TResult>({
     notify();
     return () => {
       if (!suspensions.delete(token)) return getState();
-      if (isScheduled() && !suspensions.size && !userPaused)
+      if (isScheduled() && !suspensions.size && !userPaused && !retryBlocked)
         scheduleTick(initialDelayMs);
       notify();
       return getState();
@@ -212,6 +226,8 @@ export const createBackgroundSyncController = <TResult>({
     userPaused = false;
     suspensions.clear();
     error = null;
+    failures = 0;
+    retryBlocked = false;
     lastSyncedAt = null;
     cancelTimer();
     abortActive();
