@@ -114,7 +114,9 @@ export const POST = async (request: Request) => {
     const kind: RequestKind = parsed.data.kind;
     const signal = AbortSignal.any([
       request.signal,
-      AbortSignal.timeout(kind === 'course-content' ? 60_000 : 25_000),
+      AbortSignal.timeout(
+        kind === 'choose' || kind === 'discover' ? 25_000 : 60_000,
+      ),
     ]);
     requestKind = kind;
     if (!isInferenceConfigured())
@@ -130,9 +132,11 @@ export const POST = async (request: Request) => {
           : await extractAcademicEvidence(parsed.data, signal);
     return Response.json(result, { headers: { 'Cache-Control': 'no-store' } });
   } catch (error) {
-    // The provider's own failure text stays out of the response, so it has to
-    // reach the server log or nothing is diagnosable.
-    console.error('[api/agent] request failed', { kind: requestKind, error });
+    // Provider errors can contain full academic responses; log only their category.
+    console.error('[api/agent] request failed', {
+      kind: requestKind,
+      name: error instanceof Error ? error.name : 'UnknownError',
+    });
     return Response.json(
       { error: 'The AI request could not finish. Try again.' },
       { status: 502 },
