@@ -5,6 +5,7 @@ import path from 'node:path';
 import { createServer } from 'node:net';
 import { eq } from 'drizzle-orm';
 import type { Stagehand, StagehandBrowser } from '@browserbasehq/stagehand';
+import type { ClientLLM } from '@browserbasehq/stagehand';
 import { db } from '../../../db';
 import {
   AcademicConnectionTable,
@@ -29,6 +30,7 @@ const tracker = createLaunchTracker();
 let active: ActiveWorkspace | null = null;
 let starting: Promise<ActiveWorkspace> | null = null;
 let launchQueue: Promise<unknown> = Promise.resolve();
+let missionStagehandQueue: Promise<unknown> = Promise.resolve();
 
 const enqueue = <T>(action: () => Promise<T>): Promise<T> => {
   const result = launchQueue.then(action, action);
@@ -321,6 +323,52 @@ export const getWorkspace = async (
       .where(eq(BrowserWorkspaceTable.userId, userId))
       .run();
   return started;
+};
+
+const runWithMissionStagehand = async <T>(
+  workspace: ActiveWorkspace,
+  options: { signal: AbortSignal; isCurrent: () => boolean },
+  run: (stagehand: Stagehand) => Promise<T>,
+) => {
+  options.signal.throwIfAborted();
+  if (active !== workspace || workspace.browser.closed || !options.isCurrent())
+    throw new Error('Your study browser session changed.');
+  const { Stagehand } = await import('@browserbasehq/stagehand');
+  await workspace.stagehand.close();
+  let missionStagehand: Stagehand | null = null;
+  try {
+    options.signal.throwIfAborted();
+    const { createBrowserModel } = await import('./browser-model');
+    missionStagehand = await Stagehand.create({
+      browser: workspace.browser,
+      model: { generate: createBrowserModel(options) as ClientLLM['generate'] },
+      selfHeal: false,
+      logging: { level: 'off' },
+    });
+    if (active !== workspace || !options.isCurrent())
+      throw new Error('Your study browser session changed.');
+    workspace.stagehand = missionStagehand;
+    return await run(missionStagehand);
+  } finally {
+    await missionStagehand?.close().catch(() => undefined);
+    if (active === workspace && !workspace.browser.closed) {
+      workspace.stagehand = await Stagehand.create({
+        browser: workspace.browser,
+      });
+    }
+  }
+};
+
+export const withMissionStagehand = <T>(
+  workspace: ActiveWorkspace,
+  options: { signal: AbortSignal; isCurrent: () => boolean },
+  run: (stagehand: Stagehand) => Promise<T>,
+): Promise<T> => {
+  const result = missionStagehandQueue.then(() =>
+    runWithMissionStagehand(workspace, options, run),
+  );
+  missionStagehandQueue = result.catch(() => undefined);
+  return result;
 };
 
 export const openAcademicPage = async (

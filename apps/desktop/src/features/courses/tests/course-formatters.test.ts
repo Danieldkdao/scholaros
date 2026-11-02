@@ -187,12 +187,10 @@ it('orders normalized local times without assigning a device timezone', () => {
   );
 });
 
-it('reserves refresh warnings for access issues rather than incomplete information', async () => {
+it('labels completed refreshes consistently and separates sign-in issues', async () => {
   const { formatRefreshActivity } = await import('../lib/formatters');
   expect(formatRefreshActivity('complete').label).toBe('Refresh complete');
-  expect(formatRefreshActivity('partial').label).toBe(
-    'Refresh needs attention',
-  );
+  expect(formatRefreshActivity('sign-in-required').label).toBe('Sign in required');
 });
 
 it('shows a manually entered local timestamp in a readable format', () => {

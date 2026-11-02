@@ -62,6 +62,10 @@ const bridge = {
     discovery: {},
     preferences: {},
   })),
+  getWatchSettings: vi.fn(async () => ({ watchEnabled: false, watchUrls: [] })),
+  getWatchRuntimeState: vi.fn(async () => ({ enabled: false, status: 'off' })),
+  saveWatchSettings: vi.fn(async (settings) => settings),
+  onWatchChange: vi.fn(() => () => undefined),
   onCoursesChange: vi.fn(() => () => undefined),
   onBackgroundSyncChange: vi.fn(() => () => undefined),
   onConnectChange: vi.fn(() => () => undefined),
@@ -164,6 +168,16 @@ describe('dashboard shell', () => {
   ])('renders %s as a refreshed deep link', async (path, title) => {
     await openRoute(path);
     expect(heading()?.textContent).toBe(title);
+  });
+
+  it('focuses the watcher section after loading its settings deep link', async () => {
+    await openRoute('/dashboard/settings?section=watch');
+    const section = await vi.waitFor(() => {
+      const target = document.querySelector('#watch-course-pages');
+      expect(target).toBeTruthy();
+      return target;
+    });
+    expect(document.activeElement).toBe(section);
   });
 
   it.each([

@@ -257,11 +257,8 @@ export const formatRefreshActivity = (
       return { label: 'Refreshing courses…', Icon: RefreshLoader };
     case 'complete':
       return { label: 'Refresh complete', Icon: RefreshCheck };
-    case 'partial':
-      return {
-        label: 'Refresh needs attention',
-        Icon: RefreshAlert,
-      };
+    case 'sign-in-required':
+      return { label: 'Sign in required', Icon: RefreshAlert };
     case 'cancelled':
       return { label: 'Refresh stopped', Icon: RefreshStop };
     case 'failed':

@@ -169,6 +169,16 @@ const searchCourses = async (value: string) => {
   });
 };
 
+it('links to the watcher setting from Courses even when watching is unavailable', async () => {
+  connections = [];
+  await open();
+  const link = document.querySelector<HTMLAnchorElement>(
+    'a[aria-label="Watch settings"]',
+  );
+  expect(link?.getAttribute('href')).toContain('/dashboard/settings');
+  expect(link?.getAttribute('href')).toContain('section=watch');
+});
+
 it('debounces course search, resets the delay while typing, and restores courses when cleared', async () => {
   snapshot.courses.push(
     course('2', { name: 'Chemistry 201', code: 'CHEM 201' }),

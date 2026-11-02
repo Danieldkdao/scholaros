@@ -13,6 +13,8 @@
     "./ai/course-discovery": "./src/ai/course-discovery.ts",
     "./ai/connection-resolver": "./src/ai/connection-resolver.ts",
     "./ai/models/inference": "./src/ai/models/inference.ts",
+    "./ai/browser-model": "./src/ai/browser-model.ts",
+    "./ai/browser-schemas": "./src/ai/browser-schemas.ts",
     "./ai/resources/*": "./src/ai/resources/*.ts"
   },
   "scripts": {

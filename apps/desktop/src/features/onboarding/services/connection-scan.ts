@@ -1,7 +1,5 @@
 import { openBackgroundPage } from './background-page';
 import { composeAgentNotes } from '../lib/agent-notes';
-import { courseDiscoverySchema } from '@scholaros/services/ai/schemas';
-import { accountRequest } from '../../../lib/auth/main';
 import { exploreForCourses } from '../lib/course-exploration';
 import { academicPageIdentity, isReadNavigation } from '../lib/browser-policy';
 import {
@@ -14,10 +12,13 @@ import {
   outcomeFromExploration,
 } from '../lib/discovery-outcomes';
 import { readPage, revealCourseNavigation } from './page-content';
+import {
+  downloadPdfFromObservedLink,
+  type PdfDownloadResult,
+} from '../../context/services/material-download';
 import { waitForMissionPage } from './page-readiness';
 import { missionTraffic } from './mission-traffic';
 import {
-  AccountContinuationError,
   createAccountContinuation,
   type AccountContinuation,
 } from './account-continuation';
@@ -25,7 +26,12 @@ import {
   protectMissionPage,
   type MissionProtection,
 } from './mission-request-guard';
-import type { Page } from '@browserbasehq/stagehand';
+import type { Page, Stagehand } from '@browserbasehq/stagehand';
+import type { BrowserNavigationMode } from '@scholaros/env/browser-navigation';
+import { createBrowserNavigationAdapter } from './browser-navigation';
+import type { BrowserNavigationAdapter } from './browser-navigation';
+import { getBrowserNavigationMode } from './browser-mode';
+import { withMissionStagehand } from './browser-workspace';
 import type { AcademicContextEntryDraft, AcademicConnection } from '../types';
 import type { ActiveWorkspace } from './browser-workspace';
 import type { ConnectionOutcome } from '../lib/discovery-outcomes';
@@ -43,6 +49,9 @@ export type CourseListContext = {
   assertReadable: () => void;
   // Opens a destination a given observed page exposed, under the same guards.
   openFrom: (from: ObservedPage, url: string) => Promise<ObservedPage>;
+  downloadPdf: (from: ObservedPage, url: string) => Promise<PdfDownloadResult>;
+  navigation?: BrowserNavigationAdapter;
+  readCurrent?: () => Promise<ObservedPage>;
 };
 
 export type ConnectionScan<TFollowed = never> = {
@@ -68,19 +77,7 @@ const skipped = <TFollowed>(
 });
 
 // Keep discovery and course content inside the same protected browser walk.
-export const scanConnection = async <TFollowed = never>({
-  connection,
-  workspace,
-  hosts,
-  notes,
-  navigatePage,
-  isCurrent,
-  signal,
-  maxPages,
-  reserveModelCall,
-  withCourseList,
-  courseUrl,
-}: {
+type ScanConnectionInput<TFollowed> = {
   connection: AcademicConnection;
   workspace: ActiveWorkspace;
   hosts: string[];
@@ -96,7 +93,33 @@ export const scanConnection = async <TFollowed = never>({
   maxPages?: number;
   reserveModelCall?: () => boolean;
   withCourseList?: (context: CourseListContext) => Promise<TFollowed>;
-}): Promise<ConnectionScan<TFollowed>> => {
+  browserMode?: BrowserNavigationMode;
+  stagehand?: Stagehand;
+};
+
+export const scanConnection = async <TFollowed = never>(
+  input: ScanConnectionInput<TFollowed>,
+): Promise<ConnectionScan<TFollowed>> => {
+  const {
+    connection,
+    workspace,
+    hosts,
+    notes,
+    navigatePage,
+    isCurrent,
+    signal,
+    maxPages,
+    reserveModelCall,
+    withCourseList,
+    courseUrl,
+  } = input;
+  const browserMode =
+    input.browserMode ??
+    (await getBrowserNavigationMode({ signal, isCurrent }));
+  if (browserMode === 'inout' && !input.stagehand)
+    return withMissionStagehand(workspace, { signal, isCurrent }, (stagehand) =>
+      scanConnection({ ...input, browserMode, stagehand }),
+    );
   const entry = resolveMissionEntry(connection, hosts);
   if (entry.kind === 'unsupported') return skipped('skipped');
   let page: Page | null = null;
@@ -134,6 +157,14 @@ export const scanConnection = async <TFollowed = never>({
       },
       continuation,
     );
+    const navigation = createBrowserNavigationAdapter(browserMode, {
+      page: openedPage,
+      stagehand: input.stagehand,
+      hosts,
+      signal,
+      isCurrent,
+      assertReadable: () => releaseProtection?.assertReadable?.(),
+    });
     await navigatePage(openedPage, courseUrl ?? entry.url, continuation);
     let observed: ObservedPage | null = null;
     const observedPages: ObservedPage[] = [];
@@ -241,32 +272,23 @@ export const scanConnection = async <TFollowed = never>({
                 notes,
               );
               notesOmitted ||= composedNotes.omitted;
-              const result = courseDiscoverySchema.parse(
-                await accountRequest(
-                  '/api/agent',
+              const courseTargetIds = await navigation.discoverCourses({
+                goal: 'Find my current enrolled courses',
+                notes: composedNotes.notes,
+                pages: [
                   {
-                    kind: 'discover',
-                    goal: 'Find my current enrolled courses',
-                    notes: composedNotes.notes,
-                    pages: [
-                      {
-                        url: snapshot.url,
-                        title: snapshot.title,
-                        text: (snapshot.text ?? '').slice(0, 16000),
-                      },
-                    ],
-                    targets,
+                    url: snapshot.url,
+                    title: snapshot.title,
+                    text: (snapshot.text ?? '').slice(0, 16000),
                   },
-                  signal,
-                ),
-              );
+                ],
+                targets,
+              });
               signal.throwIfAborted();
               releaseProtection?.assertReadable?.();
               selectedUrls.push(
                 ...targets
-                  .filter((target) =>
-                    result.courseTargetIds.includes(target.id),
-                  )
+                  .filter((target) => courseTargetIds.includes(target.id))
                   .map((target) => target.url),
               );
             }
@@ -306,6 +328,8 @@ export const scanConnection = async <TFollowed = never>({
               isCurrent,
               signal,
               courseUrl: url,
+              browserMode,
+              stagehand: input.stagehand,
               withCourseList: async (context) => {
                 await run(context);
                 return true;
@@ -321,6 +345,24 @@ export const scanConnection = async <TFollowed = never>({
           entries: exploration.entries,
           assertReadable: () => releaseProtection?.assertReadable?.(),
           openFrom,
+          navigation,
+          readCurrent: readSnapshot,
+          downloadPdf: async (from, url) => {
+            signal.throwIfAborted();
+            releaseProtection?.assertReadable?.();
+            const result = await downloadPdfFromObservedLink({
+              page: openedPage,
+              observedPage: from,
+              targetUrl: url,
+              allowedHosts: hosts,
+              signal,
+              beforeFetch: (targetUrl) =>
+                missionTraffic.waitForTurn(targetUrl, signal),
+            });
+            signal.throwIfAborted();
+            releaseProtection?.assertReadable?.();
+            return result;
+          },
           revealContent: async (from) => {
             signal.throwIfAborted();
             releaseProtection?.assertReadable?.();
@@ -356,7 +398,10 @@ export const scanConnection = async <TFollowed = never>({
       notesOmitted,
       followed: null,
       truncated,
-      message: error instanceof AccountContinuationError ? error.message : null,
+      message:
+        error instanceof Error
+          ? error.message.split('\n')[0]!.slice(0, 300)
+          : null,
     };
   } finally {
     signal.removeEventListener('abort', closeOnAbort);

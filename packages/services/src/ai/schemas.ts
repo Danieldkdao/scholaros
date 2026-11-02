@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { browserNavigationModeSchema } from '@scholaros/env/browser-navigation';
 
 export const requestKinds = [
   'choose',
@@ -6,11 +7,30 @@ export const requestKinds = [
   'courses',
   'assignments',
   'announcements',
+  'materials',
 ] as const;
 export type RequestKind = (typeof requestKinds)[number];
 export const agentRequestSchema = z.object({
   kind: z.enum(requestKinds),
+  browserNavigationMode: browserNavigationModeSchema.optional(),
   goal: z.string().max(500),
+  memory: z
+    .object({
+      navigation: z.string().max(8000),
+      resources: z
+        .array(
+          z.object({
+            id: z.string().max(300),
+            title: z.string().max(300),
+            sourceId: z.string().max(300).nullable(),
+            url: z.url().max(2048).nullable(),
+            active: z.boolean(),
+          }),
+        )
+        .max(40),
+      truncated: z.boolean(),
+    })
+    .optional(),
   context: z
     .object({
       retrievedAt: z.iso.datetime({ offset: true }),

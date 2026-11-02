@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { POST } from '../src/app/api/agent/route';
+import { GET, POST } from '../src/app/api/agent/route';
 
 const mocks = vi.hoisted(() => ({
   user: vi.fn(),
@@ -13,11 +13,16 @@ const mocks = vi.hoisted(() => ({
     INFERENCE_PROVIDER: 'baseten' as 'baseten' | 'meta',
     META_API_KEY: 'test-meta' as string | undefined,
     BASETEN_API_KEY: 'test-baseten' as string | undefined,
+    BROWSER_NAV: 'decision' as 'decision' | 'inout' | 'invalid',
   },
+  browserModel: vi.fn(),
 }));
 vi.mock('@/lib/auth/helpers', () => ({ getCurrentUser: mocks.user }));
 vi.mock('@/data/env/server', () => ({ serverEnv: mocks.env }));
 vi.mock('@scholaros/env/server', () => ({ serverEnv: mocks.env }));
+vi.mock('@scholaros/services/ai/browser-model', () => ({
+  generateBrowserModel: mocks.browserModel,
+}));
 vi.mock('@scholaros/services/ai/academic', () => ({
   chooseAcademicTarget: mocks.choose,
   extractAcademicEvidence: mocks.extract,
@@ -64,13 +69,52 @@ beforeEach(() => {
   mocks.env.META_API_KEY = 'test-meta';
   mocks.env.BASETEN_API_KEY = 'test-baseten';
   mocks.env.TYPESAFE_API_KEY = 'test-typesafe';
+  mocks.env.BROWSER_NAV = 'decision';
   mocks.choose.mockResolvedValue({ operation: 'NAVIGATE', target: '1' });
   mocks.extract.mockResolvedValue({ assignments: [], coverage: 'complete' });
+  mocks.browserModel.mockResolvedValue({
+    role: 'assistant',
+    content: { type: 'text', text: '{"title":"Biology"}' },
+    outputFormat: 'json_schema',
+    structuredContent: { title: 'Biology' },
+  });
 });
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe('authenticated academic AI endpoint', () => {
+  it.each(['decision', 'inout'] as const)(
+    'returns the authenticated server browser mode %s without inference',
+    async (mode) => {
+      mocks.env.BROWSER_NAV = mode;
+      const response = await GET(
+        new Request('https://scholaros.example/api/agent', {
+          headers: { origin: 'https://scholaros.example' },
+        }),
+      );
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ browserNavigationMode: mode });
+      expect(response.headers.get('cache-control')).toBe('no-store');
+      expect(mocks.choose).not.toHaveBeenCalled();
+      expect(mocks.extract).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not expose browser mode to another origin, signed-out requests, or invalid configuration', async () => {
+    const getRequest = (origin = 'https://scholaros.example') =>
+      new Request('https://scholaros.example/api/agent', {
+        headers: { origin },
+      });
+
+    expect((await GET(getRequest('https://evil.example'))).status).toBe(403);
+    mocks.user.mockResolvedValue(null);
+    expect((await GET(getRequest())).status).toBe(401);
+    mocks.user.mockResolvedValue({ userId: 'browser-mode-user' });
+    mocks.env.BROWSER_NAV = 'invalid';
+    expect((await GET(getRequest())).status).toBe(500);
+  });
+
   it('routes navigation through the shared decision service', async () => {
     const response = await POST(request());
     expect(response.status).toBe(200);
@@ -82,6 +126,29 @@ describe('authenticated academic AI endpoint', () => {
     expect(response.headers.get('cache-control')).toBe('no-store');
   });
 
+  it('routes bounded Stagehand requests to the server-selected model', async () => {
+    const browserRequest = {
+      kind: 'browser-model',
+      messages: [{ role: 'user', content: 'Read the page.' }],
+      responseFormat: {
+        type: 'json_schema',
+        name: 'extract_page',
+        schema: { type: 'object', properties: {} },
+      },
+    };
+    mocks.env.BROWSER_NAV = 'inout';
+    const timeout = vi.spyOn(AbortSignal, 'timeout');
+    const response = await POST(request(browserRequest));
+    expect(timeout).toHaveBeenCalledWith(60_000);
+    timeout.mockRestore();
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual(
+      await mocks.browserModel.mock.results[0]?.value,
+    );
+    expect(mocks.browserModel).toHaveBeenCalledOnce();
+    expect(mocks.choose).not.toHaveBeenCalled();
+  });
+
   it('routes extraction through the shared Meta service', async () => {
     const response = await POST(request({ ...body, kind: 'assignments' }));
     expect(response.status).toBe(200);
@@ -91,6 +158,28 @@ describe('authenticated academic AI endpoint', () => {
     });
     expect(mocks.extract).toHaveBeenCalledOnce();
     expect(mocks.choose).not.toHaveBeenCalled();
+  });
+
+  it('stops cached browser modes after the server configuration changes', async () => {
+    mocks.env.BROWSER_NAV = 'inout';
+    expect(
+      (await POST(request({ ...body, browserNavigationMode: 'decision' })))
+        .status,
+    ).toBe(409);
+    expect(mocks.choose).not.toHaveBeenCalled();
+    mocks.env.BROWSER_NAV = 'decision';
+    expect(
+      (
+        await POST(
+          request({
+            kind: 'browser-model',
+            messages: [],
+            responseFormat: { type: 'text' },
+          }),
+        )
+      ).status,
+    ).toBe(409);
+    expect(mocks.browserModel).not.toHaveBeenCalled();
   });
 
   it('keeps authentication and origin checks ahead of provider calls', async () => {
@@ -128,6 +217,35 @@ describe('authenticated academic AI endpoint', () => {
     const response = await POST(request());
     expect(response.status).toBe(502);
     expect(await response.text()).not.toContain('private-provider-details');
+  });
+
+  it('reports known browser protocol errors without exposing provider details', async () => {
+    mocks.env.BROWSER_NAV = 'inout';
+    const browserRequest = {
+      kind: 'browser-model',
+      messages: [
+        { role: 'user', content: { type: 'text', text: 'Read page.' } },
+      ],
+      responseFormat: {
+        type: 'json_schema',
+        name: 'page',
+        schema: { type: 'object', properties: {} },
+      },
+    };
+    mocks.browserModel.mockRejectedValueOnce(
+      new Error('The Stagehand browser response schema is unsupported.'),
+    );
+    const known = await POST(request(browserRequest));
+    expect(known.status).toBe(502);
+    expect(await known.json()).toEqual({
+      error: 'The Stagehand browser response schema is unsupported.',
+    });
+    mocks.browserModel.mockRejectedValueOnce(
+      new Error('private-provider-details'),
+    );
+    const unknown = await POST(request(browserRequest));
+    expect(unknown.status).toBe(502);
+    expect(await unknown.text()).not.toContain('private-provider-details');
   });
 
   it('keeps the cause on the server for a failed site search', async () => {

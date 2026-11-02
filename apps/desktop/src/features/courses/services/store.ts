@@ -12,13 +12,14 @@ import {
   isPastDateInput,
   legacyDateFrom,
 } from '../lib/dates';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { and, eq, or } from 'drizzle-orm';
 import { db } from '../../../db';
 import {
   AcademicConnectionTable,
   CourseAnnouncementTable,
   CourseAssignmentTable,
+  CourseRecordTombstoneTable,
   CourseSourceTable,
   CourseTable,
 } from '../../../db/schema';
@@ -26,6 +27,13 @@ import {
   academicPageIdentity,
   isReadNavigation,
 } from '../../onboarding/lib/browser-policy';
+import {
+  mergeResourceIdentityCandidate,
+  reconcileResourceIdentities,
+  resourceIdentityKeys,
+  type ResourceIdentityRecord,
+  type ResourceIdentityScope,
+} from '@scholaros/services/ai/resources/identity';
 import { courseScanSucceeded } from '../types';
 import type {
   AcademicConnectionSelectData,
@@ -71,8 +79,24 @@ type CourseChildTable =
   | typeof CourseAssignmentTable;
 type SavedChildRow = CourseAnnouncementSelectData | CourseAssignmentSelectData;
 type CourseRow = ReturnType<typeof readCourseRows>[number];
+type ChildIdentityResource = ResourceIdentityRecord & {
+  body: string | null;
+  dateValue: string | null;
+  dateText: string | null;
+};
 // A drizzle transaction exposes the same query builders without $client.
 type CourseWriter = Omit<typeof db, '$client'>;
+type CourseStoreMetrics = {
+  recordsCreated: number;
+  recordsUpdated: number;
+  recordsRetired: number;
+};
+
+const emptyCourseStoreMetrics = (): CourseStoreMetrics => ({
+  recordsCreated: 0,
+  recordsUpdated: 0,
+  recordsRetired: 0,
+});
 
 const normalizeTitle = (value: string) =>
   value.replace(/\s+/g, ' ').trim().slice(0, 300);
@@ -83,14 +107,6 @@ const courseKey = (
   externalId: string | null,
   url: string,
 ) => `${connectionId} ${externalId ?? url}`;
-
-// Items without platform IDs or individual links fall back to their source page and title.
-const childKey = (url: string, title: string, item?: CourseChildItem) =>
-  item?.content?.sourceId
-    ? `id:${item.content.sourceId}`
-    : item?.content?.url
-      ? `url:${url}`
-      : `${url} ${title.toLowerCase()}`;
 
 const meaningfulContent = (value: unknown): unknown => {
   if (typeof value === 'string') return value.replace(/\s+/g, ' ').trim();
@@ -125,6 +141,54 @@ const observedUrl = (url: string, host: string) => {
   const identity = academicPageIdentity(url);
   return identity && isReadNavigation(identity, [host]) ? identity : null;
 };
+
+const childIdentityResource = (
+  item: CourseChildItem,
+): ChildIdentityResource => {
+  const content = item.content;
+  return {
+    ...content,
+    title: content?.title ?? item.title,
+    sourceId: content?.sourceId ?? null,
+    url: content?.url ?? item.url,
+    evidence: content?.evidence ?? {
+      sourceUrl: item.url,
+      excerpts: [item.title],
+      targetIds: [],
+    },
+    body: item.body,
+    dateValue: item.dateValue,
+    dateText: item.dateText,
+  } as ChildIdentityResource;
+};
+
+const savedChildIdentityResource = (row: SavedChildRow) =>
+  ({
+    ...row.content,
+    title: row.content?.title ?? row.title,
+    sourceId: row.content?.sourceId ?? null,
+    url: row.content?.url ?? row.url,
+    evidence: row.content?.evidence ?? {
+      sourceUrl: row.url,
+      excerpts: [row.title],
+      targetIds: [],
+    },
+    body: row.body,
+    dateValue: row.dateValue,
+    dateText: row.dateText,
+  }) as ChildIdentityResource;
+
+const identitySourceKey = (keys: ReturnType<typeof resourceIdentityKeys>) =>
+  keys.sourceId
+    ? `id:${keys.sourceId}`
+    : keys.urlId
+      ? `id:${keys.urlId}`
+      : keys.itemUrl
+        ? `url:${keys.itemUrl}`
+        : (keys.fallback ?? '');
+
+const ambiguousSourceKey = (resource: ResourceIdentityRecord) =>
+  `ambiguous:${createHash('sha256').update(JSON.stringify(resource)).digest('hex')}`;
 
 const courseColumns = {
   id: CourseTable.id,
@@ -206,25 +270,6 @@ const toChild = ({
   ...child
 }: SavedChildRow) => child;
 
-const uniqueAssignments = <TItem extends { title: string; url: string }>(
-  assignments: TItem[],
-  courseUrl: string,
-) => {
-  const coursePageUrl = courseUrl.split('#')[0];
-  const assignmentTitles = new Set(
-    assignments
-      .filter((item) => item.url.split('#')[0] !== coursePageUrl)
-      .map((item) => normalizeTitle(item.title).toLowerCase()),
-  );
-  return assignments.filter((item) => {
-    if (!item.url || item.url.split('#')[0] !== coursePageUrl) return true;
-    const title = normalizeTitle(item.title).toLowerCase();
-    if (assignmentTitles.has(title)) return false;
-    assignmentTitles.add(title);
-    return true;
-  });
-};
-
 export const getCoursesSnapshot = (userId: string) => {
   const existingCourseSources = db
     .select()
@@ -261,9 +306,8 @@ export const getCoursesSnapshot = (userId: string) => {
       announcementCount: existingCourseAnnouncements.filter(
         (item) => item.courseId === row.id,
       ).length,
-      assignmentCount: uniqueAssignments(
-        existingCourseAssignments.filter((item) => item.courseId === row.id),
-        row.url,
+      assignmentCount: existingCourseAssignments.filter(
+        (item) => item.courseId === row.id,
       ).length,
     })),
     sources: existingCourseSources.map(
@@ -309,14 +353,10 @@ export const getCourseDetail = (
       ),
     )
     .all();
-  const visibleAssignments = uniqueAssignments(
-    existingCourseAssignments,
-    existingCourseRow.url,
-  );
   return {
     ...toSummary(existingCourseRow),
     announcementCount: existingCourseAnnouncements.length,
-    assignmentCount: visibleAssignments.length,
+    assignmentCount: existingCourseAssignments.length,
     instructor: existingCourseRow.content
       ? existingCourseRow.content.instructors.join(', ') || null
       : existingCourseRow.instructor,
@@ -324,7 +364,7 @@ export const getCourseDetail = (
       ? existingCourseRow.content.description
       : existingCourseRow.description,
     announcements: existingCourseAnnouncements.map(toChild),
-    assignments: visibleAssignments.map(toChild),
+    assignments: existingCourseAssignments.map(toChild),
   };
 };
 
@@ -357,90 +397,319 @@ const applyChildren = (
   table: CourseChildTable,
   userId: string,
   courseId: string,
+  courseSourceKey: string,
+  connectionId: string,
   host: string,
   scan: CourseChildScan,
   now: string,
-) => {
+  metrics?: CourseStoreMetrics,
+): boolean => {
   // 'pending' means this run never looked, so nothing may be replaced.
-  if (scan.status === 'pending') return;
+  if (scan.status === 'pending') return false;
   const complete = courseScanSucceeded(scan.status);
   const read = complete || scan.status === 'partial';
-  if (!read) return;
-  const findExistingChild = (
-    item: CourseChildItem,
-    sourceKey: string,
-    url: string,
-    title: string,
-  ) => {
-    const existingCourseChildren = tx
-      .select()
-      .from(table)
-      .where(and(eq(table.userId, userId), eq(table.courseId, courseId)))
+  if (!read) return false;
+  const kind =
+    table === CourseAssignmentTable ? 'assignments' : 'announcements';
+  const scope: ResourceIdentityScope = {
+    accountId: userId,
+    connectionId,
+    courseId,
+    kind,
+  };
+  const existingChildren = tx
+    .select()
+    .from(table)
+    .where(and(eq(table.userId, userId), eq(table.courseId, courseId)))
+    .all()
+    .filter((row) => !row.sourceKey.startsWith('manual:'));
+  const deletedSourceKeys = new Set(
+    tx
+      .select({ sourceKey: CourseRecordTombstoneTable.resourceSourceKey })
+      .from(CourseRecordTombstoneTable)
+      .where(
+        and(
+          eq(CourseRecordTombstoneTable.userId, userId),
+          eq(CourseRecordTombstoneTable.connectionId, connectionId),
+          eq(CourseRecordTombstoneTable.courseSourceKey, courseSourceKey),
+          eq(CourseRecordTombstoneTable.kind, kind),
+        ),
+      )
       .all()
-      .filter((row) => {
-        if (row.sourceKey.startsWith('manual:')) return false;
-        if (
-          row.content?.sourceId &&
-          item.content?.sourceId &&
-          row.content.sourceId !== item.content.sourceId
-        )
-          return false;
-        if (
-          item.content?.sourceId &&
-          row.content?.sourceId === item.content.sourceId
-        )
-          return true;
-        if (
-          row.sourceKey === sourceKey ||
-          row.sourceKey === childKey(url, title)
-        )
-          return true;
-        if (row.url === url && (row.content?.url || item.content?.url))
-          return true;
-        // A collection entry can become a detail link without becoming a new item.
-        return (
-          (url.startsWith(`${row.url}/`) ||
-            row.url.startsWith(`${url}/`) ||
-            row.url === url) &&
-          normalizeTitle(row.title).toLowerCase() === title.toLowerCase() &&
-          ((!row.content?.sourceId && !row.content?.url) ||
-            (!item.content?.sourceId && !item.content?.url))
+      .map(({ sourceKey }) => sourceKey),
+  );
+  const existingKeys = new Map<
+    SavedChildRow,
+    ReturnType<typeof resourceIdentityKeys>
+  >();
+  const rowsByAlias = new Map<string, SavedChildRow[]>();
+  const identityResourceByRow = new Map<SavedChildRow, ChildIdentityResource>();
+  const addRowToIndex = (
+    row: SavedChildRow,
+    resource: ChildIdentityResource,
+  ) => {
+    const keys = resourceIdentityKeys(scope, resource);
+    existingKeys.set(row, keys);
+    identityResourceByRow.set(row, resource);
+    for (const alias of [...keys.aliases, `record:${row.sourceKey}`]) {
+      const rows = rowsByAlias.get(alias) ?? [];
+      if (!rows.some((existing) => existing.id === row.id)) rows.push(row);
+      rowsByAlias.set(alias, rows);
+    }
+  };
+  for (const row of existingChildren)
+    addRowToIndex(row, savedChildIdentityResource(row));
+
+  const incomingEntries: Array<{
+    item: CourseChildItem;
+    resource: ChildIdentityResource;
+    inactive: boolean;
+  }> = [];
+  let untrusted = false;
+  for (const [items, inactive] of [
+    [scan.items, false],
+    [scan.inactiveItems ?? [], true],
+  ] as const)
+    for (const item of items) {
+      const url = observedUrl(item.url, host);
+      const title = normalizeTitle(item.title);
+      if (!url || !title) {
+        untrusted = true;
+        continue;
+      }
+      const trustedItem = { ...item, title, url };
+      incomingEntries.push({
+        item: trustedItem,
+        resource: childIdentityResource(trustedItem),
+        inactive,
+      });
+    }
+  const entryByResource = new Map(
+    incomingEntries.map((entry) => [entry.resource, entry] as const),
+  );
+  const reconciled = reconcileResourceIdentities(
+    incomingEntries.map(({ resource }) => ({ scope, resource })),
+  );
+  const ambiguousInputResources = new Set(
+    reconciled.ambiguities
+      .filter((ambiguity) => ambiguity.reason !== 'conflicting-source-ids')
+      .flatMap((ambiguity) => ambiguity.resources),
+  );
+  const savedResources = existingChildren.flatMap((row) => {
+    const resource = identityResourceByRow.get(row);
+    return resource ? [resource] : [];
+  });
+  const existingResourceSet = new Set(savedResources);
+  const historicalAmbiguities = reconcileResourceIdentities(
+    [...savedResources, ...incomingEntries.map(({ resource }) => resource)].map(
+      (resource) => ({ scope, resource }),
+    ),
+  ).ambiguities;
+  const unresolvedHistoricalAmbiguities = historicalAmbiguities.filter(
+    (ambiguity) => {
+      if (ambiguity.reason !== 'ambiguous-fallback') return false;
+      const existing = ambiguity.resources.filter((resource) =>
+        existingResourceSet.has(resource),
+      );
+      const incoming = ambiguity.resources.filter(
+        (resource) => !existingResourceSet.has(resource),
+      );
+      if (!existing.length || !incoming.length) return false;
+      return !incoming.some((incomingResource) => {
+        const incomingFallback = resourceIdentityKeys(
+          scope,
+          incomingResource,
+        ).fallback;
+        return existing.some(
+          (existingResource) =>
+            !!incomingFallback &&
+            incomingFallback ===
+              resourceIdentityKeys(scope, existingResource).fallback,
         );
       });
-    const sourceIds = new Set(
-      existingCourseChildren.flatMap((row) =>
-        row.content?.sourceId ? [row.content.sourceId] : [],
+    },
+  );
+  const preserveHistoricalResources = new Set(
+    unresolvedHistoricalAmbiguities.flatMap((ambiguity) =>
+      ambiguity.resources.filter(
+        (resource) => !existingResourceSet.has(resource),
       ),
+    ),
+  );
+  let ambiguous =
+    reconciled.ambiguities.length > 0 ||
+    unresolvedHistoricalAmbiguities.length > 0;
+  const seen = new Set<string>();
+  const uniqueRows = (rows: SavedChildRow[]) => [
+    ...new Map(rows.map((row) => [row.id, row])).values(),
+  ];
+  const matchExisting = (
+    keys: ReturnType<typeof resourceIdentityKeys>,
+    sourceKey: string,
+  ): { rows: SavedChildRow[]; ambiguous: boolean } => {
+    const rowsFor = (alias: string | null) =>
+      alias ? uniqueRows(rowsByAlias.get(alias) ?? []) : [];
+    const exactRecord = rowsFor(`record:${sourceKey}`);
+    if (exactRecord.length) return { rows: exactRecord, ambiguous: false };
+    const idMatches = (id: string) =>
+      rowsFor(`id:${id}`).filter((row) => {
+        const saved = existingKeys.get(row);
+        return saved?.sourceId === id || saved?.urlId === id;
+      });
+    if (keys.sourceId) {
+      const sameId = idMatches(keys.sourceId);
+      if (sameId.length) return { rows: sameId, ambiguous: false };
+      const byUrl = rowsFor(keys.itemUrl ? `url:${keys.itemUrl}` : null);
+      const unknownIdentity = byUrl.filter(
+        (row) => !existingKeys.get(row)?.sourceId,
+      );
+      return {
+        rows: unknownIdentity.length === 1 ? unknownIdentity : [],
+        ambiguous: unknownIdentity.length > 1,
+      };
+    }
+    if (keys.urlId) {
+      const sameId = idMatches(keys.urlId);
+      if (sameId.length) return { rows: sameId, ambiguous: false };
+    }
+    if (keys.itemUrl) {
+      const byUrl = rowsFor(`url:${keys.itemUrl}`);
+      const knownIds = new Set(
+        byUrl.flatMap((row) => {
+          const saved = existingKeys.get(row);
+          return saved?.sourceId ? [saved.sourceId] : [];
+        }),
+      );
+      if (knownIds.size > 1) return { rows: [], ambiguous: true };
+      if (byUrl.length) return { rows: byUrl, ambiguous: false };
+    }
+    const byFallback = rowsFor(keys.fallback);
+    return {
+      rows: byFallback.length === 1 ? byFallback : [],
+      ambiguous: byFallback.length > 1,
+    };
+  };
+
+  for (const candidate of reconciled.candidates) {
+    const entries = candidate.resources
+      .map((resource) => entryByResource.get(resource))
+      .filter((entry): entry is (typeof incomingEntries)[number] => !!entry);
+    if (!entries.length) continue;
+    if (
+      candidate.resources.some((resource) =>
+        preserveHistoricalResources.has(resource),
+      )
+    )
+      continue;
+    if (new Set(entries.map((entry) => entry.inactive)).size > 1) {
+      ambiguous = true;
+      continue;
+    }
+    const merged = mergeResourceIdentityCandidate(
+      candidate.resources as ChildIdentityResource[],
     );
-    if (sourceIds.size > 1)
-      return existingCourseChildren.find((row) => row.sourceKey === sourceKey);
-    const existingCourseChild = existingCourseChildren.sort(
-      (a, b) =>
-        Number(!!b.content?.sourceId) - Number(!!a.content?.sourceId) ||
-        b.url.length - a.url.length,
+    if (!merged.resource || merged.ambiguous) {
+      ambiguous = true;
+      continue;
+    }
+    const itemUrl = entries
+      .map(({ item }) => item.url)
+      .sort(
+        (left, right) =>
+          right.length - left.length || left.localeCompare(right),
+      )[0]!;
+    const { body, dateValue, dateText, ...contentFields } = merged.resource;
+    const content = entries.some((entry) => entry.item.content)
+      ? (contentFields as CourseChildItem['content'])
+      : null;
+    const item: CourseChildItem = {
+      title: merged.resource.title,
+      body: body ?? null,
+      dateValue: dateValue ?? null,
+      dateText: dateText ?? null,
+      url: itemUrl,
+      content,
+      retrievedAt: entries
+        .map(({ item: entryItem }) => entryItem.retrievedAt)
+        .filter((value): value is string => !!value)
+        .sort()
+        .slice(-1)[0],
+    };
+    const keys = resourceIdentityKeys(scope, merged.resource);
+    const identityConflict = candidate.resources.some((resource) =>
+      ambiguousInputResources.has(resource),
+    );
+    const hasExistingIdentity = keys.aliases.some(
+      (alias) => (rowsByAlias.get(alias)?.length ?? 0) > 0,
+    );
+    if (identityConflict && hasExistingIdentity) {
+      ambiguous = true;
+      continue;
+    }
+    const sourceKey = identityConflict
+      ? ambiguousSourceKey(merged.resource)
+      : identitySourceKey(keys);
+    if (
+      deletedSourceKeys.has(sourceKey) ||
+      keys.aliases.some((alias) => deletedSourceKeys.has(alias))
+    )
+      continue;
+    const match = matchExisting(keys, sourceKey);
+    if (match.ambiguous) ambiguous = true;
+    if (match.ambiguous && !keys.sourceId && !keys.urlId && !keys.itemUrl)
+      continue;
+    const sameIdentityRows = match.rows;
+    const existingCourseChild = sameIdentityRows.sort(
+      (left, right) =>
+        Number(right.active) - Number(left.active) ||
+        Number(!!existingKeys.get(right)?.sourceId) -
+          Number(!!existingKeys.get(left)?.sourceId) ||
+        right.url.length - left.url.length ||
+        left.id.localeCompare(right.id),
     )[0];
-    for (const duplicate of existingCourseChildren)
-      if (duplicate.id !== existingCourseChild.id)
+    for (const duplicate of sameIdentityRows)
+      if (existingCourseChild && duplicate.id !== existingCourseChild.id) {
+        if (duplicate.active && metrics) metrics.recordsRetired += 1;
         tx.update(table)
           .set({ active: false })
           .where(eq(table.id, duplicate.id))
           .run();
-    return existingCourseChild;
-  };
-  const seen = new Set<string>();
-  let untrusted = false;
-  for (const item of scan.items) {
-    const url = observedUrl(item.url, host);
-    const title = normalizeTitle(item.title);
-    if (!url || !title) {
-      untrusted = true;
+      }
+    for (const duplicate of sameIdentityRows)
+      if (existingCourseChild && duplicate.id !== existingCourseChild.id)
+        duplicate.active = false;
+    const inactive = entries[0]!.inactive;
+    if (inactive) {
+      if (existingCourseChild) {
+        if (existingCourseChild.active && metrics) metrics.recordsRetired += 1;
+        tx.update(table)
+          .set({
+            active: false,
+            sourceKey: existingCourseChild.sourceKey,
+            title: item.title,
+            content: item.content ?? existingCourseChild.content,
+            contentChangedAt:
+              existingCourseChild.active ||
+              existingCourseChild.title !== item.title ||
+              contentFingerprint(existingCourseChild.content) !==
+                contentFingerprint(item.content ?? existingCourseChild.content)
+                ? now
+                : existingCourseChild.contentChangedAt,
+            lastSeenAt: item.retrievedAt ?? now,
+          })
+          .where(eq(table.id, existingCourseChild.id))
+          .run();
+        seen.delete(existingCourseChild.sourceKey);
+      }
       continue;
     }
-    const sourceKey = childKey(url, title, item);
-    const existingCourseChild = findExistingChild(item, sourceKey, url, title);
+    if (!sourceKey) {
+      ambiguous = true;
+      continue;
+    }
     seen.add(existingCourseChild?.sourceKey ?? sourceKey);
     const fields = {
-      title,
+      title: item.title,
       body: item.body ?? existingCourseChild?.body ?? null,
       dateValue:
         item.content || item.dateValue !== null || item.dateText !== null
@@ -453,9 +722,9 @@ const applyChildren = (
       url:
         existingCourseChild &&
         !item.content?.url &&
-        existingCourseChild.url.startsWith(`${url}/`)
+        existingCourseChild.url.startsWith(`${item.url}/`)
           ? existingCourseChild.url
-          : url,
+          : item.url,
       content: item.content
         ? {
             ...item.content,
@@ -482,78 +751,58 @@ const applyChildren = (
     const contentChangedAt = changed
       ? now
       : (existingCourseChild?.contentChangedAt ?? null);
-    if (existingCourseChild)
+    const lastSeenAt = item.retrievedAt ?? now;
+    if (existingCourseChild) {
+      if (changed && metrics) metrics.recordsUpdated += 1;
       tx.update(table)
         .set({
           ...(changed
             ? fields
             : { content: fields.content, dateText: fields.dateText }),
           sourceKey: existingCourseChild.sourceKey,
-          lastSeenAt: item.retrievedAt ?? now,
+          lastSeenAt,
           contentChangedAt,
         })
         .where(eq(table.id, existingCourseChild.id))
         .run();
-    else
-      tx.insert(table)
-        .values({
-          id: randomUUID(),
-          userId,
-          courseId,
-          sourceKey,
-          ...fields,
-          lastSeenAt: item.retrievedAt ?? now,
-          contentChangedAt,
-        })
-        .run();
+      Object.assign(existingCourseChild, {
+        ...fields,
+        lastSeenAt,
+        contentChangedAt,
+      });
+      addRowToIndex(
+        existingCourseChild,
+        savedChildIdentityResource(existingCourseChild),
+      );
+    } else {
+      if (metrics) metrics.recordsCreated += 1;
+      const insertedRow = {
+        id: randomUUID(),
+        userId,
+        courseId,
+        sourceKey,
+        ...fields,
+        lastSeenAt,
+        contentChangedAt,
+      } as SavedChildRow;
+      tx.insert(table).values(insertedRow).run();
+      existingChildren.push(insertedRow);
+      addRowToIndex(insertedRow, savedChildIdentityResource(insertedRow));
+    }
   }
-  for (const item of scan.inactiveItems ?? []) {
-    const url = observedUrl(item.url, host);
-    const title = normalizeTitle(item.title);
-    if (!url || !title) continue;
-    const sourceKey = childKey(url, title, item);
-    const existingCourseChild = findExistingChild(item, sourceKey, url, title);
-    if (existingCourseChild)
-      tx.update(table)
-        .set({
-          active: false,
-          sourceKey: existingCourseChild.sourceKey,
-          title,
-          content: item.content ?? existingCourseChild.content,
-          contentChangedAt:
-            existingCourseChild.active ||
-            existingCourseChild.title !== title ||
-            contentFingerprint(existingCourseChild.content) !==
-              contentFingerprint(item.content ?? existingCourseChild.content)
-              ? now
-              : existingCourseChild.contentChangedAt,
-          lastSeenAt: item.retrievedAt ?? now,
-        })
-        .where(eq(table.id, existingCourseChild.id))
-        .run();
-    seen.delete(existingCourseChild?.sourceKey ?? sourceKey);
-  }
-  if (!complete || untrusted) return;
-  const existingCourseChildren = tx
-    .select({ id: table.id, sourceKey: table.sourceKey })
-    .from(table)
-    .where(
-      and(
-        eq(table.userId, userId),
-        eq(table.courseId, courseId),
-        eq(table.active, true),
-      ),
-    )
-    .all();
-  for (const existingCourseChild of existingCourseChildren)
+  if (!complete || untrusted || ambiguous) return untrusted || ambiguous;
+  for (const existingCourseChild of existingChildren)
     if (
-      !existingCourseChild.sourceKey.startsWith('manual:') &&
+      existingCourseChild.active &&
       !seen.has(existingCourseChild.sourceKey)
-    )
+    ) {
+      if (metrics) metrics.recordsRetired += 1;
       tx.update(table)
         .set({ active: false })
         .where(eq(table.id, existingCourseChild.id))
         .run();
+    }
+  return false;
 };
 
 // Coverage a scan actually established; 'pending' never overwrites known state.
@@ -633,6 +882,39 @@ const upsertCourse = (
         contentFingerprint(existingCourse[key as keyof typeof existingCourse]),
     );
   if (existingCourse) {
+    if (existingCourse.sourceKey !== sourceKey) {
+      const existingTombstones = tx
+        .select()
+        .from(CourseRecordTombstoneTable)
+        .where(
+          and(
+            eq(CourseRecordTombstoneTable.userId, userId),
+            eq(CourseRecordTombstoneTable.connectionId, connection.id),
+            eq(
+              CourseRecordTombstoneTable.courseSourceKey,
+              existingCourse.sourceKey,
+            ),
+            or(
+              eq(CourseRecordTombstoneTable.kind, 'assignments'),
+              eq(CourseRecordTombstoneTable.kind, 'announcements'),
+            ),
+          ),
+        )
+        .all();
+      for (const tombstone of existingTombstones) {
+        tx.insert(CourseRecordTombstoneTable)
+          .values({
+            ...tombstone,
+            id: randomUUID(),
+            courseSourceKey: sourceKey,
+          })
+          .onConflictDoNothing()
+          .run();
+        tx.delete(CourseRecordTombstoneTable)
+          .where(eq(CourseRecordTombstoneTable.id, tombstone.id))
+          .run();
+      }
+    }
     tx.update(CourseTable)
       .set({
         ...fields,
@@ -641,7 +923,15 @@ const upsertCourse = (
       })
       .where(eq(CourseTable.id, existingCourse.id))
       .run();
-    return existingCourse.id;
+    return {
+      id: existingCourse.id,
+      created: false,
+      updated: changed || !existingCourse.active,
+      previousCoverage: {
+        announcementsSyncedAt: existingCourse.announcementsSyncedAt,
+        assignmentsSyncedAt: existingCourse.assignmentsSyncedAt,
+      },
+    };
   }
   const id = randomUUID();
   tx.insert(CourseTable)
@@ -655,7 +945,45 @@ const upsertCourse = (
       ...fields,
     })
     .run();
-  return id;
+  return {
+    id,
+    created: true,
+    updated: false,
+    previousCoverage: {
+      announcementsSyncedAt: null,
+      assignmentsSyncedAt: null,
+    },
+  };
+};
+
+const lowerAmbiguousCourseCoverage = (
+  tx: CourseWriter,
+  courseId: string,
+  previousCoverage: {
+    announcementsSyncedAt: string | null;
+    assignmentsSyncedAt: string | null;
+  },
+  ambiguous: { announcements: boolean; assignments: boolean },
+) => {
+  const fields = {
+    ...(ambiguous.announcements
+      ? {
+          announcementsStatus: 'partial' as const,
+          announcementsSyncedAt: previousCoverage.announcementsSyncedAt,
+        }
+      : {}),
+    ...(ambiguous.assignments
+      ? {
+          assignmentsStatus: 'partial' as const,
+          assignmentsSyncedAt: previousCoverage.assignmentsSyncedAt,
+        }
+      : {}),
+  };
+  if (Object.keys(fields).length)
+    tx.update(CourseTable)
+      .set(fields)
+      .where(eq(CourseTable.id, courseId))
+      .run();
 };
 
 const applyCourseList = (
@@ -664,9 +992,24 @@ const applyCourseList = (
   connection: AcademicConnectionSelectData,
   scan: CourseSourceScan,
   now: string,
+  metrics: CourseStoreMetrics,
 ) => {
   const seen = new Set<string>();
   let untrusted = false;
+  const deletedCourseSourceKeys = new Set(
+    tx
+      .select({ sourceKey: CourseRecordTombstoneTable.resourceSourceKey })
+      .from(CourseRecordTombstoneTable)
+      .where(
+        and(
+          eq(CourseRecordTombstoneTable.userId, userId),
+          eq(CourseRecordTombstoneTable.connectionId, connection.id),
+          eq(CourseRecordTombstoneTable.kind, 'courses'),
+        ),
+      )
+      .all()
+      .map(({ sourceKey }) => sourceKey),
+  );
   for (const observed of scan.courses) {
     const url = observedUrl(observed.url, connection.host);
     if (!url) {
@@ -674,8 +1017,15 @@ const applyCourseList = (
       continue;
     }
     const sourceKey = courseKey(scan.connectionId, observed.externalId, url);
+    if (
+      deletedCourseSourceKeys.has(sourceKey) ||
+      deletedCourseSourceKeys.has(courseKey(scan.connectionId, null, url))
+    ) {
+      seen.add(sourceKey);
+      continue;
+    }
     seen.add(sourceKey);
-    const courseId = upsertCourse(
+    const upsertedCourse = upsertCourse(
       tx,
       userId,
       connection,
@@ -684,23 +1034,40 @@ const applyCourseList = (
       observed,
       now,
     );
-    applyChildren(
+    if (upsertedCourse.created) metrics.recordsCreated += 1;
+    if (upsertedCourse.updated) metrics.recordsUpdated += 1;
+    const ambiguousAnnouncements = applyChildren(
       tx,
       CourseAnnouncementTable,
       userId,
-      courseId,
+      upsertedCourse.id,
+      sourceKey,
+      connection.id,
       connection.host,
       observed.announcements,
       now,
+      metrics,
     );
-    applyChildren(
+    const ambiguousAssignments = applyChildren(
       tx,
       CourseAssignmentTable,
       userId,
-      courseId,
+      upsertedCourse.id,
+      sourceKey,
+      connection.id,
       connection.host,
       observed.assignments,
       now,
+      metrics,
+    );
+    lowerAmbiguousCourseCoverage(
+      tx,
+      upsertedCourse.id,
+      upsertedCourse.previousCoverage,
+      {
+        announcements: ambiguousAnnouncements,
+        assignments: ambiguousAssignments,
+      },
     );
   }
   // Retirement needs a list we are sure is whole; anything less keeps history.
@@ -717,19 +1084,25 @@ const applyCourseList = (
     )
     .all();
   for (const existingCourse of existingCourses)
-    if (!seen.has(existingCourse.sourceKey))
+    if (!seen.has(existingCourse.sourceKey)) {
+      metrics.recordsRetired += 1;
       tx.update(CourseTable)
         .set({ active: false })
         .where(eq(CourseTable.id, existingCourse.id))
         .run();
+    }
 };
 
 export const applyCourseRefresh = (
   userId: string,
   scans: CourseSourceScan[],
-  options: { now?: string } = {},
+  options: {
+    now?: string;
+    onMetrics?: (metrics: CourseStoreMetrics) => void;
+  } = {},
 ) => {
   const now = options.now ?? new Date().toISOString();
+  const metrics = emptyCourseStoreMetrics();
   db.transaction((tx) => {
     for (const scan of scans) {
       // Re-read at commit time: a source unmarked or removed while the browser
@@ -774,9 +1147,10 @@ export const applyCourseRefresh = (
         })
         .run();
       if (succeeded || scan.outcome === 'partial')
-        applyCourseList(tx, userId, existingConnection, scan, now);
+        applyCourseList(tx, userId, existingConnection, scan, now, metrics);
     }
   });
+  options.onMetrics?.(metrics);
   notifyCourseChanges(userId);
   return getCoursesSnapshot(userId);
 };
@@ -810,7 +1184,7 @@ export const applySingleCourseRefresh = (
     const url = observedUrl(observed.url, existingConnection.host);
     if (!url || url !== existingCourse.url) return;
     const now = new Date().toISOString();
-    upsertCourse(
+    const upsertedCourse = upsertCourse(
       tx,
       userId,
       existingConnection,
@@ -819,23 +1193,36 @@ export const applySingleCourseRefresh = (
       observed,
       now,
     );
-    applyChildren(
+    const ambiguousAnnouncements = applyChildren(
       tx,
       CourseAnnouncementTable,
       userId,
       courseId,
+      existingCourse.sourceKey,
+      existingConnection.id,
       existingConnection.host,
       observed.announcements,
       now,
     );
-    applyChildren(
+    const ambiguousAssignments = applyChildren(
       tx,
       CourseAssignmentTable,
       userId,
       courseId,
+      existingCourse.sourceKey,
+      existingConnection.id,
       existingConnection.host,
       observed.assignments,
       now,
+    );
+    lowerAmbiguousCourseCoverage(
+      tx,
+      courseId,
+      upsertedCourse.previousCoverage,
+      {
+        announcements: ambiguousAnnouncements,
+        assignments: ambiguousAssignments,
+      },
     );
   });
   notifyCourseChanges(userId, courseId);
@@ -997,11 +1384,49 @@ export const deleteCourseRecord = (
   const data = courseRecordSchema.parse(input);
   db.transaction((tx) => {
     if (data.kind === 'courses') {
-      if (
-        data.id !== data.courseId ||
-        !getCourseRefreshTarget(userId, data.courseId)
-      )
+      const existingCourse = tx
+        .select({
+          connectionId: CourseTable.connectionId,
+          sourceKey: CourseTable.sourceKey,
+          url: CourseTable.url,
+        })
+        .from(CourseTable)
+        .where(
+          and(
+            eq(CourseTable.userId, userId),
+            eq(CourseTable.id, data.courseId),
+          ),
+        )
+        .get();
+      if (data.id !== data.courseId || !existingCourse)
         throw new Error('This course is no longer available.');
+      if (
+        existingCourse.connectionId &&
+        !existingCourse.sourceKey.startsWith('manual:')
+      )
+        tx.insert(CourseRecordTombstoneTable)
+          .values(
+            [
+              ...new Set([
+                existingCourse.sourceKey,
+                courseKey(
+                  existingCourse.connectionId,
+                  null,
+                  existingCourse.url,
+                ),
+              ]),
+            ].map((resourceSourceKey) => ({
+              id: randomUUID(),
+              userId,
+              connectionId: existingCourse.connectionId!,
+              courseSourceKey: existingCourse.sourceKey,
+              kind: 'courses' as const,
+              resourceSourceKey,
+              createdAt: new Date().toISOString(),
+            })),
+          )
+          .onConflictDoNothing()
+          .run();
       for (const table of [CourseAssignmentTable, CourseAnnouncementTable])
         tx.delete(table)
           .where(
@@ -1030,10 +1455,55 @@ export const deleteCourseRecord = (
             eq(table.id, data.id),
           ),
         )
-        .returning({ id: table.id })
+        .returning()
         .get();
       if (!deletedCourseChild)
         throw new Error('This item is no longer available.');
+      const existingCourse = tx
+        .select({
+          connectionId: CourseTable.connectionId,
+          sourceKey: CourseTable.sourceKey,
+        })
+        .from(CourseTable)
+        .where(
+          and(
+            eq(CourseTable.userId, userId),
+            eq(CourseTable.id, data.courseId),
+          ),
+        )
+        .get();
+      if (
+        existingCourse?.connectionId &&
+        !existingCourse.sourceKey.startsWith('manual:') &&
+        !deletedCourseChild.sourceKey.startsWith('manual:')
+      )
+        tx.insert(CourseRecordTombstoneTable)
+          .values(
+            [
+              ...new Set([
+                deletedCourseChild.sourceKey,
+                ...resourceIdentityKeys(
+                  {
+                    accountId: userId,
+                    connectionId: existingCourse.connectionId,
+                    courseId: data.courseId,
+                    kind: data.kind,
+                  },
+                  savedChildIdentityResource(deletedCourseChild),
+                ).aliases,
+              ]),
+            ].map((resourceSourceKey) => ({
+              id: randomUUID(),
+              userId,
+              connectionId: existingCourse.connectionId!,
+              courseSourceKey: existingCourse.sourceKey,
+              kind: data.kind,
+              resourceSourceKey,
+              createdAt: new Date().toISOString(),
+            })),
+          )
+          .onConflictDoNothing()
+          .run();
     }
   });
   notifyCourseChanges(userId, data.kind === 'courses' ? null : data.courseId);

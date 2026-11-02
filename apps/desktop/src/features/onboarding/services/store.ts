@@ -62,6 +62,20 @@ export const getOnboardingState = (userId: string): OnboardingState => {
     .from(SettingTable)
     .where(eq(SettingTable.userId, userId))
     .get()!;
+  const decisionTimeSeconds = Math.min(
+    5,
+    Math.max(
+      0.5,
+      Number.isFinite(existingSettings.decisionTimeSeconds)
+        ? existingSettings.decisionTimeSeconds
+        : 1,
+    ),
+  );
+  if (decisionTimeSeconds !== existingSettings.decisionTimeSeconds)
+    db.update(SettingTable)
+      .set({ decisionTimeSeconds })
+      .where(eq(SettingTable.userId, userId))
+      .run();
   const existingContext = db
     .select()
     .from(AcademicContextTable)
@@ -100,7 +114,7 @@ export const getOnboardingState = (userId: string): OnboardingState => {
     .where(eq(AcademicContextEntryTable.userId, userId))
     .all();
   configureBrowserPolicy(existingSettings.blockedWords);
-  missionTraffic.setIntervalSeconds(existingSettings.decisionTimeSeconds);
+  missionTraffic.setIntervalSeconds(decisionTimeSeconds);
   return {
     accountId: userId,
     settings: {
@@ -108,7 +122,7 @@ export const getOnboardingState = (userId: string): OnboardingState => {
       consent: existingSettings.consent,
       launchAtLogin: existingSettings.launchAtLogin,
       backgroundSync: existingSettings.backgroundSync,
-      decisionTimeSeconds: existingSettings.decisionTimeSeconds,
+      decisionTimeSeconds,
       blockedWords: existingSettings.blockedWords,
       localSetupCompletedAt: existingSettings.localSetupCompletedAt,
       notes: existingContext.notes,

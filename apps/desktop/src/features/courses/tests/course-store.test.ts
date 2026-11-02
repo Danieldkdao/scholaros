@@ -6,17 +6,27 @@ vi.mock('electron', async () => {
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
   const userData = mkdtempSync(join(tmpdir(), 'scholaros-courses-'));
+  const app = {
+    getPath: () => userData,
+    getAppPath: () => process.cwd(),
+    isPackaged: false,
+    once: vi.fn(),
+    on: vi.fn(),
+    getLoginItemSettings: () => ({ openAtLogin: false }),
+  };
+  const net = { fetch: vi.fn() };
+  const shell = { openExternal: vi.fn() };
   return {
-    app: {
-      getPath: () => userData,
-      getAppPath: () => process.cwd(),
-      isPackaged: false,
-      once: vi.fn(),
-      on: vi.fn(),
-      getLoginItemSettings: () => ({ openAtLogin: false }),
-    },
+    app,
+    net,
+    shell,
+    default: { app, net },
   };
 });
+
+vi.mock('../../onboarding/services/browser-model', () => ({
+  createBrowserModel: vi.fn(),
+}));
 
 const { db } = await import('../../../db');
 const {
@@ -24,6 +34,7 @@ const {
   AcademicContextTable,
   CourseAnnouncementTable,
   CourseAssignmentTable,
+  CourseRecordTombstoneTable,
   CourseSourceTable,
   CourseTable,
   SettingTable,
@@ -147,6 +158,7 @@ beforeEach(() => {
   vi.setSystemTime(new Date('2026-10-01T12:00:00.000Z'));
   db.delete(CourseAnnouncementTable).run();
   db.delete(CourseAssignmentTable).run();
+  db.delete(CourseRecordTombstoneTable).run();
   db.delete(CourseTable).run();
   db.delete(CourseSourceTable).run();
   db.delete(AcademicConnectionTable).run();
@@ -159,6 +171,81 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe('saving a course refresh', () => {
+  it('reports committed record creates, content updates, and retirements', () => {
+    const onMetrics = vi.fn();
+    const course = observedCourse({
+      assignments: { status: 'complete', items: [child('Lab report')] },
+    });
+    applyCourseRefresh(student, [sourceScan({ courses: [course] })], {
+      now: first,
+      onMetrics,
+    });
+
+    expect(onMetrics).toHaveBeenLastCalledWith({
+      recordsCreated: 2,
+      recordsUpdated: 0,
+      recordsRetired: 0,
+    });
+    onMetrics.mockClear();
+    applyCourseRefresh(
+      student,
+      [
+        sourceScan({
+          courses: [
+            observedCourse({
+              name: 'Biology 101 revised',
+              assignments: {
+                status: 'complete',
+                items: [child('Lab report', { body: 'Revised instructions' })],
+              },
+            }),
+          ],
+        }),
+      ],
+      { now: second, onMetrics },
+    );
+
+    expect(onMetrics).toHaveBeenLastCalledWith({
+      recordsCreated: 0,
+      recordsUpdated: 2,
+      recordsRetired: 0,
+    });
+    onMetrics.mockClear();
+    applyCourseRefresh(
+      student,
+      [
+        sourceScan({
+          courses: [
+            observedCourse({
+              name: 'Biology 101 revised',
+              assignments: { status: 'complete', items: [] },
+            }),
+          ],
+        }),
+      ],
+      { now: second, onMetrics },
+    );
+
+    expect(onMetrics).toHaveBeenLastCalledWith({
+      recordsCreated: 0,
+      recordsUpdated: 0,
+      recordsRetired: 1,
+    });
+    onMetrics.mockClear();
+    applyCourseRefresh(student, [sourceScan({ courses: [] })], {
+      now: second,
+      onMetrics,
+    });
+    onMetrics.mockClear();
+    applyCourseRefresh(student, [sourceScan()], { now: second, onMetrics });
+
+    expect(onMetrics).toHaveBeenLastCalledWith({
+      recordsCreated: 0,
+      recordsUpdated: 1,
+      recordsRetired: 0,
+    });
+  });
+
   it('restores background-sync eligibility after a previously signed-out source is read', () => {
     db.update(AcademicConnectionTable).set({ status: 'needs-sign-in' }).run();
     applyCourseRefresh(student, [sourceScan()]);
@@ -613,7 +700,7 @@ it('retires explicitly submitted work on a partial scan without removing unobser
   ]);
 });
 
-it('shows a detailed assignment once when a course summary also lists it', () => {
+it('preserves same-title course and detail links when no identity evidence connects them', () => {
   applyCourseRefresh(student, [
     sourceScan({
       courses: [
@@ -632,14 +719,18 @@ it('shows a detailed assignment once when a course summary also lists it', () =>
       ],
     }),
   ]);
-  expect(onlyCourse().assignmentCount).toBe(1);
-  expect(detailOf().assignments).toEqual([
-    expect.objectContaining({
-      title: 'Essay',
-      url: `${assignmentsUrl}/1`,
-      body: 'Detailed requirements',
-    }),
-  ]);
+  expect(onlyCourse().assignmentCount).toBe(2);
+  expect(detailOf().assignments).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ title: 'Essay', url: biologyUrl }),
+      expect.objectContaining({
+        title: 'Essay',
+        url: `${assignmentsUrl}/1`,
+        body: 'Detailed requirements',
+      }),
+    ]),
+  );
+  expect(onlyCourse().assignmentsStatus).toBe('partial');
 });
 
 it('preserves different detailed assignments that happen to share a title', () => {
@@ -661,7 +752,7 @@ it('preserves different detailed assignments that happen to share a title', () =
   expect(detailOf().assignments).toHaveLength(2);
 });
 
-it('shows an upcoming assignment once across same-page fragment links', () => {
+it('preserves same-title fragment links when they have no shared identity evidence', () => {
   applyCourseRefresh(student, [
     sourceScan({
       courses: [
@@ -677,7 +768,8 @@ it('shows an upcoming assignment once across same-page fragment links', () => {
       ],
     }),
   ]);
-  expect(detailOf().assignments).toHaveLength(1);
+  expect(detailOf().assignments).toHaveLength(2);
+  expect(onlyCourse().assignmentsStatus).toBe('partial');
 });
 
 it('counts only active saved content on course summaries', () => {
@@ -1008,8 +1100,159 @@ it('keeps one assignment when a partial scan finds its detail link after its col
   save(child('Essay', { url: `${assignmentsUrl}/123` }));
   expect(detailOf().assignments).toMatchObject([{ id, title: 'Essay' }]);
   expect(db.select().from(CourseAssignmentTable).all()).toHaveLength(1);
+  expect(onlyCourse().assignmentsStatus).toBe('partial');
   save(child('Essay', { url: assignmentsUrl }));
   expect(db.select().from(CourseAssignmentTable).all()).toHaveLength(1);
+});
+
+it('connects a verified source ID to its later detail URL without changing the local ID', () => {
+  const sourceUrl = assignmentsUrl;
+  const content = (
+    sourceId: string | null,
+    url: string | null,
+    excerpts: string[],
+  ) => ({
+    title: 'Worksheet 1',
+    description: null,
+    kind: 'assignment' as const,
+    state: 'active-unsubmitted' as const,
+    due: null,
+    availableFrom: null,
+    availableUntil: null,
+    pointsPossible: null,
+    sourceId,
+    url,
+    resources: [],
+    evidence: { sourceUrl, excerpts, targetIds: [] },
+  });
+  const save = (item: CourseChildItem) =>
+    applyCourseRefresh(student, [
+      sourceScan({
+        courses: [
+          observedCourse({
+            assignments: { status: 'partial', items: [item] },
+          }),
+        ],
+      }),
+    ]);
+
+  save(
+    child('Worksheet 1', {
+      url: assignmentsUrl,
+      content: content('123', null, ['Worksheet 1 assignment 123']),
+    }),
+  );
+  const savedId = detailOf().assignments[0]?.id;
+  save(
+    child('Worksheet 1', {
+      url: `${assignmentsUrl}/123`,
+      content: content(null, `${assignmentsUrl}/123`, ['Worksheet 1']),
+    }),
+  );
+
+  expect(detailOf().assignments).toMatchObject([
+    { id: savedId, title: 'Worksheet 1', content: { sourceId: '123' } },
+  ]);
+  expect(db.select().from(CourseAssignmentTable).all()).toHaveLength(1);
+});
+
+it('stores each member of repeated duplicate pairs once across checkpoints', () => {
+  const assignment = (sourceId: string) => {
+    const url = `${assignmentsUrl}/${sourceId}`;
+    return child(`Worksheet ${sourceId}`, {
+      url,
+      content: {
+        title: `Worksheet ${sourceId}`,
+        description: null,
+        kind: 'assignment',
+        state: 'active-unsubmitted',
+        due: null,
+        availableFrom: null,
+        availableUntil: null,
+        pointsPossible: null,
+        sourceId,
+        url,
+        resources: [],
+        evidence: {
+          sourceUrl: assignmentsUrl,
+          excerpts: [`Worksheet ${sourceId} ${sourceId}`],
+          targetIds: [],
+        },
+      },
+    });
+  };
+  const first = assignment('a1');
+  const second = assignment('a2');
+  const save = (items: CourseChildItem[]) =>
+    applyCourseRefresh(student, [
+      sourceScan({
+        courses: [
+          observedCourse({
+            assignments: { status: 'complete', items },
+          }),
+        ],
+      }),
+    ]);
+
+  save([first, second, first, second]);
+  const savedIds = new Map(
+    detailOf().assignments.map((item) => [item.content?.sourceId, item.id]),
+  );
+  save([second, first, second, first]);
+
+  expect(db.select().from(CourseAssignmentTable).all()).toHaveLength(2);
+  expect(
+    new Map(
+      detailOf().assignments.map((item) => [item.content?.sourceId, item.id]),
+    ),
+  ).toEqual(savedIds);
+});
+
+it('preserves conflicting source IDs sharing a URL and lowers coverage to partial', () => {
+  const sharedUrl = `${assignmentsUrl}/shared`;
+  const content = (sourceId: string) => ({
+    title: 'Weekly reflection',
+    description: null,
+    kind: 'assignment' as const,
+    state: 'active-unsubmitted' as const,
+    due: null,
+    availableFrom: null,
+    availableUntil: null,
+    pointsPossible: null,
+    sourceId,
+    url: sharedUrl,
+    resources: [],
+    evidence: {
+      sourceUrl: assignmentsUrl,
+      excerpts: [`Weekly reflection ${sourceId}`],
+      targetIds: [],
+    },
+  });
+
+  applyCourseRefresh(student, [
+    sourceScan({
+      courses: [
+        observedCourse({
+          assignments: {
+            status: 'complete',
+            items: [
+              child('Weekly reflection', {
+                url: sharedUrl,
+                content: content('a1'),
+              }),
+              child('Weekly reflection', {
+                url: sharedUrl,
+                content: content('a2'),
+              }),
+            ],
+          },
+        }),
+      ],
+    }),
+  ]);
+
+  expect(db.select().from(CourseAssignmentTable).all()).toHaveLength(2);
+  expect(detailOf().assignmentsStatus).toBe('partial');
 });
 
 it('edits and deletes local records within their account and course scope', async () => {
@@ -1049,7 +1292,174 @@ it('edits and deletes local records within their account and course scope', asyn
   expect(db.select().from(CourseAnnouncementTable).all()).toEqual([]);
 });
 
-it('retires an existing collection duplicate when its detailed assignment is refreshed', () => {
+it('keeps an explicitly deleted source assignment suppressed on later scans', async () => {
+  const { deleteCourseRecord } = await import('../services/store');
+  saveBoth();
+  const saved = detailOf();
+  deleteCourseRecord(student, {
+    kind: 'assignments',
+    courseId: saved.id,
+    id: saved.assignments[0]!.id,
+  });
+
+  applyCourseRefresh(
+    student,
+    [
+      sourceScan({
+        courses: [
+          observedCourse({
+            announcements: { status: 'complete', items: [child('Welcome')] },
+            assignments: {
+              status: 'complete',
+              items: [child('Essay', { url: assignmentsUrl })],
+            },
+          }),
+        ],
+      }),
+    ],
+    { now: second },
+  );
+
+  expect(getCourseDetail(student, saved.id)!.assignments).toEqual([]);
+});
+
+it('keeps a deleted assignment suppressed after its platform ID becomes known', async () => {
+  const { deleteCourseRecord } = await import('../services/store');
+  const url = `${biologyUrl}/work/essay`;
+  const save = (sourceId: string | null) =>
+    applyCourseRefresh(student, [
+      sourceScan({
+        courses: [
+          observedCourse({
+            assignments: {
+              status: 'complete',
+              items: [
+                child('Essay', {
+                  url,
+                  content: {
+                    title: 'Essay',
+                    description: null,
+                    kind: 'assignment',
+                    state: 'active-unsubmitted',
+                    due: null,
+                    availableFrom: null,
+                    availableUntil: null,
+                    pointsPossible: null,
+                    sourceId,
+                    url,
+                    resources: [],
+                    evidence: {
+                      sourceUrl: assignmentsUrl,
+                      excerpts: ['Essay assignment essay-1'],
+                      targetIds: [],
+                    },
+                  },
+                }),
+              ],
+            },
+          }),
+        ],
+      }),
+    ]);
+  save(null);
+  const saved = detailOf();
+  deleteCourseRecord(student, {
+    kind: 'assignments',
+    courseId: saved.id,
+    id: saved.assignments[0]!.id,
+  });
+
+  save('essay-1');
+
+  expect(getCourseDetail(student, saved.id)?.assignments).toEqual([]);
+});
+
+it('keeps deleted child records suppressed when their course adopts a platform ID', async () => {
+  const { deleteCourseRecord } = await import('../services/store');
+  saveBoth();
+  const saved = detailOf();
+  deleteCourseRecord(student, {
+    kind: 'assignments',
+    courseId: saved.id,
+    id: saved.assignments[0]!.id,
+  });
+  deleteCourseRecord(student, {
+    kind: 'announcements',
+    courseId: saved.id,
+    id: saved.announcements[0]!.id,
+  });
+  const existingTombstone = db
+    .select()
+    .from(CourseRecordTombstoneTable)
+    .all()[0]!;
+  db.insert(CourseRecordTombstoneTable)
+    .values({
+      ...existingTombstone,
+      id: 'already-adopted-tombstone',
+      courseSourceKey: 'connection-a course-1',
+    })
+    .run();
+
+  applyCourseRefresh(student, [
+    sourceScan({
+      courses: [
+        observedCourse({
+          externalId: 'course-1',
+          assignments: {
+            status: 'complete',
+            items: [child('Essay', { url: assignmentsUrl })],
+          },
+          announcements: { status: 'complete', items: [child('Welcome')] },
+        }),
+      ],
+    }),
+  ]);
+
+  expect(getCourseDetail(student, saved.id)).toMatchObject({
+    assignments: [],
+    announcements: [],
+  });
+});
+
+it('keeps an explicitly deleted source course suppressed on later scans', async () => {
+  const { deleteCourseRecord } = await import('../services/store');
+  saveBoth();
+  const saved = onlyCourse();
+  deleteCourseRecord(student, {
+    kind: 'courses',
+    courseId: saved.id,
+    id: saved.id,
+  });
+
+  applyCourseRefresh(student, [sourceScan()], { now: second });
+
+  expect(savedCourses()).toEqual([]);
+});
+
+it('keeps a deleted course suppressed when a later scan learns its platform ID', async () => {
+  const { deleteCourseRecord } = await import('../services/store');
+  saveBoth();
+  const saved = onlyCourse();
+  deleteCourseRecord(student, {
+    kind: 'courses',
+    courseId: saved.id,
+    id: saved.id,
+  });
+
+  applyCourseRefresh(
+    student,
+    [
+      sourceScan({
+        courses: [observedCourse({ externalId: 'new-platform-id' })],
+      }),
+    ],
+    { now: second },
+  );
+
+  expect(savedCourses()).toEqual([]);
+});
+
+it('preserves existing collection and detail rows until their identity is verified', () => {
   const save = (url: string) =>
     applyCourseRefresh(student, [
       sourceScan({
@@ -1075,10 +1485,11 @@ it('retires an existing collection duplicate when its detailed assignment is ref
     })
     .run();
   save(url);
-  expect(detailOf().assignments).toHaveLength(1);
-  expect(onlyCourse().assignmentCount).toBe(1);
+  expect(detailOf().assignments).toHaveLength(2);
+  expect(onlyCourse().assignmentCount).toBe(2);
+  expect(onlyCourse().assignmentsStatus).toBe('partial');
   save(assignmentsUrl);
-  expect(detailOf().assignments).toHaveLength(1);
+  expect(detailOf().assignments).toHaveLength(2);
 });
 
 it('updates normalized course and announcement content without losing their source identity', async () => {

@@ -135,9 +135,13 @@ app.on('window-all-closed', () => {
   if (serviceMode || quitting) return;
   void requestAcademicService('getState')
     .then((state) => {
+      const currentState = state as {
+        settings?: { backgroundSync?: boolean };
+        watch?: { enabled?: boolean };
+      };
       keepService =
-        (state as { settings?: { backgroundSync?: boolean } })?.settings
-          ?.backgroundSync === true;
+        currentState.settings?.backgroundSync === true ||
+        currentState.watch?.enabled === true;
     })
     .catch(() => undefined)
     .finally(() => app.quit());

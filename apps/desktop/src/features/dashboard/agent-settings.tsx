@@ -5,6 +5,7 @@ import {
   useState,
   useSyncExternalStore,
 } from 'react';
+import type { ReactNode } from 'react';
 import { CircleAlert, CircleCheck, Loader2 } from 'lucide-react';
 import { Input } from '@scholaros/ui/components/input';
 import { Textarea } from '@scholaros/ui/components/textarea';
@@ -35,11 +36,13 @@ export const AgentSettings = ({
   decisionTimeSeconds,
   blockedWords,
   onSave,
+  children,
 }: {
   accountId: string;
   decisionTimeSeconds: number;
   blockedWords: string[];
   onSave: (changes: SettingsUpdateSchema) => Promise<void>;
+  children?: ReactNode;
 }) => {
   const [seconds, setSeconds] = useState(() =>
     String(
@@ -109,16 +112,16 @@ export const AgentSettings = ({
       <div className="flex w-full max-w-2xl flex-col gap-6">
         <div className="flex flex-col gap-2">
           <label htmlFor="decision-time" className="font-medium">
-            Agent decision time in seconds
+            Navigation delay in seconds
           </label>
           <p id="decision-help" className="text-base text-muted-foreground">
-            Lower values speed up browsing; increase this if your school limits
-            requests.
+            Lower values wait less between school page visits; increase this if
+            your school limits requests.
           </p>
           <Input
             id="decision-time"
             type="number"
-            min="0.1"
+            min="0.5"
             max="5"
             step="0.1"
             className="w-full text-base"
@@ -140,7 +143,7 @@ export const AgentSettings = ({
               role="alert"
               className="text-base text-destructive"
             >
-              Use a time greater than zero and at most five seconds.
+              Use a delay from 0.5 to 5 seconds.
             </p>
           )}
         </div>
@@ -186,6 +189,7 @@ export const AgentSettings = ({
             </p>
           )}
         </div>
+        {children}
       </div>
       <aside
         role="status"

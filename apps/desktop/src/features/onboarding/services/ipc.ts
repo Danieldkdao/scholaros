@@ -10,7 +10,7 @@ import { acquireConnectOwnership } from './connect-ownership';
 import { protectMissionPage } from './mission-request-guard';
 import { createConnectionApprovalStore } from './connection-approval';
 import { resolveConnectionCandidates } from './connection-resolver';
-import { app } from 'electron';
+import { app, powerMonitor } from 'electron';
 import type {
   AcademicAction,
   AcademicEventChannel,
@@ -69,6 +69,12 @@ import { applyLaunchAtLogin, getLaunchAtLoginState } from './preferences';
 import { completeOnboarding } from './completion';
 import { discoverAcademicContext } from './discovery';
 import { createBackgroundSyncController } from './background-sync';
+import { createWatchRuntime } from '../../watch/services/runtime';
+import {
+  getWatchSettings,
+  saveWatchSettings,
+} from '../../watch/services/store';
+import { watchSettingsSchema } from '../../watch/schemas';
 import {
   updateCourseRecord,
   createCourseRecord,
@@ -106,6 +112,11 @@ type IpcContext = { userId: string; isCurrent: () => boolean };
 let backgroundSyncAccountId: string | null = null;
 let publish: (channel: AcademicEventChannel, value: unknown) => void = () =>
   undefined;
+const watchRuntime = createWatchRuntime({
+  onStatus: (accountId, enabled, status) =>
+    publish('scholar:watchChange', { accountId, enabled, status }),
+});
+let watchPowerEventsRegistered = false;
 // Scheduled work runs the same pipeline as the manual button, so one set of
 // protections, bounds and persistence rules covers both.
 const backgroundSync = createBackgroundSyncController<CourseRefreshResult>({
@@ -146,6 +157,11 @@ const prepareState = (
     accountCompleted: boundOnboardingComplete,
   });
   backgroundSyncAccountId = settled.accountId;
+  void watchRuntime.configure(
+    settled.accountId,
+    boundOnboardingComplete,
+    isCurrent,
+  );
   backgroundSync.configure({
     userId: settled.accountId,
     enabled:
@@ -171,6 +187,7 @@ const prepareState = (
       : backgroundSync.getState();
   return {
     ...settled,
+    watch: watchRuntime.getState(settled.accountId),
     preferences: {
       launchAtLogin:
         launchAtLogin ?? getLaunchAtLoginState(settled.settings.launchAtLogin),
@@ -194,12 +211,15 @@ const cancelBrowserWork = async () => {
 const withBrowserWorkStopped = async <TResult>(
   action: () => Promise<TResult>,
 ): Promise<TResult> => {
-  const release = backgroundSync.suspend();
+  const releaseBackgroundSync = backgroundSync.suspend();
+  let releaseWatch: (() => Promise<void>) | null = null;
   try {
+    releaseWatch = await watchRuntime.suspend();
     await cancelBrowserWork();
     return await action();
   } finally {
-    release();
+    releaseBackgroundSync();
+    await releaseWatch?.();
   }
 };
 
@@ -211,8 +231,17 @@ const connectRuntime = createConnectRuntime({
       (connection) => connection.host === host,
     )?.notes ?? null,
   acquire: async (userId) => {
-    const release = backgroundSync.suspend();
+    const releaseBackgroundSync = backgroundSync.suspend();
+    let releaseWatch: (() => Promise<void>) | null = null;
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      releaseBackgroundSync();
+      void releaseWatch?.().catch(() => undefined);
+    };
     try {
+      releaseWatch = await watchRuntime.suspend();
       await cancelBrowserWork();
       if (!connectIsCurrent())
         throw new Error('Your session changed; sign in again.');
@@ -223,6 +252,7 @@ const connectRuntime = createConnectRuntime({
       );
     } catch (error) {
       release();
+      await releaseWatch?.().catch(() => undefined);
       throw error;
     }
   },
@@ -249,12 +279,13 @@ const connectRuntime = createConnectRuntime({
   },
 });
 
-const bindAccount = (accountId: string | null) => {
+const bindAccount = async (accountId: string | null) => {
   if (boundAccountId && boundAccountId !== accountId) {
     resolutionEpoch += 1;
     connectionApprovals.reset();
     connectRuntime.reset();
     academicTasks.cancel();
+    await watchRuntime.stop();
   }
   boundAccountId = accountId;
 };
@@ -273,6 +304,7 @@ const registerQuitCleanup = () => {
       connectionApprovals.reset();
       backgroundSyncAccountId = null;
       backgroundSync.stop();
+      await watchRuntime.stop();
       resetPreview();
       connectRuntime.reset();
       academicTasks.cancel();
@@ -288,6 +320,11 @@ export const registerAcademicActions = (service: {
   publish: typeof publish;
 }) => {
   publish = service.publish;
+  if (!watchPowerEventsRegistered) {
+    powerMonitor.on('suspend', () => void watchRuntime.pause());
+    powerMonitor.on('resume', () => void watchRuntime.resume());
+    watchPowerEventsRegistered = true;
+  }
   const handle = (
     method: string,
     action: (context: IpcContext, input: unknown) => unknown,
@@ -304,7 +341,7 @@ export const registerAcademicActions = (service: {
         if (!isCurrent())
           throw new Error('Your session changed; sign in again.');
         if (!user) throw new Error('Please sign in to ScholarOS.');
-        bindAccount(user.id);
+        await bindAccount(user.id);
         boundOnboardingComplete = user.hasCompletedOnboarding === true;
         const accountIsCurrent = () =>
           isCurrent() && boundAccountId === user.id;
@@ -341,7 +378,7 @@ export const registerAcademicActions = (service: {
         const user = await getCurrentUser();
         if (!isCurrent())
           throw new Error('Your session changed; sign in again.');
-        bindAccount(user?.id ?? null);
+        await bindAccount(user?.id ?? null);
         boundOnboardingComplete = user?.hasCompletedOnboarding === true;
         return user;
       }),
@@ -357,9 +394,10 @@ export const registerAcademicActions = (service: {
       connectionApprovals.reset();
       await tearDownSession({
         invalidateSession: sessionGuard.invalidate,
-        stopMissions: () => {
+        stopMissions: async () => {
           backgroundSyncAccountId = null;
           backgroundSync.stop();
+          await watchRuntime.stop();
           resetPreview();
           connectRuntime.reset();
           academicTasks.cancel();
@@ -383,6 +421,33 @@ export const registerAcademicActions = (service: {
     const launchAtLogin = applyLaunchAtLogin(state.settings.launchAtLogin);
     return prepareState(state, launchAtLogin, isCurrent);
   });
+  handle('getWatchSettings', ({ userId }) => getWatchSettings(userId));
+  handle('getWatchRuntimeState', ({ userId }) => watchRuntime.getState(userId));
+  handle('saveWatchSettings', async ({ userId, isCurrent }, input) => {
+    const settings = watchSettingsSchema.parse(input);
+    const state = getOnboardingState(userId);
+    if (settings.watchEnabled) {
+      if (!boundOnboardingComplete || !state.settings.localSetupCompletedAt)
+        throw new Error('Complete computer setup before enabling watching.');
+      if (!state.settings.consent)
+        throw new Error('Approve academic access before enabling watching.');
+      if (!state.workspace?.ready)
+        throw new Error('Set up a ready browser workspace before watching.');
+      if (
+        !state.connections.some(
+          (connection) =>
+            connection.isCourseResource &&
+            connection.status !== 'needs-sign-in',
+        )
+      )
+        throw new Error('Add a course resource connection to enable watching.');
+    }
+    if (!isCurrent()) throw new Error('Your session changed; sign in again.');
+    const savedSettings = saveWatchSettings(userId, settings);
+    await watchRuntime.configure(userId, boundOnboardingComplete, isCurrent);
+    if (!isCurrent()) throw new Error('Your session changed; sign in again.');
+    return savedSettings;
+  });
   handle('saveSettings', async ({ userId, isCurrent }, input) => {
     const changes = settingsUpdateSchema.parse(input);
     if (!isCurrent()) throw new Error('Your session changed; sign in again.');
@@ -394,6 +459,7 @@ export const registerAcademicActions = (service: {
       resolutionEpoch += 1;
       connectionApprovals.reset();
       backgroundSync.stop();
+      await watchRuntime.stop();
       await cancelBrowserWork();
     } else if (
       changes.backgroundSync === false &&
@@ -623,13 +689,15 @@ export const registerAcademicActions = (service: {
     )
       throw new Error('Courses are available from your dashboard after setup.');
     const wasSyncing = backgroundSync.getState().status === 'syncing';
-    const release = backgroundSync.suspend();
-    if (wasSyncing) {
-      stoppingBackgroundSync = academicTasks.cancelAndWait().finally(() => {
-        stoppingBackgroundSync = null;
-      });
-    }
+    const releaseBackgroundSync = backgroundSync.suspend();
+    let releaseWatch: (() => Promise<void>) | null = null;
     try {
+      releaseWatch = await watchRuntime.suspend();
+      if (wasSyncing) {
+        stoppingBackgroundSync = academicTasks.cancelAndWait().finally(() => {
+          stoppingBackgroundSync = null;
+        });
+      }
       await stoppingBackgroundSync;
       if (!isCurrent()) throw new Error('Your session changed; sign in again.');
       const course = await refreshSingleCourse(userId, courseId, isCurrent);
@@ -642,7 +710,8 @@ export const registerAcademicActions = (service: {
           }
         : null;
     } finally {
-      release();
+      releaseBackgroundSync();
+      await releaseWatch?.();
     }
   });
   handle(
@@ -673,14 +742,24 @@ export const registerAcademicActions = (service: {
   handle('startPreview', async ({ userId, isCurrent }, input) => {
     requireConsent(userId);
     const prompt = previewPromptSchema.parse(input);
-    const release = backgroundSync.suspend();
+    const releaseBackgroundSync = backgroundSync.suspend();
+    let releaseWatch: (() => Promise<void>) | null = null;
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      releaseBackgroundSync();
+      void releaseWatch?.().catch(() => undefined);
+    };
     try {
+      releaseWatch = await watchRuntime.suspend();
       await cancelBrowserWork();
       if (!isCurrent()) throw new Error('Your session changed; sign in again.');
       // Starting acknowledges immediately; cleanup releases the browser later.
       await startPreview(userId, prompt, release);
     } catch (cause) {
       release();
+      await releaseWatch?.().catch(() => undefined);
       throw cause;
     }
   });

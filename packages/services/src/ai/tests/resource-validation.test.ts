@@ -79,6 +79,62 @@ it('preserves valid records while invalid evidence or unobserved URLs makes the 
   expect(result.assignments).toHaveLength(1);
   expect(result.coverage).toBe('partial');
 });
+it('reconciles exact duplicate records across one extracted batch', () => {
+  const item = assignment({
+    sourceId: '123',
+    evidence: {
+      sourceUrl: url,
+      excerpts: ['Lab report due October 31, 2026'],
+      targetIds: ['1'],
+    },
+  });
+
+  const result = validateResourceExtraction(input, 'assignments', {
+    assignments: [item, assignment({ ...item })],
+    coverage: 'complete',
+  });
+
+  expect(result).toMatchObject({ coverage: 'complete' });
+  expect(result.assignments).toHaveLength(1);
+});
+it('preserves conflicting verified IDs sharing a URL and downgrades coverage', () => {
+  const conflictingInput = {
+    ...input,
+    pages: [
+      {
+        ...input.pages[0]!,
+        text: `${input.pages[0]!.text} Lab report 123. Essay 456.`,
+      },
+    ],
+  };
+  const first = assignment({
+    sourceId: '123',
+    due: null,
+    evidence: {
+      sourceUrl: url,
+      excerpts: ['Lab report 123'],
+      targetIds: ['1'],
+    },
+  });
+  const second = assignment({
+    title: 'Essay',
+    sourceId: '456',
+    due: null,
+    evidence: {
+      sourceUrl: url,
+      excerpts: ['Essay 456'],
+      targetIds: ['1'],
+    },
+  });
+
+  const result = validateResourceExtraction(conflictingInput, 'assignments', {
+    assignments: [first, second],
+    coverage: 'complete',
+  });
+
+  expect(result.coverage).toBe('partial');
+  expect(result.assignments).toHaveLength(2);
+});
 it.each([
   { due: { kind: 'date', date: '2026-02-30', original: 'February 30' } },
   {

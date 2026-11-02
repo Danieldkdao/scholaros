@@ -6,6 +6,24 @@ export type CourseChildKind = (typeof courseChildKinds)[number];
 
 const normalize = (value: string) => value.replace(/\s+/g, ' ').trim();
 
+export const isWithinCoursePath = (
+  courseUrl: string,
+  destinationUrl: string,
+) => {
+  try {
+    const course = new URL(courseUrl);
+    const destination = new URL(destinationUrl);
+    const path = course.pathname.replace(/\/+$/, '') || '/';
+    return (
+      course.origin === destination.origin &&
+      (destination.pathname === path ||
+        (path !== '/' && destination.pathname.startsWith(`${path}/`)))
+    );
+  } catch {
+    return false;
+  }
+};
+
 // Platforms word these collections differently, but the label still has to name
 // the whole collection rather than one item inside it.
 const childLabelPatterns: Record<CourseChildKind, RegExp> = {

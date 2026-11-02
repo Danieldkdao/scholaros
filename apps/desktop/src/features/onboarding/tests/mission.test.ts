@@ -58,10 +58,51 @@ const createHarness = (
     },
   );
   const addActivity = vi.fn();
-  return { page, read, waitForReady, choose, addActivity };
+  const setCurrentUrl = (url: string) => {
+    current = url;
+  };
+  return { page, read, waitForReady, choose, addActivity, setCurrentUrl };
 };
 
 describe('read-only mission', () => {
+  it('does not repeat a navigation already completed by the inout adapter', async () => {
+    const origin = 'https://canvas.school.edu/courses';
+    const destination = 'https://canvas.school.edu/courses/1';
+    const harness = createHarness(
+      {
+        [origin]: {
+          title: 'Courses',
+          text: 'Biology',
+          links: [{ label: 'Biology', url: destination }],
+        },
+        [destination]: { title: 'Biology', text: 'Assignments', links: [] },
+      },
+      {},
+    );
+    harness.choose.mockImplementationOnce(async () => {
+      harness.setCurrentUrl(destination);
+      return {
+        operation: 'NAVIGATE' as const,
+        target: '1',
+        navigationHandled: true,
+      };
+    });
+
+    const result = await runReadOnlyMission({
+      connection: { ...connection, url: origin },
+      hosts,
+      page: harness.page,
+      read: harness.read,
+      waitForReady: harness.waitForReady,
+      choose: harness.choose,
+      addActivity: harness.addActivity,
+      signal: new AbortController().signal,
+    });
+
+    expect(harness.page.goto).toHaveBeenCalledTimes(1);
+    expect(result.evidence.map((page) => page.url)).toContain(destination);
+  });
+
   it('waits for delayed provider content before reading', async () => {
     const harness = createHarness(
       {

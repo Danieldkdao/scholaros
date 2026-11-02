@@ -6,7 +6,8 @@
   "exports": {
     "./server": "./src/server.ts",
     "./client": "./src/client.ts",
-    "./desktop": "./src/desktop.ts"
+    "./desktop": "./src/desktop.ts",
+    "./browser-navigation": "./src/browser-navigation.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

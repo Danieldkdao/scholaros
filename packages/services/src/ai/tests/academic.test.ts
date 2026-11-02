@@ -48,6 +48,24 @@ const assignment = {
   },
 };
 const extracted = { assignments: [assignment], coverage: 'complete' };
+const extractedMaterials = {
+  materials: [
+    {
+      title: 'Courses',
+      sourceType: 'page',
+      url: input.pages[0].url,
+      readability: 'readable',
+      summary: null,
+      summaryEvidence: [],
+      evidence: {
+        sourceUrl: input.pages[0].url,
+        excerpts: ['Courses'],
+        targetIds: [],
+      },
+    },
+  ],
+  coverage: 'complete',
+};
 const decisionResponse = (operation = 'NAVIGATE', target = '1') =>
   completion({ operation, target });
 const completion = (value: unknown) => ({
@@ -151,6 +169,25 @@ describe.each(['baseten', 'meta'] as const)(
         temperature: 0,
         response_format: { type: 'json_schema' },
       });
+    });
+
+    it('extracts course materials through the configured model and validates evidence', async () => {
+      fetchMock.mockResolvedValue(
+        Response.json(completion(extractedMaterials)),
+      );
+      expect(
+        await extractAcademicEvidence(
+          { ...input, kind: 'materials' },
+          new AbortController().signal,
+        ),
+      ).toEqual(extractedMaterials);
+      const request = sent();
+      expect(request.url).toBe(expectedUrl);
+      expect(request.body.model).toBe(expectedModel);
+      expect(JSON.stringify(request.body)).toContain('summaryEvidence');
+      expect(JSON.stringify(request.body)).toContain(
+        'Never infer contents of unreadable or truncated materials',
+      );
     });
 
     it('rejects malformed resource output', async () => {

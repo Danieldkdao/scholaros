@@ -5,6 +5,7 @@ import type {
   BackgroundSyncChange,
   PreviewState,
   ScholarBridge,
+  WatchRuntimeChange,
 } from './features/onboarding/types';
 
 setupRenderer();
@@ -37,6 +38,17 @@ const bridge: ScholarBridge = {
     return () => ipcRenderer.removeListener('scholar:connectChange', handler);
   },
   getState: () => ipcRenderer.invoke('scholar:getState'),
+  getWatchSettings: () => ipcRenderer.invoke('scholar:getWatchSettings'),
+  saveWatchSettings: (settings) =>
+    ipcRenderer.invoke('scholar:saveWatchSettings', settings),
+  getWatchRuntimeState: () =>
+    ipcRenderer.invoke('scholar:getWatchRuntimeState'),
+  onWatchChange: (listener) => {
+    const handler = (_event: unknown, change: WatchRuntimeChange) =>
+      listener(change);
+    ipcRenderer.on('scholar:watchChange', handler);
+    return () => ipcRenderer.removeListener('scholar:watchChange', handler);
+  },
   saveSettings: (changes) =>
     ipcRenderer.invoke('scholar:saveSettings', changes),
   findBrowsers: () => ipcRenderer.invoke('scholar:findBrowsers'),

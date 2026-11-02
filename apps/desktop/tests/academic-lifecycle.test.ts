@@ -88,23 +88,29 @@ it('runs the service without a desktop window or renderer authentication bridges
   expect(mocks.register).not.toHaveBeenCalled();
   expect(mocks.setupAuth).not.toHaveBeenCalled();
 });
-it.each([true, false])(
-  'honors background consent when the last window closes: %s',
-  async (backgroundSync) => {
-    mocks.request.mockResolvedValue({ settings: { backgroundSync } });
+it.each([
+  { backgroundSync: true, watchEnabled: false, keepsAlive: true },
+  { backgroundSync: false, watchEnabled: true, keepsAlive: true },
+  { backgroundSync: false, watchEnabled: false, keepsAlive: false },
+])(
+  'keeps the service alive only for enabled background features: %o',
+  async ({ backgroundSync, watchEnabled, keepsAlive }) => {
+    mocks.request.mockResolvedValue({
+      settings: { backgroundSync },
+      watch: {
+        enabled: watchEnabled,
+        status: watchEnabled ? 'watching' : 'off',
+      },
+    });
     await import('../src/main');
     await vi.waitFor(() => expect(mocks.windows).toBe(1));
     emit('window-all-closed');
     await vi.waitFor(() => expect(mocks.quit).toHaveBeenCalledOnce());
     emit('before-quit', { preventDefault: vi.fn() });
     await vi.waitFor(() =>
-      expect(
-        backgroundSync ? mocks.disconnect : mocks.stop,
-      ).toHaveBeenCalledOnce(),
+      expect(keepsAlive ? mocks.disconnect : mocks.stop).toHaveBeenCalledOnce(),
     );
-    expect(
-      backgroundSync ? mocks.stop : mocks.disconnect,
-    ).not.toHaveBeenCalled();
+    expect(keepsAlive ? mocks.stop : mocks.disconnect).not.toHaveBeenCalled();
   },
 );
 it('stops the service on explicit Quit even when background syncing is enabled', async () => {

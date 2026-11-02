@@ -99,6 +99,37 @@ it('joins equivalent all-course refreshes and keeps them exclusive with targeted
   await runner.cancelAndWait();
 });
 
+it('treats connection refreshes as exclusive work with a reusable connection key', async () => {
+  const runner = createAcademicTaskRunner();
+  let finish!: () => void;
+  const action = vi.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const first = runner.run('student', action, undefined, 'connection:canvas', {
+    exclusive: true,
+  });
+  await Promise.resolve();
+
+  expect(
+    runner.run('student', action, undefined, 'connection:canvas', {
+      exclusive: true,
+    }),
+  ).toBe(first);
+  expect(runner.getRefreshState('student')).toEqual({
+    allCourses: true,
+    courseIds: [],
+  });
+  await expect(
+    runner.run('student', async () => undefined, undefined, 'course-1'),
+  ).rejects.toThrow('Another academic task');
+
+  finish();
+  await first;
+});
+
 it('reports active refresh scopes and publishes both job start and completion', async () => {
   const runner = createAcademicTaskRunner();
   const changed = vi.fn();
@@ -191,4 +222,27 @@ it('publishes scoped progress, retains completion, and distinguishes cancellatio
   expect(
     runner.getActivity('student').find((run) => run.key === 'course-3')?.status,
   ).toBe('failed');
+});
+
+it('records content-free measurements on the matching academic run', async () => {
+  const runner = createAcademicTaskRunner();
+  await runner.run(
+    'student',
+    async (signal) => {
+      runner.recordMetric(signal, 'pagesOpened');
+      runner.recordMetric(signal, 'modelCalls', 2);
+      runner.markFirstFinding(signal);
+    },
+    undefined,
+    'course-1',
+  );
+
+  const activity = runner.getActivity('student')[0];
+  expect(activity?.metrics).toMatchObject({
+    pagesOpened: 1,
+    modelCalls: 2,
+  });
+  expect(activity?.metrics?.durationMs).toBeGreaterThanOrEqual(0);
+  expect(activity?.metrics?.firstFindingMs).toBeGreaterThanOrEqual(0);
+  expect(JSON.stringify(activity?.metrics)).not.toMatch(/Biology|assignment/i);
 });
