@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createLearningDispatcher,
   learningRequestSchema,
@@ -8,11 +8,8 @@ import { generateTutorCandidate, getLearningCapabilities } from '../tutor';
 const { serverEnv } = vi.hoisted(() => ({
   serverEnv: {
     BETTER_AUTH_SECRET: 'x',
-    INFERENCE_PROVIDER: 'meta',
-    META_MODEL: 'muse-spark-1.3-contributor',
+    META_MODEL: 'muse-spark-1.3',
     META_API_KEY: 'x' as string | undefined,
-    BASETEN_MODEL: 'meta-models/muse-spark-open-1026',
-    BASETEN_API_KEY: 'x',
   },
 }));
 vi.mock('@scholaros/env/server', () => ({ serverEnv }));
@@ -74,14 +71,18 @@ const capabilities = {
 } as const;
 
 beforeEach(() => {
-  serverEnv.INFERENCE_PROVIDER = 'meta';
-  serverEnv.META_MODEL = 'muse-spark-1.3-contributor';
+  delete (serverEnv as Record<string, unknown>).INFERENCE_PROVIDER;
+  delete (serverEnv as Record<string, unknown>).BASETEN_API_KEY;
+  delete (serverEnv as Record<string, unknown>).BASETEN_MODEL;
+  serverEnv.META_MODEL = 'muse-spark-1.3';
   serverEnv.META_API_KEY = 'x';
-  serverEnv.BASETEN_API_KEY = 'x';
 });
+afterEach(() => vi.unstubAllGlobals());
 
 describe('Meta model capability selection', () => {
-  it('fails closed on Contributor mode without falling back to Baseten', async () => {
+  it('fails closed on unsupported model configuration', async () => {
+    serverEnv.META_MODEL = 'muse-spark-1.3-contributor';
+
     expect(await getLearningCapabilities()).toMatchObject({
       tutor: 'unavailable',
       imageInterpretation: 'unavailable',
@@ -96,7 +97,6 @@ describe('Meta model capability selection', () => {
   });
 
   it('does not advertise an approved model when its Meta key is absent', async () => {
-    serverEnv.META_MODEL = 'muse-spark-1.3';
     serverEnv.META_API_KEY = undefined;
 
     expect(await getLearningCapabilities()).toMatchObject({
@@ -106,16 +106,43 @@ describe('Meta model capability selection', () => {
     });
   });
 
-  it('does not use a configured Baseten key for the Meta-only learning path', async () => {
-    serverEnv.INFERENCE_PROVIDER = 'baseten';
-    serverEnv.META_MODEL = 'muse-spark-1.3';
-    serverEnv.META_API_KEY = 'x';
+  it('uses Meta Standard when a stale provider selector points elsewhere', async () => {
+    Object.assign(serverEnv, {
+      INFERENCE_PROVIDER: 'baseten',
+      BASETEN_API_KEY: 'legacy-test-key',
+      BASETEN_MODEL: 'meta-models/muse-spark-open',
+    });
+    const fetchMock = vi.fn(async (_url: string, _init: RequestInit) =>
+      Response.json({
+        id: 'test-completion',
+        model: 'muse-spark-1.3',
+        created: 1,
+        choices: [
+          {
+            index: 0,
+            message: { role: 'assistant', content: JSON.stringify(candidate) },
+            finish_reason: 'stop',
+          },
+        ],
+        usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
 
     expect(await getLearningCapabilities()).toMatchObject({
-      tutor: 'unavailable',
-      imageInterpretation: 'unavailable',
-      pdfInterpretation: 'unavailable',
+      tutor: 'available',
+      imageInterpretation: 'available',
+      pdfInterpretation: 'available',
     });
+    await generateTutorCandidate(
+      learningRequestSchema.parse(request),
+      new AbortController().signal,
+    );
+
+    const [url, options] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('https://api.meta.ai/v1/chat/completions');
+    expect(new Headers(options.headers).get('authorization')).toBe('Bearer x');
+    expect(JSON.parse(String(options.body)).model).toBe('muse-spark-1.3');
   });
 });
 

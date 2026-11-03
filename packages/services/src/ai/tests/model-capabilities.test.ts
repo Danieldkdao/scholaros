@@ -1,27 +1,30 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const env = vi.hoisted(() => ({
-  INFERENCE_PROVIDER: 'meta' as 'meta' | 'baseten',
-  META_API_KEY: 'test-meta-secret' as string | undefined,
-  META_MODEL: 'muse-spark-1.3',
-  BASETEN_API_KEY: 'test-baseten-secret' as string | undefined,
-  BASETEN_MODEL: 'meta-models/muse-spark-open-1026',
-  BROWSER_NAV: 'decision' as 'decision' | 'inout',
+const { env, metaChat } = vi.hoisted(() => ({
+  env: {
+    META_API_KEY: 'test-meta-secret' as string | undefined,
+    META_MODEL: 'muse-spark-1.3',
+    BROWSER_NAV: 'decision' as 'decision' | 'inout',
+  },
+  metaChat: vi.fn((model: string) => ({ id: model })),
 }));
 vi.mock('@scholaros/env/server', () => ({ serverEnv: env }));
+vi.mock('../models/meta', () => ({ meta: { chat: metaChat } }));
 
 import {
   getModelCapabilities,
   isModelCapabilityAvailable,
 } from '../model-capabilities';
+import { getInferenceModel, isInferenceConfigured } from '../models/inference';
 
 beforeEach(() => {
-  env.INFERENCE_PROVIDER = 'meta';
+  delete (env as Record<string, unknown>).INFERENCE_PROVIDER;
+  delete (env as Record<string, unknown>).BASETEN_API_KEY;
+  delete (env as Record<string, unknown>).BASETEN_MODEL;
   env.META_API_KEY = 'test-meta-secret';
   env.META_MODEL = 'muse-spark-1.3';
-  env.BASETEN_API_KEY = 'test-baseten-secret';
-  env.BASETEN_MODEL = 'meta-models/muse-spark-open-1026';
   env.BROWSER_NAV = 'decision';
+  metaChat.mockClear();
 });
 
 describe('server-owned Meta model capabilities', () => {
@@ -40,52 +43,52 @@ describe('server-owned Meta model capabilities', () => {
     },
   );
 
-  it('rejects Contributor and non-Meta model IDs even with configured keys', () => {
-    env.META_MODEL = 'muse-spark-1.3-contributor';
-    expect(getModelCapabilities().endpointCategory).toBe('unsupported');
-    expect(isModelCapabilityAvailable('decision-navigation')).toBe(false);
+  it('rejects Contributor and non-Meta model IDs without falling back', () => {
+    for (const model of ['muse-spark-1.3-contributor', 'gpt-4o']) {
+      env.META_MODEL = model;
 
-    env.META_MODEL = 'gpt-4o';
-    expect(isModelCapabilityAvailable('learning-text')).toBe(false);
+      expect(getModelCapabilities().endpointCategory).toBe('unsupported');
+      expect(isModelCapabilityAvailable('learning-text')).toBe(false);
+      expect(isInferenceConfigured()).toBe(false);
+      expect(() => getInferenceModel()).toThrow(/Meta.*unavailable/i);
+    }
+
+    expect(metaChat).not.toHaveBeenCalled();
   });
 
-  it('preserves the unverified Baseten token and reports its structured capabilities unavailable', () => {
-    env.INFERENCE_PROVIDER = 'baseten';
-    const capabilities = getModelCapabilities();
-
-    expect(capabilities.endpointCategory).toBe('unsupported');
-    expect(capabilities.operations['resource-extraction']).toBe(false);
-    expect(capabilities.operations['material-pdf']).toBe(false);
-    expect(capabilities.configurationRevision).toMatch(/^v1-[a-f0-9]{24}$/);
-  });
-
-  it('does not infer structured-output support from the documented Spark Open alias', () => {
-    env.INFERENCE_PROVIDER = 'baseten';
-    env.BASETEN_MODEL = 'meta-models/muse-spark-open';
-
-    expect(getModelCapabilities().endpointCategory).toBe(
-      'baseten-structured-output-unavailable',
-    );
-    expect(isModelCapabilityAvailable('browser-extraction')).toBe(false);
-    expect(isModelCapabilityAvailable('learning-text')).toBe(false);
-  });
-
-  it('marks a missing selected-provider key unavailable without falling back', () => {
+  it('marks a missing Meta key unavailable even when stale alternative settings exist', () => {
     env.META_API_KEY = undefined;
+    Object.assign(env, {
+      INFERENCE_PROVIDER: 'baseten',
+      BASETEN_API_KEY: 'legacy-test-key',
+      BASETEN_MODEL: 'meta-models/muse-spark-open',
+    });
+
     const capabilities = getModelCapabilities();
 
-    expect(capabilities.endpointCategory).toBe('meta-standard');
     expect(capabilities.operations['decision-navigation']).toBe(false);
-    expect(capabilities.configurationRevision).not.toContain(
-      'test-meta-secret',
-    );
+    expect(isInferenceConfigured()).toBe(false);
+    expect(() => getInferenceModel()).toThrow(/Meta.*unavailable/i);
+    expect(metaChat).not.toHaveBeenCalled();
   });
 
-  it('changes the safe configuration revision without exposing secrets or endpoints', () => {
+  it('always selects the configured Meta model and ignores stale provider selection', () => {
+    Object.assign(env, {
+      INFERENCE_PROVIDER: 'baseten',
+      BASETEN_API_KEY: 'legacy-test-key',
+      BASETEN_MODEL: 'meta-models/muse-spark-open',
+    });
+
+    expect(getModelCapabilities().endpointCategory).toBe('meta-standard');
+    expect(getInferenceModel()).toEqual({ id: 'muse-spark-1.3' });
+    expect(metaChat).toHaveBeenCalledExactlyOnceWith('muse-spark-1.3');
+  });
+
+  it('changes the safe revision for model or browser mode without exposing secrets', () => {
     const first = getModelCapabilities();
     env.META_API_KEY = 'rotated-meta-secret';
     const second = getModelCapabilities();
-    env.META_MODEL = 'muse-spark-1.3-contributor';
+    env.META_MODEL = 'muse-spark-1.2';
     const third = getModelCapabilities();
     env.BROWSER_NAV = 'inout';
     const fourth = getModelCapabilities();
@@ -96,6 +99,5 @@ describe('server-owned Meta model capabilities', () => {
     const serialized = JSON.stringify(fourth);
     expect(serialized).not.toContain('rotated-meta-secret');
     expect(serialized).not.toContain('api.meta.ai');
-    expect(serialized).not.toContain('inference.baseten.co');
   });
 });
