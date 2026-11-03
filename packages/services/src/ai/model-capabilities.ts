@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { serverEnv, type InferenceProvider } from '@scholaros/env/server';
+import { serverEnv } from '@scholaros/env/server';
 
 export const metaStandardModelValues = [
   'muse-spark-1.1',
@@ -7,9 +7,6 @@ export const metaStandardModelValues = [
   'muse-spark-1.3',
 ] as const;
 export type MetaStandardModel = (typeof metaStandardModelValues)[number];
-
-export const basetenMetaModelValues = ['meta-models/muse-spark-open'] as const;
-export type BasetenMetaModel = (typeof basetenMetaModelValues)[number];
 
 export const modelCapabilityOperationValues = [
   'connection-resolution',
@@ -31,10 +28,7 @@ export type ModelCapabilityOperation =
 export type ModelCapabilities = {
   version: 1;
   configurationRevision: string;
-  endpointCategory:
-    | 'meta-standard'
-    | 'baseten-structured-output-unavailable'
-    | 'unsupported';
+  endpointCategory: 'meta-standard' | 'unsupported';
   operations: Record<ModelCapabilityOperation, boolean>;
 };
 
@@ -47,9 +41,6 @@ export class ModelCapabilityUnavailableError extends Error {
 
 const isMetaStandardModel = (model: string): model is MetaStandardModel =>
   metaStandardModelValues.some((allowedModel) => allowedModel === model);
-
-const isBasetenMetaModel = (model: string): model is BasetenMetaModel =>
-  basetenMetaModelValues.some((allowedModel) => allowedModel === model);
 
 const createOperations = (available: boolean) =>
   ({
@@ -68,25 +59,16 @@ const createOperations = (available: boolean) =>
   }) satisfies Record<ModelCapabilityOperation, boolean>;
 
 export const getModelCapabilities = (): ModelCapabilities => {
-  const provider: InferenceProvider = serverEnv.INFERENCE_PROVIDER;
-  const model =
-    provider === 'meta' ? serverEnv.META_MODEL : serverEnv.BASETEN_MODEL;
-  const keyConfigured =
-    provider === 'meta'
-      ? Boolean(serverEnv.META_API_KEY)
-      : Boolean(serverEnv.BASETEN_API_KEY);
-  const endpointCategory =
-    provider === 'meta' && isMetaStandardModel(model)
-      ? 'meta-standard'
-      : provider === 'baseten' && isBasetenMetaModel(model)
-        ? 'baseten-structured-output-unavailable'
-        : 'unsupported';
+  const model = serverEnv.META_MODEL;
+  const keyConfigured = Boolean(serverEnv.META_API_KEY);
+  const endpointCategory = isMetaStandardModel(model)
+    ? 'meta-standard'
+    : 'unsupported';
   const operations = createOperations(
     endpointCategory === 'meta-standard' && keyConfigured,
   );
   const configuration = {
     version: 1,
-    provider,
     model,
     keyConfigured,
     endpointCategory,

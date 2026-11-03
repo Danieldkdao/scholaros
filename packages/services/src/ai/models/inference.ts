@@ -1,7 +1,5 @@
-import { serverEnv, type InferenceProvider } from '@scholaros/env/server';
-import type { LanguageModel } from 'ai';
+import { serverEnv } from '@scholaros/env/server';
 import { getModelCapabilities } from '../model-capabilities';
-import { baseten } from './baseten';
 import { meta } from './meta';
 
 export {
@@ -15,20 +13,6 @@ export type {
   ModelCapabilityOperation,
 } from '../model-capabilities';
 
-const providers = {
-  baseten: {
-    createModel: () => baseten(serverEnv.BASETEN_MODEL),
-  },
-  meta: {
-    createModel: () => meta.chat(serverEnv.META_MODEL),
-  },
-} satisfies Record<
-  InferenceProvider,
-  {
-    createModel: () => LanguageModel;
-  }
->;
-
 export const isInferenceConfigured = () => {
   const capabilities = getModelCapabilities();
   return (
@@ -39,8 +23,8 @@ export const isInferenceConfigured = () => {
 
 export const getInferenceModel = () => {
   if (!isInferenceConfigured())
-    throw new Error('The inference provider is not configured.');
-  return providers[serverEnv.INFERENCE_PROVIDER].createModel();
+    throw new Error('Meta inference is unavailable for the configured model.');
+  return meta.chat(serverEnv.META_MODEL);
 };
 
 // These budgets include hidden reasoning as well as the structured answer.
