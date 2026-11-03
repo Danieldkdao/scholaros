@@ -34,11 +34,16 @@ const removeUnsupportedControls = (text: string) =>
   }).join('');
 
 const normalizeSourceText = (text: string) =>
-  removeUnsupportedControls(text)
-    .replace(/\r\n?/g, '\n')
-    .replace(/[\t ]+$/gm, '')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
+  text
+    .split('\f')
+    .map((page) =>
+      removeUnsupportedControls(page)
+        .replace(/\r\n?/g, '\n')
+        .replace(/[\t ]+$/gm, '')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim(),
+    )
+    .join('\f');
 
 const paragraphChunks = (
   text: string,

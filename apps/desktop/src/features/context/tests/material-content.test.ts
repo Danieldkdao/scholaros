@@ -80,6 +80,19 @@ describe('material passage preparation', () => {
     ]);
   });
 
+  it('keeps original page numbers across leading and trailing blank pages', () => {
+    const result = buildMaterialContent({
+      sourceUrl: 'https://school.example/courses/1/reading.pdf',
+      text: '\fFirst page.\f\fThird page.\f',
+      pageLocators: true,
+    });
+
+    expect(result.passages).toEqual([
+      expect.objectContaining({ locator: 'Page 2', text: 'First page.' }),
+      expect.objectContaining({ locator: 'Page 4', text: 'Third page.' }),
+    ]);
+  });
+
   it('keeps a page locator for a single-page PDF', () => {
     const result = buildMaterialContent({
       sourceUrl: 'https://school.example/courses/1/reading.pdf',
