@@ -833,6 +833,131 @@ describe('Context library store', () => {
     ).toEqual([{ sourceKind: 'course-material' }]);
   });
 
+  it('retains an original-backed raw checkpoint without making it searchable', async () => {
+    const itemId = randomUUID();
+    await createUploadedContextItem(context, {
+      itemId,
+      title: 'Raw image',
+      kind: 'image',
+      sessionId,
+      saveToLibrary: false,
+    });
+    const bytes = Buffer.from('raw image bytes');
+    const original = await originalStore.write(userId, bytes, 1024);
+    const result = await saveContextIngestionResult(context, {
+      itemId,
+      expectedRevision: 0,
+      attemptId: randomUUID(),
+      originalHash: original.hash,
+      contentHash: original.hash,
+      mimeType: 'image/png',
+      byteLength: original.byteLength,
+      originalStorageKey: original.storageKey,
+      extractedText: null,
+      extractionStatus: 'partial',
+      uncertainty: null,
+      pageCount: null,
+      interpretedPages: [],
+      locators: [],
+      originalIsNew: true,
+    });
+    expect(result.currentVersionId).toBeNull();
+    expect(result.usable).toBe(false);
+    expect(
+      db
+        .select()
+        .from(ContextVersionTable)
+        .all()
+        .filter((v) => v.itemId === itemId),
+    ).toHaveLength(1);
+    expect(
+      db
+        .select()
+        .from(ContextChunkTable)
+        .all()
+        .filter((v) => v.itemId === itemId),
+    ).toHaveLength(0);
+    expect(await originalStore.read(userId, original.storageKey)).toEqual(
+      bytes,
+    );
+  });
+
+  it('exposes a complete empty text version without indexing it', async () => {
+    const itemId = randomUUID();
+    await createUploadedContextItem(context, {
+      itemId,
+      title: 'Empty',
+      kind: 'document',
+      sessionId,
+      saveToLibrary: false,
+    });
+    const original = await originalStore.write(userId, Buffer.alloc(0), 1024);
+    const result = await saveContextIngestionResult(context, {
+      itemId,
+      expectedRevision: 0,
+      attemptId: randomUUID(),
+      originalHash: original.hash,
+      contentHash: createHash('sha256').update('').digest('hex'),
+      mimeType: 'text/plain',
+      byteLength: 0,
+      originalStorageKey: original.storageKey,
+      extractedText: '',
+      extractionStatus: 'complete',
+      uncertainty: null,
+      pageCount: null,
+      interpretedPages: [],
+      locators: [],
+      originalIsNew: true,
+    });
+    expect(result.currentVersionId).toEqual(expect.any(String));
+    expect(result.usable).toBe(false);
+    expect(
+      db
+        .select()
+        .from(ContextChunkTable)
+        .all()
+        .filter((v) => v.itemId === itemId),
+    ).toHaveLength(0);
+  });
+
+  it('cleans a newly owned original when extracted text hash is invalid', async () => {
+    const itemId = randomUUID();
+    await createUploadedContextItem(context, {
+      itemId,
+      title: 'Invalid hash',
+      kind: 'document',
+      sessionId,
+      saveToLibrary: false,
+    });
+    const original = await originalStore.write(
+      userId,
+      Buffer.from('bad hash original'),
+      1024,
+    );
+    await expect(
+      saveContextIngestionResult(context, {
+        itemId,
+        expectedRevision: 0,
+        attemptId: randomUUID(),
+        originalHash: original.hash,
+        contentHash: original.hash,
+        mimeType: 'text/plain',
+        byteLength: original.byteLength,
+        originalStorageKey: original.storageKey,
+        extractedText: 'different',
+        extractionStatus: 'complete',
+        uncertainty: null,
+        pageCount: null,
+        interpretedPages: [],
+        locators: [],
+        originalIsNew: true,
+      }),
+    ).rejects.toMatchObject({ code: 'invalid-input' });
+    await expect(
+      originalStore.read(userId, original.storageKey),
+    ).rejects.toMatchObject({ code: 'not-found' });
+  });
+
   it('cleans a newly stored original when its version insert fails, then permits retry', async () => {
     const itemId = randomUUID();
     await createUploadedContextItem(context, {

@@ -1632,17 +1632,6 @@ export const saveContextIngestionResult = async (
 ): Promise<ContextItemDTO> => {
   assertAuthorized(context);
   const parsed = parseOrThrow(contextVersionWriteInputSchema, input);
-  if (
-    parsed.extractedText !== null &&
-    hashText(parsed.extractedText) !== parsed.contentHash
-  )
-    throw new ContextStoreError('invalid-input');
-  if (
-    (parsed.extractionStatus === 'complete' ||
-      parsed.extractionStatus === 'partial') &&
-    !parsed.extractedText?.trim()
-  )
-    throw new ContextStoreError('invalid-input');
   const cleanupNewOriginal = async () => {
     if (parsed.originalIsNew && parsed.originalStorageKey)
       await removeOriginalKeysIfUnreferenced(context.userId, [
@@ -1650,6 +1639,18 @@ export const saveContextIngestionResult = async (
       ]).catch(() => {});
   };
   try {
+    if (
+      parsed.extractedText !== null &&
+      hashText(parsed.extractedText) !== parsed.contentHash
+    )
+      throw new ContextStoreError('invalid-input');
+    if (
+      (parsed.extractionStatus === 'complete' ||
+        parsed.extractionStatus === 'partial') &&
+      !parsed.extractedText?.trim() &&
+      !parsed.originalStorageKey
+    )
+      throw new ContextStoreError('invalid-input');
     if (parsed.originalStorageKey) {
       const originalBytes = await originalStore.read(
         context.userId,
@@ -1727,7 +1728,11 @@ export const saveContextIngestionResult = async (
         (parsed.extractionStatus === 'complete' ||
           parsed.extractionStatus === 'partial') &&
         Boolean(parsed.extractedText?.trim());
-      if (usable) {
+      const promote =
+        usable ||
+        (parsed.extractionStatus === 'complete' &&
+          parsed.extractedText !== null);
+      if (promote) {
         const chunks = chunkText(parsed.extractedText ?? '');
         if (chunks.length)
           transaction
@@ -1763,7 +1768,7 @@ export const saveContextIngestionResult = async (
         .update(ContextItemTable)
         .set({
           status: parsed.extractionStatus,
-          ...(usable ? { currentVersionId: versionId } : {}),
+          ...(promote ? { currentVersionId: versionId } : {}),
           revision: item.revision + 1,
           updatedAt: now,
         })
