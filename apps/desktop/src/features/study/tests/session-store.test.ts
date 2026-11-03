@@ -966,6 +966,45 @@ describe('durable turn admission', () => {
           lastSeenAt: fixtureDate,
         })
         .run();
+      firstDatabase
+        .insert(ContextItemTable)
+        .values({
+          id: 'restart-source-item',
+          userId: fixtureContext.userId,
+          title: 'Restart source',
+          kind: 'document',
+          provenance: 'user-uploaded',
+          currentVersionId: 'restart-source-version',
+          status: 'complete',
+          revision: 0,
+          removedAt: null,
+          originatingSessionId: null,
+          originatingSourceId: null,
+          createdAt: fixtureDate,
+          updatedAt: fixtureDate,
+        })
+        .run();
+      firstDatabase
+        .insert(ContextVersionTable)
+        .values({
+          id: 'restart-source-version',
+          userId: fixtureContext.userId,
+          itemId: 'restart-source-item',
+          attemptId: 'restart-source-attempt',
+          originalHash: 'restart-source-original',
+          contentHash: 'restart-source-content',
+          mimeType: 'text/plain',
+          byteLength: 16,
+          originalStorageKey: null,
+          extractedText: 'Chromosomes separate during mitosis.',
+          extractionStatus: 'complete',
+          uncertainty: null,
+          pageCount: null,
+          interpretedPages: [],
+          locators: [],
+          createdAt: fixtureDate,
+        })
+        .run();
       const fixtureStore = createSessionStore({
         database: firstDatabase,
         now: () => Date.parse(fixtureDate),
@@ -976,7 +1015,7 @@ describe('durable turn admission', () => {
         activity: 'understand-topic',
         targetAssignmentId: null,
         topic: 'Cell division',
-        contextItemIds: [],
+        contextItemIds: ['restart-source-item'],
         durationMinutes: null,
       });
       const admitted = await fixtureStore.beginStudyTurn(fixtureContext, {
@@ -986,15 +1025,34 @@ describe('durable turn admission', () => {
         text: 'Explain mitosis.',
         attachmentIds: [],
       });
+      const sourceReference = {
+        sourceKind: 'context-version' as const,
+        sourceId: 'restart-source-item',
+        versionId: 'restart-source-version',
+        courseId: fixtureCourseId,
+        locator: null,
+        title: 'Restart source',
+        provenance: 'user-uploaded' as const,
+        observedAt: fixtureDate,
+        state: 'current' as const,
+      };
       await fixtureStore.commitStudyTurn(fixtureContext, {
         turnId: admitted.turnId,
         generationEpoch: admitted.generationEpoch,
         policyRevision: admitted.policyRevision,
         contextRevision: admitted.contextRevision,
-        parts: [{ kind: 'text', text: 'Mitosis creates two daughter cells.' }],
-        sourceReferences: [],
+        parts: [
+          { kind: 'text', text: 'Mitosis creates two daughter cells.' },
+          { kind: 'citation', reference: sourceReference },
+        ],
+        sourceReferences: [sourceReference],
         gradeDerived: false,
         gradeConsentRevision: null,
+      });
+      await fixtureStore.saveStudyDraft(fixtureContext, {
+        sessionId: created.id,
+        text: 'Review cytokinesis next.',
+        expectedDraftRevision: 0,
       });
       const interruptedSession = await fixtureStore.createStudySession(
         fixtureContext,
@@ -1033,8 +1091,16 @@ describe('durable turn admission', () => {
 
         expect(snapshot?.messages.map((message) => message.parts)).toEqual([
           [{ kind: 'text', text: 'Explain mitosis.' }],
-          [{ kind: 'text', text: 'Mitosis creates two daughter cells.' }],
+          [
+            { kind: 'text', text: 'Mitosis creates two daughter cells.' },
+            { kind: 'citation', reference: sourceReference },
+          ],
         ]);
+        expect(snapshot?.sourceReferences).toEqual([sourceReference]);
+        expect(snapshot?.session.draft).toEqual({
+          text: 'Review cytokinesis next.',
+          revision: 1,
+        });
         const interruptedSnapshot = await reopenedStore.getStudySession(
           fixtureContext,
           {
