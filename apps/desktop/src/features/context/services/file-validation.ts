@@ -615,6 +615,7 @@ const parsePng = (bytes: Buffer): ContextImageHeaderResult => {
   let width: number | null = null;
   let height: number | null = null;
   let sawIdat = false;
+  let idatDataLength = 0;
   let idatEnded = false;
   let sawIend = false;
   while (offset < bytes.length) {
@@ -663,6 +664,7 @@ const parsePng = (bytes: Buffer): ContextImageHeaderResult => {
         if (idatEnded)
           return { status: 'unreadable', reason: 'invalid-container' };
         sawIdat = true;
+        idatDataLength += chunkLength;
       } else if (sawIdat && type !== 'IEND') {
         idatEnded = true;
       }
@@ -682,7 +684,13 @@ const parsePng = (bytes: Buffer): ContextImageHeaderResult => {
     offset = crcOffset + 4;
   }
 
-  if (width === null || height === null || !sawIdat || !sawIend)
+  if (
+    width === null ||
+    height === null ||
+    !sawIdat ||
+    idatDataLength === 0 ||
+    !sawIend
+  )
     return { status: 'unreadable', reason: 'invalid-container' };
   return imageHeader('image/png', width, height);
 };
@@ -701,11 +709,13 @@ const parseJpeg = (bytes: Buffer): ContextImageHeaderResult => {
   let width: number | null = null;
   let height: number | null = null;
   let sawScan = false;
+  let currentScanHasData = false;
   let inScan = false;
   while (offset < bytes.length) {
     if (inScan) {
       while (offset < bytes.length) {
         if (bytes[offset] !== 0xff) {
+          currentScanHasData = true;
           offset += 1;
           continue;
         }
@@ -714,10 +724,17 @@ const parseJpeg = (bytes: Buffer): ContextImageHeaderResult => {
         if (offset >= bytes.length)
           return { status: 'unreadable', reason: 'invalid-container' };
         const marker = bytes[offset]!;
-        if (marker === 0x00 || (marker >= 0xd0 && marker <= 0xd7)) {
+        if (marker === 0x00) {
+          currentScanHasData = true;
           offset += 1;
           continue;
         }
+        if (marker >= 0xd0 && marker <= 0xd7) {
+          offset += 1;
+          continue;
+        }
+        if (!currentScanHasData)
+          return { status: 'unreadable', reason: 'invalid-container' };
         inScan = false;
         offset = markerOffset;
         break;
@@ -773,6 +790,7 @@ const parseJpeg = (bytes: Buffer): ContextImageHeaderResult => {
       if (componentCount === 0 || segmentLength !== 6 + componentCount * 2)
         return { status: 'unreadable', reason: 'invalid-container' };
       sawScan = true;
+      currentScanHasData = false;
       inScan = true;
     }
     offset += segmentLength;

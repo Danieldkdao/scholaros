@@ -83,6 +83,32 @@ const pngBytes = (width = 1, height = 1) => {
   return bytes;
 };
 
+const pngChunk = (type: string, data: Buffer) => {
+  const chunk = Buffer.alloc(12 + data.length);
+  chunk.writeUInt32BE(data.length, 0);
+  chunk.write(type, 4, 'ascii');
+  data.copy(chunk, 8);
+  chunk.writeUInt32BE(
+    crc32(chunk.subarray(4, 8 + data.length)),
+    8 + data.length,
+  );
+  return chunk;
+};
+
+const pngContainerWithoutImageData = () => {
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(1, 0);
+  header.writeUInt32BE(1, 4);
+  header[8] = 8;
+  header[9] = 2;
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    pngChunk('IHDR', header),
+    pngChunk('IDAT', Buffer.alloc(0)),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
+};
+
 const jpegBytes = (width = 1, height = 1) =>
   Buffer.from([
     0xff,
@@ -108,6 +134,13 @@ const jpegBytes = (width = 1, height = 1) =>
     0x00,
     0xff,
     0xd9,
+  ]);
+
+const jpegBytesWithEmptyScan = () =>
+  Buffer.concat([
+    jpegBytes().subarray(0, -2),
+    Buffer.from([0xff, 0xda, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3f, 0x00]),
+    Buffer.from([0xff, 0xd9]),
   ]);
 
 const webpBytes = (width = 1, height = 1, animated = false) => {
@@ -277,6 +310,21 @@ describe('validateContextFile', () => {
       }),
     ).toMatchObject({ status: 'unsupported', reason: 'mislabeled' });
   });
+
+  it.each([
+    ['PNG', 'photo.png', 'image/png', pngContainerWithoutImageData()],
+    ['JPEG', 'photo.jpg', 'image/jpeg', jpegBytesWithEmptyScan()],
+  ])(
+    'rejects %s containers with no image payload',
+    (_format, fileName, contentType, bytes) => {
+      expect(
+        validateContextFile({ fileName, contentType, bytes }),
+      ).toMatchObject({
+        status: 'unreadable',
+        reason: 'invalid-container',
+      });
+    },
+  );
 
   it.each([
     ['PNG', 'photo.png', 'image/png', pngBytes()],
