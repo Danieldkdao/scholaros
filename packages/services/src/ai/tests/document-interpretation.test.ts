@@ -7,11 +7,8 @@ import {
 const { serverEnv } = vi.hoisted(() => ({
   serverEnv: {
     BETTER_AUTH_SECRET: 'x',
-    INFERENCE_PROVIDER: 'meta',
     META_MODEL: 'muse-spark-1.3',
     META_API_KEY: 'x',
-    BASETEN_MODEL: 'meta-models/muse-spark-open-1026',
-    BASETEN_API_KEY: undefined,
   },
 }));
 vi.mock('@scholaros/env/server', () => ({ serverEnv }));

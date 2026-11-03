@@ -9,12 +9,8 @@ const mocks = vi.hoisted(() => ({
   resolve: vi.fn(),
   env: {
     BETTER_AUTH_URL: 'https://scholaros.example',
-    TYPESAFE_API_KEY: 'test-typesafe' as string | undefined,
-    INFERENCE_PROVIDER: 'baseten' as 'baseten' | 'meta',
     META_API_KEY: 'test-meta' as string | undefined,
-    BASETEN_API_KEY: 'test-baseten' as string | undefined,
     META_MODEL: 'muse-spark-1.3',
-    BASETEN_MODEL: 'meta-models/muse-spark-open-1026',
     BROWSER_NAV: 'decision' as 'decision' | 'inout' | 'invalid',
   },
   browserModel: vi.fn(),
@@ -75,12 +71,8 @@ beforeEach(() => {
   );
   account += 1;
   mocks.user.mockResolvedValue({ userId: `agent-test-${account}` });
-  mocks.env.INFERENCE_PROVIDER = 'baseten';
   mocks.env.META_API_KEY = 'test-meta';
-  mocks.env.BASETEN_API_KEY = 'test-baseten';
-  mocks.env.TYPESAFE_API_KEY = 'test-typesafe';
   mocks.env.META_MODEL = 'muse-spark-1.3';
-  mocks.env.BASETEN_MODEL = 'meta-models/muse-spark-open-1026';
   mocks.env.BROWSER_NAV = 'decision';
   mocks.capabilities.mockReturnValue({
     version: 1,
@@ -404,8 +396,8 @@ describe('authenticated academic AI endpoint', () => {
     expect(mocks.choose).not.toHaveBeenCalled();
   });
 
-  it('preserves skippable setup errors for missing server credentials', async () => {
-    mocks.env.BASETEN_API_KEY = undefined;
+  it('preserves skippable setup errors when Meta capability is unavailable', async () => {
+    mocks.env.META_API_KEY = undefined;
     mocks.capabilities.mockReturnValue({
       version: 1,
       configurationRevision: 'v1-0123456789abcdef01234567',
@@ -527,71 +519,6 @@ it('routes a bounded connection request to the resolver', async () => {
     (await POST(request({ kind: 'resolve', prompt: 'x'.repeat(501) }))).status,
   ).toBe(400);
 });
-
-it.each([
-  'choose',
-  'courses',
-  'assignments',
-  'announcements',
-  'discover',
-  'resolve',
-])('accepts a Meta-only configuration for %s', async (kind) => {
-  mocks.env.INFERENCE_PROVIDER = 'meta';
-  mocks.env.BASETEN_API_KEY = undefined;
-  mocks.env.TYPESAFE_API_KEY = undefined;
-  mocks.resolve.mockResolvedValue({ candidates: [] });
-  mocks.classify.mockResolvedValue({ courseTargetIds: [] });
-  const response = await POST(
-    request(
-      kind === 'resolve' ? { kind, prompt: 'My school' } : { ...body, kind },
-    ),
-  );
-  expect(response.status).toBe(200);
-});
-
-it.each([
-  'choose',
-  'courses',
-  'assignments',
-  'announcements',
-  'discover',
-  'resolve',
-])(
-  'rejects missing Meta credentials for %s without falling back to Baseten',
-  async (kind) => {
-    mocks.env.INFERENCE_PROVIDER = 'meta';
-    mocks.env.META_API_KEY = undefined;
-    mocks.capabilities.mockReturnValue({
-      version: 1,
-      configurationRevision: 'v1-0123456789abcdef01234567',
-      endpointCategory: 'meta-standard',
-      operations: {
-        'connection-resolution': false,
-        'decision-navigation': false,
-        'course-discovery': false,
-        'resource-extraction': false,
-        'browser-navigation': false,
-        'browser-extraction': false,
-        'learning-text': false,
-        'learning-activity': false,
-        'learning-practice': false,
-        'learning-memory': false,
-        'material-image': false,
-        'material-pdf': false,
-      },
-    });
-    const response = await POST(
-      request(
-        kind === 'resolve' ? { kind, prompt: 'My school' } : { ...body, kind },
-      ),
-    );
-    expect(response.status).toBe(503);
-    expect(mocks.choose).not.toHaveBeenCalled();
-    expect(mocks.extract).not.toHaveBeenCalled();
-    expect(mocks.resolve).not.toHaveBeenCalled();
-    expect(mocks.classify).not.toHaveBeenCalled();
-  },
-);
 
 it('keeps deep scans running across request windows while rejecting bursts', async () => {
   const now = vi.spyOn(Date, 'now').mockReturnValue(1000000);
