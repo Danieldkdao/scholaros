@@ -5,7 +5,6 @@ const mocks = vi.hoisted(() => ({
   object: vi.fn((options: unknown) => options),
   getInferenceModel: vi.fn(() => 'server-selected-meta-model'),
   serverEnv: {
-    INFERENCE_PROVIDER: 'meta',
     META_MODEL: 'muse-spark-1.3',
   },
 }));
@@ -47,7 +46,6 @@ const request = {
 beforeEach(() => {
   vi.clearAllMocks();
   Object.assign(mocks.serverEnv, {
-    INFERENCE_PROVIDER: 'meta',
     META_MODEL: 'muse-spark-1.3',
   });
   mocks.generateText.mockResolvedValue({ output: safeAssessment });
@@ -84,7 +82,6 @@ describe('server learning integrity assessment', () => {
 
   it('fails closed when the configured model is not the approved Meta model', async () => {
     Object.assign(mocks.serverEnv, {
-      INFERENCE_PROVIDER: 'meta',
       META_MODEL: 'muse-spark-1.3-contributor',
     });
 
@@ -99,6 +96,21 @@ describe('server learning integrity assessment', () => {
       retry: 'safe-fallback',
     });
     expect(mocks.generateText).not.toHaveBeenCalled();
+  });
+
+  it('ignores a stale alternative-provider selector and uses the server Meta model', async () => {
+    Object.assign(mocks.serverEnv, { INFERENCE_PROVIDER: 'baseten' });
+
+    const result = await assessLearningCandidate(
+      request,
+      new AbortController().signal,
+    );
+
+    expect(result).toMatchObject({ allowed: true, reasonCode: 'approved' });
+    expect(mocks.getInferenceModel).toHaveBeenCalledOnce();
+    expect(mocks.generateText).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'server-selected-meta-model' }),
+    );
   });
 
   it('rejects adversarial writing, math, code, source, cumulative, and memory attempts', async () => {
