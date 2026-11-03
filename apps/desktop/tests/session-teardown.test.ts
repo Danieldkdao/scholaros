@@ -480,18 +480,22 @@ describe('session teardown', () => {
     ]);
   });
 
-  it('aborts registered work and awaits lifecycle cleanup before opening a new epoch', async () => {
+  it('aborts registered work and waits for settlement and cleanup before opening a new epoch', async () => {
     const lifecycle = createLearningLifecycle();
     const epoch = lifecycle.epoch;
     const operation = new AbortController();
-    const unregister = lifecycle.registerOperation(
+    const unregisterOperation = lifecycle.registerOperation(
       'study:session-a',
       'turn-a',
       operation,
     );
-    unregister();
+    unregisterOperation();
     const activeOperation = new AbortController();
-    lifecycle.registerOperation('study:session-a', 'turn-b', activeOperation);
+    const unregisterActiveOperation = lifecycle.registerOperation(
+      'study:session-a',
+      'turn-b',
+      activeOperation,
+    );
     let finishCleanup!: () => void;
     const cleanup = vi.fn(
       () =>
@@ -501,14 +505,23 @@ describe('session teardown', () => {
     );
     lifecycle.onTeardown(cleanup);
 
-    const invalidation = lifecycle.invalidate();
+    let invalidationSettled = false;
+    const invalidation = lifecycle.invalidate().then(() => {
+      invalidationSettled = true;
+    });
     expect(lifecycle.epoch).toBe(epoch + 1);
     expect(lifecycle.isCurrent(epoch)).toBe(false);
     expect(operation.signal.aborted).toBe(false);
     expect(activeOperation.signal.aborted).toBe(true);
     expect(cleanup).toHaveBeenCalledOnce();
+
     finishCleanup();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(invalidationSettled).toBe(false);
+
+    unregisterActiveOperation();
     await invalidation;
+    expect(invalidationSettled).toBe(true);
     expect(lifecycle.signal.aborted).toBe(false);
     expect(lifecycle.isCurrent(lifecycle.epoch)).toBe(true);
   });
