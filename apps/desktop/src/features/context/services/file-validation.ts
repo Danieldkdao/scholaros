@@ -630,6 +630,11 @@ const parsePng = (bytes: Buffer): ContextImageHeaderResult => {
     const type = bytes.toString('ascii', typeOffset, typeOffset + 4);
     if (!/^[A-Za-z]{4}$/.test(type))
       return { status: 'unreadable', reason: 'invalid-container' };
+    if (
+      crc32(bytes.subarray(typeOffset, crcOffset)) !==
+      bytes.readUInt32BE(crcOffset)
+    )
+      return { status: 'unreadable', reason: 'invalid-container' };
 
     if (width === null) {
       if (type !== 'IHDR' || chunkLength !== 13)
@@ -652,9 +657,7 @@ const parsePng = (bytes: Buffer): ContextImageHeaderResult => {
         !validBitDepth ||
         bytes[dataOffset + 10] !== 0 ||
         bytes[dataOffset + 11] !== 0 ||
-        bytes[dataOffset + 12]! > 1 ||
-        crc32(bytes.subarray(typeOffset, crcOffset)) !==
-          bytes.readUInt32BE(crcOffset)
+        bytes[dataOffset + 12]! > 1
       )
         return { status: 'unreadable', reason: 'invalid-container' };
     } else {
@@ -669,13 +672,7 @@ const parsePng = (bytes: Buffer): ContextImageHeaderResult => {
         idatEnded = true;
       }
       if (type === 'IEND') {
-        if (
-          chunkLength !== 0 ||
-          !sawIdat ||
-          crc32(bytes.subarray(typeOffset, crcOffset)) !==
-            bytes.readUInt32BE(crcOffset) ||
-          crcOffset + 4 !== bytes.length
-        )
+        if (chunkLength !== 0 || !sawIdat || crcOffset + 4 !== bytes.length)
           return { status: 'unreadable', reason: 'invalid-container' };
         sawIend = true;
         break;

@@ -160,6 +160,16 @@ const validPngBytes = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADUlEQVQImWP4z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==',
   'base64',
 );
+const pngWithTextPadding = (totalBytes: number) => {
+  const textData = Buffer.alloc(totalBytes - validPngBytes.length - 12, 0x78);
+  Buffer.from('padding\0').copy(textData);
+  const iendOffset = validPngBytes.length - 12;
+  return Buffer.concat([
+    validPngBytes.subarray(0, iendOffset),
+    pngChunk('tEXt', textData),
+    validPngBytes.subarray(iendOffset),
+  ]);
+};
 const validJpegBytes = Buffer.from(
   '/9j/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQODwwQFxQYGBcUFhYaHSUfGhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/2wBDAQcHBwoIChMKChMoGhYaKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCj/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAf/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAABgj/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdABykX//Z',
   'base64',
@@ -311,6 +321,22 @@ describe('validateContextFile', () => {
     ).toMatchObject({ status: 'unsupported', reason: 'mislabeled' });
   });
 
+  it('rejects PNG chunks with corrupt checksums', () => {
+    const bytes = Buffer.from(validPngBytes);
+    const idatOffset = bytes.indexOf('IDAT');
+    const idatLength = bytes.readUInt32BE(idatOffset - 4);
+    const checksumOffset = idatOffset + 4 + idatLength;
+    bytes[checksumOffset] = bytes[checksumOffset]! ^ 1;
+
+    expect(
+      validateContextFile({
+        fileName: 'photo.png',
+        contentType: 'image/png',
+        bytes,
+      }),
+    ).toMatchObject({ status: 'unreadable', reason: 'invalid-container' });
+  });
+
   it.each([
     ['PNG', 'photo.png', 'image/png', pngContainerWithoutImageData()],
     ['JPEG', 'photo.jpg', 'image/jpeg', jpegBytesWithEmptyScan()],
@@ -387,6 +413,19 @@ describe('validateContextFile', () => {
         bytes,
       }),
     ).toMatchObject({ status: 'unsupported', reason: 'limit-exceeded' });
+  });
+
+  it('accepts a valid image exactly at its byte limit', () => {
+    const bytes = pngWithTextPadding(contextFileLimits.imageBytes);
+
+    expect(bytes.byteLength).toBe(contextFileLimits.imageBytes);
+    expect(
+      validateContextFile({
+        fileName: 'large.png',
+        contentType: 'image/png',
+        bytes,
+      }),
+    ).toMatchObject({ status: 'valid', kind: 'image' });
   });
 
   it('accepts strict UTF-8 text exactly at its byte limit', () => {
