@@ -1,6 +1,5 @@
 import {
   BookOpen,
-  CalendarDays,
   GraduationCap,
   House,
   Layers,
@@ -30,8 +29,8 @@ export const formatDashboardPage = (page: DashboardPage) => {
       return { title: 'Courses', Icon: BookOpen };
     case 'study':
       return { title: 'Study', Icon: GraduationCap };
-    case 'planner':
-      return { title: 'Planner', Icon: CalendarDays };
+    case 'context':
+      return { title: 'Context', Icon: Layers };
     case 'connections':
       return { title: 'Connections', Icon: Plug };
     case 'settings':

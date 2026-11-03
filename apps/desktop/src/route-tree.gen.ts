@@ -14,9 +14,11 @@ import { Route as AuthRouteImport } from './routes/auth'
 import { Route as DashboardRouteImport } from './routes/dashboard'
 import { Route as OnboardingRouteImport } from './routes/onboarding'
 import { Route as DashboardIndexRouteImport } from './routes/dashboard/index'
+import { Route as DashboardContextRouteImport } from './routes/dashboard/context'
 import { Route as DashboardPlannerRouteImport } from './routes/dashboard/planner'
 import { Route as DashboardSettingsRouteImport } from './routes/dashboard/settings'
 import { Route as DashboardStudyRouteImport } from './routes/dashboard/study'
+import { Route as StudySessionIdRouteImport } from './routes/study/$sessionId'
 import { Route as DashboardConnectionsIndexRouteImport } from './routes/dashboard/connections/index'
 import { Route as DashboardConnectionsAddRouteImport } from './routes/dashboard/connections/add'
 import { Route as DashboardCoursesIndexRouteImport } from './routes/dashboard/courses/index'
@@ -47,6 +49,11 @@ const DashboardIndexRoute = DashboardIndexRouteImport.update({
   path: '/',
   getParentRoute: () => DashboardRoute,
 } as any)
+const DashboardContextRoute = DashboardContextRouteImport.update({
+  id: '/context',
+  path: '/context',
+  getParentRoute: () => DashboardRoute,
+} as any)
 const DashboardPlannerRoute = DashboardPlannerRouteImport.update({
   id: '/planner',
   path: '/planner',
@@ -61,6 +68,11 @@ const DashboardStudyRoute = DashboardStudyRouteImport.update({
   id: '/study',
   path: '/study',
   getParentRoute: () => DashboardRoute,
+} as any)
+const StudySessionIdRoute = StudySessionIdRouteImport.update({
+  id: '/study/$sessionId',
+  path: '/study/$sessionId',
+  getParentRoute: () => rootRouteImport,
 } as any)
 const DashboardConnectionsIndexRoute =
   DashboardConnectionsIndexRouteImport.update({
@@ -90,9 +102,11 @@ export interface FileRoutesByFullPath {
   '/auth': typeof AuthRoute
   '/dashboard': typeof DashboardRouteWithChildren
   '/onboarding': typeof OnboardingRoute
+  '/dashboard/context': typeof DashboardContextRoute
   '/dashboard/planner': typeof DashboardPlannerRoute
   '/dashboard/settings': typeof DashboardSettingsRoute
   '/dashboard/study': typeof DashboardStudyRoute
+  '/study/$sessionId': typeof StudySessionIdRoute
   '/dashboard/': typeof DashboardIndexRoute
   '/dashboard/connections/add': typeof DashboardConnectionsAddRoute
   '/dashboard/courses/$courseId': typeof DashboardCoursesCourseIdRoute
@@ -103,9 +117,11 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
   '/onboarding': typeof OnboardingRoute
+  '/dashboard/context': typeof DashboardContextRoute
   '/dashboard/planner': typeof DashboardPlannerRoute
   '/dashboard/settings': typeof DashboardSettingsRoute
   '/dashboard/study': typeof DashboardStudyRoute
+  '/study/$sessionId': typeof StudySessionIdRoute
   '/dashboard': typeof DashboardIndexRoute
   '/dashboard/connections/add': typeof DashboardConnectionsAddRoute
   '/dashboard/courses/$courseId': typeof DashboardCoursesCourseIdRoute
@@ -118,9 +134,11 @@ export interface FileRoutesById {
   '/auth': typeof AuthRoute
   '/dashboard': typeof DashboardRouteWithChildren
   '/onboarding': typeof OnboardingRoute
+  '/dashboard/context': typeof DashboardContextRoute
   '/dashboard/planner': typeof DashboardPlannerRoute
   '/dashboard/settings': typeof DashboardSettingsRoute
   '/dashboard/study': typeof DashboardStudyRoute
+  '/study/$sessionId': typeof StudySessionIdRoute
   '/dashboard/': typeof DashboardIndexRoute
   '/dashboard/connections/add': typeof DashboardConnectionsAddRoute
   '/dashboard/courses/$courseId': typeof DashboardCoursesCourseIdRoute
@@ -134,9 +152,11 @@ export interface FileRouteTypes {
     | '/auth'
     | '/dashboard'
     | '/onboarding'
+    | '/dashboard/context'
     | '/dashboard/planner'
     | '/dashboard/settings'
     | '/dashboard/study'
+    | '/study/$sessionId'
     | '/dashboard/'
     | '/dashboard/connections/add'
     | '/dashboard/courses/$courseId'
@@ -147,9 +167,11 @@ export interface FileRouteTypes {
     | '/'
     | '/auth'
     | '/onboarding'
+    | '/dashboard/context'
     | '/dashboard/planner'
     | '/dashboard/settings'
     | '/dashboard/study'
+    | '/study/$sessionId'
     | '/dashboard'
     | '/dashboard/connections/add'
     | '/dashboard/courses/$courseId'
@@ -161,9 +183,11 @@ export interface FileRouteTypes {
     | '/auth'
     | '/dashboard'
     | '/onboarding'
+    | '/dashboard/context'
     | '/dashboard/planner'
     | '/dashboard/settings'
     | '/dashboard/study'
+    | '/study/$sessionId'
     | '/dashboard/'
     | '/dashboard/connections/add'
     | '/dashboard/courses/$courseId'
@@ -176,6 +200,7 @@ export interface RootRouteChildren {
   AuthRoute: typeof AuthRoute
   DashboardRoute: typeof DashboardRouteWithChildren
   OnboardingRoute: typeof OnboardingRoute
+  StudySessionIdRoute: typeof StudySessionIdRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -215,6 +240,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DashboardIndexRouteImport
       parentRoute: typeof DashboardRoute
     }
+    '/dashboard/context': {
+      id: '/dashboard/context'
+      path: '/context'
+      fullPath: '/dashboard/context'
+      preLoaderRoute: typeof DashboardContextRouteImport
+      parentRoute: typeof DashboardRoute
+    }
     '/dashboard/planner': {
       id: '/dashboard/planner'
       path: '/planner'
@@ -235,6 +267,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/dashboard/study'
       preLoaderRoute: typeof DashboardStudyRouteImport
       parentRoute: typeof DashboardRoute
+    }
+    '/study/$sessionId': {
+      id: '/study/$sessionId'
+      path: '/study/$sessionId'
+      fullPath: '/study/$sessionId'
+      preLoaderRoute: typeof StudySessionIdRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/dashboard/connections/': {
       id: '/dashboard/connections/'
@@ -268,6 +307,7 @@ declare module '@tanstack/react-router' {
 }
 
 interface DashboardRouteChildren {
+  DashboardContextRoute: typeof DashboardContextRoute
   DashboardPlannerRoute: typeof DashboardPlannerRoute
   DashboardSettingsRoute: typeof DashboardSettingsRoute
   DashboardStudyRoute: typeof DashboardStudyRoute
@@ -279,6 +319,7 @@ interface DashboardRouteChildren {
 }
 
 const DashboardRouteChildren: DashboardRouteChildren = {
+  DashboardContextRoute: DashboardContextRoute,
   DashboardPlannerRoute: DashboardPlannerRoute,
   DashboardSettingsRoute: DashboardSettingsRoute,
   DashboardStudyRoute: DashboardStudyRoute,
@@ -298,6 +339,7 @@ const rootRouteChildren: RootRouteChildren = {
   AuthRoute: AuthRoute,
   DashboardRoute: DashboardRouteWithChildren,
   OnboardingRoute: OnboardingRoute,
+  StudySessionIdRoute: StudySessionIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
