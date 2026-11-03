@@ -12,6 +12,12 @@ const mocks = vi.hoisted(() => ({
   quit: vi.fn(),
   exit: vi.fn(),
   errorBox: vi.fn(),
+  chooseFiles: vi.fn(async () => ({
+    canceled: false,
+    filePaths: ['/tmp/a.pdf'],
+  })),
+  notificationIsSupported: vi.fn(() => true),
+  askForMicrophone: vi.fn(async () => true),
   setupAuth: vi.fn(),
   requestAuth: vi.fn(async () => undefined),
   getTrustedWindow: vi.fn(() => ({ id: 'trusted-window' })),
@@ -54,7 +60,9 @@ vi.mock('electron', () => ({
     loadFile() {}
     loadURL() {}
   },
-  dialog: { showErrorBox: mocks.errorBox },
+  dialog: { showErrorBox: mocks.errorBox, showOpenDialog: mocks.chooseFiles },
+  Notification: { isSupported: mocks.notificationIsSupported },
+  systemPreferences: { askForMediaAccess: mocks.askForMicrophone },
   ipcMain: {
     handle: (
       channel: string,
@@ -103,6 +111,35 @@ beforeEach(() => {
 const emit = (name: string, event?: unknown) => {
   for (const callback of mocks.listeners.get(name) ?? []) callback(event);
 };
+const activeStudySnapshot = () => ({
+  session: {
+    id: 'session-a',
+    courseId: 'course-a',
+    title: 'Study',
+    activity: 'understand-topic',
+    targetAssignmentId: null,
+    topic: null,
+    status: 'in-progress',
+    revision: 1,
+    generationEpoch: 0,
+    createdAt: '2026-11-03T00:00:00.000Z',
+    updatedAt: '2026-11-03T00:00:00.000Z',
+    lastOpenedAt: '2026-11-03T00:00:00.000Z',
+    draft: { text: '', revision: 0 },
+    timer: {
+      deadlineAt: null,
+      revision: 0,
+      expiredRevision: null,
+      resolvedExpiredRevision: null,
+      finishedAt: null,
+    },
+  },
+  messages: [],
+  hasMoreBefore: false,
+  activeTurn: null,
+  sourceReferences: [],
+  revision: 1,
+});
 it('runs the service without a desktop window or renderer authentication bridges', async () => {
   mocks.serviceMode = true;
   await import('../src/main');
@@ -163,6 +200,96 @@ it('uses only trusted authentication windows and guards the user-initiated auth 
   expect(mocks.requestAuth).not.toHaveBeenCalled();
   await expect(requestAuth?.({ trusted: true })).resolves.toBeUndefined();
   expect(mocks.requestAuth).toHaveBeenCalledOnce();
+});
+
+it('keeps native file selection behind the trusted host and service boundary', async () => {
+  mocks.request.mockImplementation(async (method) =>
+    method === 'getCurrentUser'
+      ? { id: 'student-a', authMode: 'online' }
+      : {
+          items: [
+            {
+              itemId: 'item-a',
+              operationId: 'operation-a',
+              status: 'queued',
+            },
+          ],
+          cancelled: false,
+        },
+  );
+  await import('../src/main');
+  await vi.waitFor(() => expect(mocks.windows).toBe(1));
+
+  const chooseContextFiles = mocks.ipcHandlers.get(
+    'scholar:native:chooseContextFiles',
+  );
+  expect(chooseContextFiles).toBeTypeOf('function');
+  await expect(
+    chooseContextFiles?.({ trusted: false }, { saveToLibrary: true }),
+  ).rejects.toThrow('Untrusted');
+  expect(mocks.chooseFiles).not.toHaveBeenCalled();
+
+  await expect(
+    chooseContextFiles?.({ trusted: true }, { saveToLibrary: true }),
+  ).resolves.toMatchObject({ cancelled: false, items: [{ itemId: 'item-a' }] });
+  expect(mocks.chooseFiles).toHaveBeenCalledOnce();
+  expect(mocks.request).toHaveBeenCalledWith('registerSelectedContextFiles', {
+    filePaths: ['/tmp/a.pdf'],
+    saveToLibrary: true,
+  });
+});
+
+it('requests microphone access only for a trusted active study session', async () => {
+  mocks.request.mockImplementation(async (method) =>
+    method === 'getCurrentUser'
+      ? { id: 'student-a', authMode: 'online' }
+      : activeStudySnapshot(),
+  );
+  await import('../src/main');
+  await vi.waitFor(() => expect(mocks.windows).toBe(1));
+  const requestPermission = mocks.ipcHandlers.get(
+    'scholar:native:requestMicrophonePermission',
+  );
+
+  await expect(
+    requestPermission?.({ trusted: true }, { sessionId: 'session-a' }),
+  ).resolves.toEqual({
+    state: process.platform === 'darwin' ? 'granted' : 'unsupported',
+  });
+  if (process.platform === 'darwin')
+    expect(mocks.askForMicrophone).toHaveBeenCalledWith('microphone');
+  else expect(mocks.askForMicrophone).not.toHaveBeenCalled();
+});
+
+it('does not request microphone permission for an offline account', async () => {
+  mocks.request.mockResolvedValue({
+    id: 'student-a',
+    authMode: 'offline-local',
+  });
+  await import('../src/main');
+  await vi.waitFor(() => expect(mocks.windows).toBe(1));
+  const requestPermission = mocks.ipcHandlers.get(
+    'scholar:native:requestMicrophonePermission',
+  );
+
+  await expect(
+    requestPermission?.({ trusted: true }, { sessionId: 'session-a' }),
+  ).rejects.toThrow('Reconnect');
+  expect(mocks.askForMicrophone).not.toHaveBeenCalled();
+});
+
+it('reports notification permission as unknown rather than treating support as a grant', async () => {
+  mocks.request.mockResolvedValue({ id: 'student-a', authMode: 'online' });
+  await import('../src/main');
+  await vi.waitFor(() => expect(mocks.windows).toBe(1));
+  const requestPermission = mocks.ipcHandlers.get(
+    'scholar:native:requestNotificationPermission',
+  );
+
+  await expect(requestPermission?.({ trusted: true }, {})).resolves.toEqual({
+    state: 'unknown',
+  });
+  expect(mocks.notificationIsSupported).toHaveBeenCalledOnce();
 });
 
 it('shows a useful startup failure before exiting when storage ownership cannot be acquired', async () => {

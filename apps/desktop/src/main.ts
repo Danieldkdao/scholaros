@@ -1,5 +1,13 @@
 import './lib/application-paths';
-import { app, BrowserWindow, dialog, ipcMain, webContents } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  Notification,
+  systemPreferences,
+  webContents,
+} from 'electron';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import started from 'electron-squirrel-startup';
@@ -12,6 +20,13 @@ import {
   requireTrustedSender,
 } from './lib/trusted-windows';
 import { protectWindowNavigation } from './lib/window-navigation';
+import {
+  contextFileSelectionResultSchema,
+  contextFileSelectionSchema,
+  requestMicrophonePermissionSchema,
+  requestNotificationPermissionSchema,
+} from './services/academic/contracts';
+import { sessionSnapshotSchema } from '@scholaros/services/learning/study-contracts';
 import {
   registerAcademicClient,
   requestAcademicService,
@@ -32,6 +47,83 @@ if (serviceMode) {
   app.setPath('userData', userData);
 }
 
+const getOnlineServiceUser = async () => {
+  const user = await requestAcademicService('getCurrentUser');
+  if (!user || typeof user !== 'object' || !('id' in user))
+    throw new Error('Sign in to use this feature.');
+  const candidate = user as { id?: unknown; authMode?: unknown };
+  if (typeof candidate.id !== 'string')
+    throw new Error('Sign in to use this feature.');
+  if (candidate.authMode === 'offline-local')
+    throw new Error('Reconnect to use this feature.');
+  return { id: candidate.id };
+};
+
+const requireActiveStudySession = async (sessionId: string) => {
+  const snapshot = sessionSnapshotSchema.parse(
+    await requestAcademicService('getStudySession', { sessionId }),
+  );
+  if (
+    snapshot.session.id !== sessionId ||
+    snapshot.session.status !== 'in-progress'
+  )
+    throw new Error('Open an active study session to use this feature.');
+};
+
+const registerTrustedNativeIpc = () => {
+  ipcMain.handle('scholar:native:chooseContextFiles', async (event, input) => {
+    const hostWindow = requireTrustedSender(event);
+    const selection = contextFileSelectionSchema.parse(input);
+    const user = await getOnlineServiceUser();
+    const selected = await dialog.showOpenDialog(hostWindow, {
+      properties: ['openFile', 'multiSelections'],
+      title: 'Choose study materials',
+    });
+    if (selected.canceled || selected.filePaths.length === 0)
+      return { items: [], cancelled: true };
+    if (selected.filePaths.length > 8)
+      throw new Error('Choose no more than eight files.');
+    const currentUser = await getOnlineServiceUser();
+    if (currentUser.id !== user.id)
+      throw new Error('Your session changed; sign in again.');
+    const result = await requestAcademicService(
+      'registerSelectedContextFiles',
+      {
+        ...selection,
+        filePaths: selected.filePaths,
+      },
+    );
+    return contextFileSelectionResultSchema.parse(result);
+  });
+  ipcMain.handle(
+    'scholar:native:requestMicrophonePermission',
+    async (event, input) => {
+      requireTrustedSender(event);
+      const { sessionId } = requestMicrophonePermissionSchema.parse(input);
+      const user = await getOnlineServiceUser();
+      await requireActiveStudySession(sessionId);
+      if (process.platform !== 'darwin') return { state: 'unsupported' };
+      const granted = await systemPreferences.askForMediaAccess('microphone');
+      const currentUser = await getOnlineServiceUser();
+      if (currentUser.id !== user.id)
+        throw new Error('Your session changed; sign in again.');
+      await requireActiveStudySession(sessionId);
+      return { state: granted ? 'granted' : 'denied' };
+    },
+  );
+  ipcMain.handle(
+    'scholar:native:requestNotificationPermission',
+    async (event, input) => {
+      requireTrustedSender(event);
+      requestNotificationPermissionSchema.parse(input);
+      await getOnlineServiceUser();
+      return {
+        state: Notification.isSupported() ? 'unknown' : 'unsupported',
+      };
+    },
+  );
+};
+
 // Handle creating/removing shortcuts on Windows when installing/uninstalling.
 if (started) {
   app.quit();
@@ -50,6 +142,7 @@ if (!started && !serviceMode && !app.commandLine.hasSwitch('migrate-db')) {
     requireTrustedSender(event);
     return authClient.requestAuth();
   });
+  registerTrustedNativeIpc();
 }
 
 const createWindow = () => {

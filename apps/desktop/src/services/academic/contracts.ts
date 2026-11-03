@@ -1,5 +1,5 @@
 import type { ActivityPresentation } from '@scholaros/services/learning/activity-contracts';
-import type { IngestionStatus } from '@scholaros/services/learning/context-contracts';
+import { ingestionStatuses } from '@scholaros/services/learning/context-contracts';
 import type {
   AuthorizedRegistrar,
   Id,
@@ -220,15 +220,48 @@ export type DeleteLocalAcademicDataInput = {
   requestId: RequestId;
   scope: 'account-local';
 };
-export type ContextFileSelectionInput = {
-  sessionId?: Id;
-  courseId?: Id;
-  saveToLibrary: boolean;
-};
-export type ContextFileSelectionResult = {
-  items: { itemId: Id; operationId: Id; status: IngestionStatus }[];
-  cancelled: boolean;
-};
+export const contextFileSelectionSchema = z.strictObject({
+  sessionId: z.string().min(1).max(300).optional(),
+  courseId: z.string().min(1).max(300).optional(),
+  saveToLibrary: z.boolean(),
+});
+export type ContextFileSelectionInput = z.infer<
+  typeof contextFileSelectionSchema
+>;
+export const registerSelectedContextFilesInputSchema = z.strictObject({
+  filePaths: z.array(z.string().min(1).max(4096)).min(1).max(8),
+  sessionId: z.string().min(1).max(300).optional(),
+  courseId: z.string().min(1).max(300).optional(),
+  saveToLibrary: z.boolean(),
+});
+export type RegisterSelectedContextFilesInput = z.infer<
+  typeof registerSelectedContextFilesInputSchema
+>;
+export const contextFileSelectionResultSchema = z.strictObject({
+  items: z
+    .array(
+      z.strictObject({
+        itemId: z.string().min(1).max(300),
+        operationId: z.string().min(1).max(300),
+        status: z.enum(ingestionStatuses),
+      }),
+    )
+    .max(8),
+  cancelled: z.boolean(),
+});
+export type ContextFileSelectionResult = z.infer<
+  typeof contextFileSelectionResultSchema
+>;
+export const requestMicrophonePermissionSchema = z.strictObject({
+  sessionId: z.string().min(1).max(300),
+});
+export type RequestMicrophonePermissionInput = z.infer<
+  typeof requestMicrophonePermissionSchema
+>;
+export const requestNotificationPermissionSchema = z.strictObject({});
+export type RequestNotificationPermissionInput = z.infer<
+  typeof requestNotificationPermissionSchema
+>;
 export type ActivityBounds = {
   x: number;
   y: number;
