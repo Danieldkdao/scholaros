@@ -19,6 +19,8 @@ const mocks = vi.hoisted(() => ({
   notificationIsSupported: vi.fn(() => true),
   askForMicrophone: vi.fn(async () => true),
   setupAuth: vi.fn(),
+  setupAuthMain: vi.fn(),
+  registerActivityScheme: vi.fn(),
   requestAuth: vi.fn(async () => undefined),
   getTrustedWindow: vi.fn(() => ({ id: 'trusted-window' })),
   installTrustedFocusedWebContentsGuard: vi.fn(),
@@ -76,6 +78,13 @@ vi.mock('electron-squirrel-startup', () => ({ default: false }));
 vi.mock('../src/lib/auth/client', () => ({
   authClient: { setupMain: mocks.setupAuth, requestAuth: mocks.requestAuth },
 }));
+vi.mock('../src/lib/auth/main', () => ({
+  setupAuthMain: mocks.setupAuthMain,
+}));
+vi.mock('../src/features/study/services/activity-protocol', () => ({
+  registerActivitySchemeBeforeReady: (register: (schemes: unknown[]) => void) =>
+    register([{ scheme: 'scholar-activity', privileges: {} }]),
+}));
 vi.mock('../src/lib/window-navigation', () => ({
   protectWindowNavigation: vi.fn(),
 }));
@@ -113,6 +122,24 @@ beforeEach(() => {
   mocks.register.mockResolvedValue(undefined);
   mocks.stop.mockResolvedValue(undefined);
   mocks.runService.mockResolvedValue(undefined);
+  mocks.setupAuthMain.mockImplementation(
+    ({
+      getWindow,
+      registerActivityScheme,
+    }: {
+      getWindow: () => unknown;
+      registerActivityScheme: (register: (schemes: unknown[]) => void) => void;
+    }) => {
+      mocks.setupAuth({
+        csp: true,
+        scheme: true,
+        bridges: false,
+        getWindow,
+      });
+      registerActivityScheme(mocks.registerActivityScheme);
+    },
+  );
+  mocks.registerActivityScheme.mockImplementation(() => undefined);
   vi.stubGlobal('MAIN_WINDOW_VITE_DEV_SERVER_URL', '');
   vi.stubGlobal('MAIN_WINDOW_VITE_NAME', 'main_window');
 });

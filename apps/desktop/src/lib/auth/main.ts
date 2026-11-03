@@ -1,4 +1,4 @@
-import { net } from 'electron';
+import { net, protocol, type BrowserWindow } from 'electron';
 import { authClient } from './client';
 import {
   clearOfflineAccountGrant,
@@ -7,6 +7,52 @@ import {
 } from '../offline-account';
 import { clientEnv } from '../../data/env/client';
 import type { CurrentUser } from '../../features/onboarding/types';
+
+type SetupAuthMainOptions = {
+  getWindow: () => BrowserWindow | null;
+  registerActivityScheme: (
+    registerSchemesAsPrivileged: typeof protocol.registerSchemesAsPrivileged,
+  ) => void;
+};
+
+type PrivilegedSchemes = Parameters<
+  typeof protocol.registerSchemesAsPrivileged
+>[0];
+
+let authMainSetup = false;
+
+export const setupAuthMain = ({
+  getWindow,
+  registerActivityScheme,
+}: SetupAuthMainOptions) => {
+  if (authMainSetup)
+    throw new Error('Authentication main process is already set up.');
+  authMainSetup = true;
+
+  const registerSchemes = protocol.registerSchemesAsPrivileged.bind(protocol);
+  const originalRegistrar = protocol.registerSchemesAsPrivileged;
+  const privilegedSchemes: PrivilegedSchemes = [];
+  const collectSchemeRegistrations = (schemes: PrivilegedSchemes) => {
+    privilegedSchemes.push(...schemes);
+  };
+
+  // Better Auth registers auth and avatar schemes separately; Electron requires
+  // those and the activity scheme in one pre-ready registration call.
+  try {
+    protocol.registerSchemesAsPrivileged = collectSchemeRegistrations;
+    authClient.setupMain({
+      csp: true,
+      scheme: true,
+      bridges: false,
+      getWindow,
+    });
+    registerActivityScheme(collectSchemeRegistrations);
+  } finally {
+    protocol.registerSchemesAsPrivileged = originalRegistrar;
+  }
+
+  registerSchemes(privilegedSchemes);
+};
 
 export const accountRequest = async (
   route: '/api/me' | '/api/onboarding' | '/api/agent',

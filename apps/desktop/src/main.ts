@@ -13,6 +13,7 @@ import { pathToFileURL } from 'node:url';
 import started from 'electron-squirrel-startup';
 import { mkdirSync } from 'node:fs';
 import { authClient } from './lib/auth/client';
+import { setupAuthMain } from './lib/auth/main';
 import {
   getTrustedWindow,
   installTrustedFocusedWebContentsGuard,
@@ -34,6 +35,7 @@ import {
   disconnectAcademicService,
 } from './services/academic/client';
 import { loadLearningActionModules } from './services/academic/learning-actions';
+import { registerActivitySchemeBeforeReady } from './features/study/services/activity-protocol';
 
 const serviceMode = app.commandLine.hasSwitch('academic-service');
 if (serviceMode) {
@@ -133,11 +135,9 @@ if (started) {
 if (!started && !serviceMode && !app.commandLine.hasSwitch('migrate-db')) {
   // Better Auth's error bridge targets the globally focused WebContents.
   installTrustedFocusedWebContentsGuard(webContents);
-  authClient.setupMain({
-    csp: true,
-    scheme: true,
-    bridges: false,
+  setupAuthMain({
     getWindow: getTrustedWindow,
+    registerActivityScheme: registerActivitySchemeBeforeReady,
   });
   ipcMain.handle('better-auth:requestAuth', (event) => {
     requireTrustedSender(event);
