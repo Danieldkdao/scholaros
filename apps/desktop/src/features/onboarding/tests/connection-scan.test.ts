@@ -417,3 +417,99 @@ it('returns to the saved course after account selection lands on the course list
   expect(result.followed).toBe(courseUrl);
   expect(navigatePage).toHaveBeenCalledTimes(2);
 });
+
+it('rejects a cached location outside the active course URL before navigation', async () => {
+  const outsideCourseUrl = 'https://school.edu/courses/2/assignments';
+  const location = {
+    id: 'location-other-course',
+    userId: 'student-1',
+    connectionId: connection.id,
+    courseId: 'course-1',
+    purpose: 'assignments' as const,
+    destinationUrl: outsideCourseUrl,
+    parentUrl: courseUrl,
+    recipe: null,
+    label: 'Assignments',
+    evidence: {
+      sourceUrl: courseUrl,
+      excerpts: ['Assignments'],
+      targetIds: [],
+    },
+    status: 'verified' as const,
+    destinationKind: 'collection' as const,
+    observedAt: '2026-11-01T12:00:00.000Z',
+    verifiedAt: '2026-11-01T12:00:00.000Z',
+    failureCount: 0,
+    lastFailureClass: null,
+  };
+  mocks.readPage.mockReset().mockResolvedValue(coursePage);
+
+  await expect(
+    scanConnection({
+      connection,
+      workspace,
+      hosts: [host],
+      notes: '',
+      navigatePage: async (_page, url) => void mocks.navigations.push(url),
+      isCurrent: () => true,
+      signal: new AbortController().signal,
+      courseUrl,
+      locationScope: { userId: 'student-1', courseId: 'course-1' },
+      withCourseList: async (context) => context.visitKnownLocation!(location),
+    }),
+  ).rejects.toMatchObject({ failureClass: 'wrong-course' });
+
+  expect(mocks.navigations).not.toContain(outsideCourseUrl);
+});
+
+it('visits a scoped saved destination even when the current course root no longer links it', async () => {
+  const destinationUrl = `${courseUrl}/assignments`;
+  const location = {
+    id: 'location-1',
+    userId: 'student-1',
+    connectionId: connection.id,
+    courseId: 'course-1',
+    purpose: 'assignments' as const,
+    destinationUrl,
+    parentUrl: courseUrl,
+    recipe: null,
+    label: 'Assignments',
+    evidence: {
+      sourceUrl: courseUrl,
+      excerpts: ['Assignments'],
+      targetIds: [],
+    },
+    status: 'verified' as const,
+    destinationKind: 'collection' as const,
+    observedAt: '2026-11-01T12:00:00.000Z',
+    verifiedAt: '2026-11-01T12:00:00.000Z',
+    failureCount: 0,
+    lastFailureClass: null,
+  };
+  const cachedPage = {
+    ...coursePage,
+    url: destinationUrl,
+    title: 'Assignments',
+    text: 'Assignments',
+  };
+  mocks.readPage
+    .mockReset()
+    .mockResolvedValueOnce(coursePage)
+    .mockResolvedValueOnce(cachedPage);
+
+  const result = await scanConnection({
+    connection,
+    workspace,
+    hosts: [host],
+    notes: '',
+    navigatePage: async (_page, url) => void mocks.navigations.push(url),
+    isCurrent: () => true,
+    signal: new AbortController().signal,
+    courseUrl,
+    locationScope: { userId: 'student-1', courseId: 'course-1' },
+    withCourseList: async (context) => context.visitKnownLocation!(location),
+  });
+
+  expect(result.followed).toMatchObject({ url: destinationUrl });
+  expect(mocks.navigations).toContain(destinationUrl);
+});

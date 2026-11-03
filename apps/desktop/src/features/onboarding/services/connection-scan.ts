@@ -2,6 +2,7 @@ import { openBackgroundPage } from './background-page';
 import { composeAgentNotes } from '../lib/agent-notes';
 import { exploreForCourses } from '../lib/course-exploration';
 import { academicPageIdentity, isReadNavigation } from '../lib/browser-policy';
+import { navigationLocationRowSchema } from '../../context/schemas';
 import {
   assertMissionNavigation,
   isStaleNavigation,
@@ -36,6 +37,7 @@ import type { AcademicContextEntryDraft, AcademicConnection } from '../types';
 import type { ActiveWorkspace } from './browser-workspace';
 import type { ConnectionOutcome } from '../lib/discovery-outcomes';
 import type { ObservedPage } from '../lib/academic-discovery';
+import type { NavigationLocationSelectData } from '../../../db/schema';
 
 export type CourseListContext = {
   withCoursePage: (
@@ -52,6 +54,11 @@ export type CourseListContext = {
   downloadPdf: (from: ObservedPage, url: string) => Promise<PdfDownloadResult>;
   navigation?: BrowserNavigationAdapter;
   readCurrent?: () => Promise<ObservedPage>;
+  hasBlockedRequiredData?: () => boolean;
+  visitKnownLocation?: (
+    scopedRecord: NavigationLocationSelectData,
+    target?: 'destination' | 'parent',
+  ) => Promise<ObservedPage>;
 };
 
 export type ConnectionScan<TFollowed = never> = {
@@ -90,6 +97,7 @@ type ScanConnectionInput<TFollowed> = {
   isCurrent: () => boolean;
   signal: AbortSignal;
   courseUrl?: string;
+  locationScope?: { userId: string; courseId: string };
   maxPages?: number;
   reserveModelCall?: () => boolean;
   withCourseList?: (context: CourseListContext) => Promise<TFollowed>;
@@ -126,6 +134,7 @@ export const scanConnection = async <TFollowed = never>(
   let releaseProtection: MissionProtection | null = null;
   const blockedHosts = new Set<string>();
   let sawSignInWall = false;
+  let blockedRequiredData = false;
   let notesOmitted = false;
   let truncated = false;
   let following = false;
@@ -153,7 +162,11 @@ export const scanConnection = async <TFollowed = never>(
           event.mainFrame
         )
           sawSignInWall = true;
-        else void blockedHosts.add(event.host);
+        else {
+          blockedHosts.add(event.host);
+          if ('requiredData' in event && event.requiredData === true)
+            blockedRequiredData = true;
+        }
       },
       continuation,
     );
@@ -217,6 +230,65 @@ export const scanConnection = async <TFollowed = never>(
       assertMissionNavigation(url, hosts);
       await navigatePage(openedPage, url, continuation);
       return readSnapshot();
+    };
+    const visitKnownLocation = async (
+      inputLocation: NavigationLocationSelectData,
+      target: 'destination' | 'parent' = 'destination',
+    ): Promise<ObservedPage> => {
+      signal.throwIfAborted();
+      if (!isCurrent()) throw new Error('Your session changed; sign in again.');
+      releaseProtection?.assertReadable?.();
+      const parsedLocation =
+        navigationLocationRowSchema.safeParse(inputLocation);
+      const location = parsedLocation.success ? parsedLocation.data : null;
+      if (
+        !courseUrl ||
+        !input.locationScope ||
+        !location ||
+        location.userId !== input.locationScope.userId ||
+        location.connectionId !== connection.id ||
+        location.courseId !== input.locationScope.courseId ||
+        location.status !== 'verified' ||
+        location.destinationKind !== 'collection' ||
+        !location.parentUrl ||
+        location.parentUrl !== location.evidence.sourceUrl
+      ) {
+        throw Object.assign(
+          new Error('The saved destination is not verified for this course.'),
+          { failureClass: 'wrong-course' as const },
+        );
+      }
+      const targetUrl =
+        target === 'parent' ? location.parentUrl : location.destinationUrl;
+      const courseIdentity = academicPageIdentity(courseUrl);
+      const targetIdentity = academicPageIdentity(targetUrl);
+      if (
+        !courseIdentity ||
+        !targetIdentity ||
+        (targetIdentity !== courseIdentity &&
+          !targetIdentity.startsWith(`${courseIdentity}/`))
+      )
+        throw Object.assign(
+          new Error('The saved destination is not inside the active course.'),
+          { failureClass: 'wrong-course' as const },
+        );
+      if (!isReadNavigation(targetUrl, [connection.host]))
+        throw Object.assign(
+          new Error('The saved destination is not safe to open.'),
+          { failureClass: 'unknown' as const },
+        );
+      assertMissionNavigation(targetUrl, hosts);
+      await navigatePage(openedPage, targetUrl, continuation);
+      const snapshot = await readSnapshot();
+      if (
+        (academicPageIdentity(snapshot.url) ?? snapshot.url) !==
+        (academicPageIdentity(targetUrl) ?? targetUrl)
+      )
+        throw Object.assign(
+          new Error('The saved destination changed during navigation.'),
+          { failureClass: 'wrong-course' as const },
+        );
+      return snapshot;
     };
     const readCourseTarget = async () => {
       let snapshot = await readSnapshot();
@@ -328,6 +400,9 @@ export const scanConnection = async <TFollowed = never>(
               isCurrent,
               signal,
               courseUrl: url,
+              ...(input.locationScope
+                ? { locationScope: input.locationScope }
+                : {}),
               browserMode,
               stagehand: input.stagehand,
               withCourseList: async (context) => {
@@ -344,7 +419,9 @@ export const scanConnection = async <TFollowed = never>(
           pages: [...observedPages],
           entries: exploration.entries,
           assertReadable: () => releaseProtection?.assertReadable?.(),
+          hasBlockedRequiredData: () => blockedRequiredData,
           openFrom,
+          visitKnownLocation,
           navigation,
           readCurrent: readSnapshot,
           downloadPdf: async (from, url) => {
