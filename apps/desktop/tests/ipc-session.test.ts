@@ -36,6 +36,9 @@ const mocks = vi.hoisted(() => ({
   resolveConnections: vi.fn(),
   connectWorkspace: vi.fn(),
   workspace: vi.fn(),
+  stageReplacement: vi.fn(),
+  commitReplacement: vi.fn(),
+  cancelReplacement: vi.fn(),
   invalidate: vi.fn(),
   watchRuntime: {
     configure: vi.fn(async () => undefined),
@@ -133,6 +136,9 @@ vi.mock('../src/features/onboarding/services/browser-discovery', () => ({
 }));
 vi.mock('../src/features/onboarding/services/browser-workspace', () => ({
   closeWorkspace: vi.fn(async () => undefined),
+  stageWorkspaceReplacement: mocks.stageReplacement,
+  commitWorkspaceReplacement: mocks.commitReplacement,
+  cancelWorkspaceReplacement: mocks.cancelReplacement,
   createWorkspace: vi.fn(),
   openAcademicPage: vi.fn(),
   waitForWorkspaceStops: vi.fn(),
@@ -862,4 +868,80 @@ it('re-registers learning modules after account and session teardown', async () 
   await invoke('signOut');
   expect(registerModule).toHaveBeenCalledTimes(4);
   expect(cleanup).toHaveBeenCalledTimes(3);
+});
+
+it('registers account-scoped staged workspace replacement actions', async () => {
+  const input = {
+    requestId: '00000000-0000-4000-8000-000000000001',
+    browserId: 'browser-a',
+  };
+  const replacement = {
+    operationId: '00000000-0000-4000-8000-000000000002',
+    state: 'ready',
+    browserId: 'browser-a',
+    errorCode: null,
+    revision: 1,
+  };
+  mocks.getCurrentUser.mockResolvedValue({ id: 'student-a' });
+  mocks.stageReplacement.mockResolvedValue(replacement);
+
+  await expect(invoke('stageWorkspaceReplacement', input)).resolves.toEqual(
+    replacement,
+  );
+  expect(mocks.stageReplacement).toHaveBeenCalledWith(
+    'student-a',
+    input,
+    expect.any(Function),
+  );
+  expect(mocks.watchRuntime.suspend).toHaveBeenCalledOnce();
+
+  await expect(
+    invoke('stageWorkspaceReplacement', { ...input, userId: 'student-b' }),
+  ).rejects.toThrow();
+  expect(mocks.stageReplacement).toHaveBeenCalledOnce();
+});
+
+it('commits replacements with a scoped current-session barrier', async () => {
+  const input = {
+    operationId: '00000000-0000-4000-8000-000000000002',
+    expectedRevision: 4,
+  };
+  const replacement = {
+    operationId: input.operationId,
+    state: 'committed',
+    browserId: 'browser-a',
+    errorCode: null,
+    revision: 5,
+  };
+  mocks.getCurrentUser.mockResolvedValue({ id: 'student-a' });
+  mocks.commitReplacement.mockResolvedValue(replacement);
+
+  await expect(invoke('commitWorkspaceReplacement', input)).resolves.toEqual(
+    replacement,
+  );
+  expect(mocks.commitReplacement).toHaveBeenCalledWith(
+    'student-a',
+    input,
+    expect.any(Function),
+  );
+  expect(mocks.watchRuntime.suspend).toHaveBeenCalledOnce();
+});
+
+it('cancels only the current account replacement without stopping its workspace', async () => {
+  const input = { operationId: '00000000-0000-4000-8000-000000000002' };
+  const replacement = {
+    operationId: input.operationId,
+    state: 'cancelled',
+    browserId: 'browser-a',
+    errorCode: null,
+    revision: 2,
+  };
+  mocks.getCurrentUser.mockResolvedValue({ id: 'student-a' });
+  mocks.cancelReplacement.mockResolvedValue(replacement);
+
+  await expect(invoke('cancelWorkspaceReplacement', input)).resolves.toEqual(
+    replacement,
+  );
+  expect(mocks.cancelReplacement).toHaveBeenCalledWith('student-a', input);
+  expect(mocks.watchRuntime.suspend).not.toHaveBeenCalled();
 });

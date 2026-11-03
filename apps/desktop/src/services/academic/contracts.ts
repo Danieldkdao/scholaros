@@ -4,8 +4,6 @@ import type {
   AuthorizedRegistrar,
   Id,
   LearningPublicMethod,
-  RequestId,
-  Revision,
 } from '@scholaros/services/learning/product-contracts';
 import { z } from 'zod';
 
@@ -210,19 +208,33 @@ export const academicReconnectSchema = z.strictObject({
 });
 export type AcademicReconnect = z.infer<typeof academicReconnectSchema>;
 export type AuthMode = 'online' | 'offline-local';
-export type WorkspaceReplacementInput = {
-  requestId: RequestId;
-  browserId: Id;
-};
-export type WorkspaceReplacementCommitInput = {
-  operationId: Id;
-  expectedRevision: Revision;
-};
-export type WorkspaceReplacementCancelInput = { operationId: Id };
-export type DeleteLocalAcademicDataInput = {
-  requestId: RequestId;
-  scope: 'account-local';
-};
+export const workspaceReplacementInputSchema = z.strictObject({
+  requestId: z.uuid(),
+  browserId: z.string().min(1).max(300),
+});
+export type WorkspaceReplacementInput = z.infer<
+  typeof workspaceReplacementInputSchema
+>;
+export const workspaceReplacementCommitInputSchema = z.strictObject({
+  operationId: z.uuid(),
+  expectedRevision: z.number().int().nonnegative().safe(),
+});
+export type WorkspaceReplacementCommitInput = z.infer<
+  typeof workspaceReplacementCommitInputSchema
+>;
+export const workspaceReplacementCancelInputSchema = z.strictObject({
+  operationId: z.uuid(),
+});
+export type WorkspaceReplacementCancelInput = z.infer<
+  typeof workspaceReplacementCancelInputSchema
+>;
+export const deleteLocalAcademicDataInputSchema = z.strictObject({
+  requestId: z.uuid(),
+  scope: z.literal('account-local'),
+});
+export type DeleteLocalAcademicDataInput = z.infer<
+  typeof deleteLocalAcademicDataInputSchema
+>;
 export const contextFileSelectionSchema = z.strictObject({
   sessionId: z.string().min(1).max(300).optional(),
   courseId: z.string().min(1).max(300).optional(),

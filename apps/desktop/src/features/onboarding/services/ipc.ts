@@ -13,7 +13,12 @@ import { protectMissionPage } from './mission-request-guard';
 import { createConnectionApprovalStore } from './connection-approval';
 import { resolveConnectionCandidates } from './connection-resolver';
 import { app, powerMonitor } from 'electron';
-import { offlineReadMethods } from '../../../services/academic/contracts';
+import {
+  offlineReadMethods,
+  workspaceReplacementCancelInputSchema,
+  workspaceReplacementCommitInputSchema,
+  workspaceReplacementInputSchema,
+} from '../../../services/academic/contracts';
 import type {
   AcademicAction,
   AcademicEventChannel,
@@ -53,6 +58,9 @@ import {
 import { chooseBrowser, findBrowsers } from './browser-discovery';
 import {
   closeWorkspace,
+  stageWorkspaceReplacement,
+  commitWorkspaceReplacement,
+  cancelWorkspaceReplacement,
   createWorkspace,
   openAcademicPage,
   waitForWorkspaceStops,
@@ -611,6 +619,28 @@ export const registerAcademicActions = (service: {
     });
     return prepareState(getOnboardingState(userId), undefined, isCurrent);
   });
+  handle('stageWorkspaceReplacement', async ({ userId, isCurrent }, input) => {
+    requireConsent(userId);
+    const replacementInput = workspaceReplacementInputSchema.parse(input);
+    return withBrowserWorkStopped(async () => {
+      if (!isCurrent()) throw new Error('Your session changed; sign in again.');
+      return stageWorkspaceReplacement(userId, replacementInput, isCurrent);
+    });
+  });
+  handle('commitWorkspaceReplacement', async ({ userId, isCurrent }, input) => {
+    requireConsent(userId);
+    const replacementInput = workspaceReplacementCommitInputSchema.parse(input);
+    return withBrowserWorkStopped(async () => {
+      if (!isCurrent()) throw new Error('Your session changed; sign in again.');
+      return commitWorkspaceReplacement(userId, replacementInput, isCurrent);
+    });
+  });
+  handle('cancelWorkspaceReplacement', ({ userId }, input) =>
+    cancelWorkspaceReplacement(
+      userId,
+      workspaceReplacementCancelInputSchema.parse(input),
+    ),
+  );
   handle('resolveConnections', async ({ userId, isCurrent }, input) => {
     requireConsent(userId);
     const prompt = z.string().trim().min(1).max(500).parse(input);
