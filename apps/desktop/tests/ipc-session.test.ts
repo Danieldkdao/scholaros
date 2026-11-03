@@ -20,6 +20,9 @@ const mocks = vi.hoisted(() => ({
   clearOfflineGrant: vi.fn(async () => undefined),
   clientSignOut: vi.fn(async () => undefined),
   getCurrentUser: vi.fn(),
+  authFetch: vi.fn(),
+  readGrant: vi.fn(),
+  saveGrant: vi.fn(),
   getCookie: vi.fn(() => 'initial-cookie'),
   capturePage: vi.fn(async (_id, _page, check) => {
     if (!check()) throw new Error('Session changed');
@@ -74,6 +77,7 @@ const mocks = vi.hoisted(() => ({
   state: { settings: { consent: true, localSetupCompletedAt: null } },
 }));
 vi.mock('electron', () => ({
+  net: { fetch: mocks.authFetch },
   app: {
     on: (
       name: string,
@@ -105,8 +109,13 @@ vi.mock('../src/lib/auth/main', () => ({
   markLocalSignOut: vi.fn(),
   isAccountSessionCurrent: (cookie: string) => cookie === mocks.getCookie(),
 }));
+vi.mock('../src/data/env/client', () => ({
+  clientEnv: { VITE_API_URL: 'http://localhost:3000' },
+}));
 vi.mock('../src/lib/offline-account', () => ({
   clearOfflineAccountGrant: mocks.clearOfflineGrant,
+  readOfflineAccountGrant: mocks.readGrant,
+  saveOfflineAccountGrant: mocks.saveGrant,
 }));
 vi.mock('../src/db', () => ({
   db: {
@@ -295,6 +304,48 @@ beforeEach(async () => {
 });
 
 describe('academic service session boundaries', () => {
+  it('does not restore state when the service reauthenticates offline', async () => {
+    mocks.getCurrentUser.mockResolvedValue({
+      id: 'student-a',
+      authMode: 'offline-local',
+    });
+    await expect(invoke('restoreOnlineState')).rejects.toThrow('Reconnect');
+    expect(mocks.watchRuntime.configure).not.toHaveBeenCalled();
+    expect(mocks.databaseWrite).not.toHaveBeenCalled();
+  });
+  it('runs real offline authentication through service-local readiness', async () => {
+    const actual = await vi.importActual<typeof import('../src/lib/auth/main')>(
+      '../src/lib/auth/main',
+    );
+    actual.invalidateAccountCache();
+    mocks.getCurrentUser.mockImplementation(actual.getCurrentUser);
+    mocks.authFetch.mockRejectedValueOnce(new Error('offline'));
+    mocks.readGrant.mockResolvedValueOnce({
+      id: 'student-a',
+      name: 'Student',
+      email: 's@example.edu',
+      image: null,
+      hasCompletedOnboarding: true,
+      authMode: 'offline-local',
+    });
+    await expect(invoke('getCurrentUser')).resolves.toMatchObject({
+      id: 'student-a',
+      authMode: 'offline-local',
+    });
+    expect(mocks.offlineReadIndex).toBe(2);
+    expect(mocks.databaseWrite).not.toHaveBeenCalled();
+  });
+  it('supplies the service-local readiness check during authentication', async () => {
+    mocks.getCurrentUser.mockImplementation(async (readiness) => {
+      expect(typeof readiness).toBe('function');
+      expect(await readiness('student-a')).toBe(true);
+      return { id: 'student-a', authMode: 'offline-local' };
+    });
+    await expect(invoke('getCurrentUser')).resolves.toMatchObject({
+      id: 'student-a',
+    });
+    expect(mocks.databaseWrite).not.toHaveBeenCalled();
+  });
   it('checks configured-device readiness without writes for an offline account', async () => {
     mocks.getCurrentUser.mockResolvedValue({
       id: 'student-a',

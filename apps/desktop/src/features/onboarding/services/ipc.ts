@@ -121,6 +121,20 @@ import {
 import type { CoursesSnapshot } from '../../courses/types';
 import type { LaunchAtLoginPreference, OnboardingState } from '../types';
 
+const isOfflineDeviceReady = (userId: string) => {
+  const settings = db
+    .select({ localSetupCompletedAt: SettingTable.localSetupCompletedAt })
+    .from(SettingTable)
+    .where(eq(SettingTable.userId, userId))
+    .get();
+  const workspace = db
+    .select({ verifiedAt: BrowserWorkspaceTable.verifiedAt })
+    .from(BrowserWorkspaceTable)
+    .where(eq(BrowserWorkspaceTable.userId, userId))
+    .get();
+  return Boolean(settings?.localSetupCompletedAt && workspace?.verifiedAt);
+};
+
 const idSchema = z.string().min(1).max(300);
 const sessionGuard = createSessionGuard();
 const learningLifecycle = createLearningLifecycle();
@@ -183,7 +197,7 @@ const watchRuntime = createWatchRuntime({
 const backgroundSync = createBackgroundSyncController<CourseRefreshResult>({
   runDiscovery: async (userId, isCurrent, signal) => {
     if (!isCurrent()) throw new Error('Your session changed; sign in again.');
-    const user = await getCurrentUser();
+    const user = await getCurrentUser(isOfflineDeviceReady);
     if (!isCurrent() || user?.id !== userId)
       throw new Error('Please sign in again to resume background sync.');
     return startCourseRefresh(userId, isCurrent, signal);
@@ -460,7 +474,7 @@ export const registerAcademicActions = async (service: {
       return runSessionAction(sessionGuard, async (sessionIsCurrent) => {
         const authIsCurrent = () =>
           sessionIsCurrent() && isAccountSessionCurrent(cookie);
-        const user = await getCurrentUser();
+        const user = await getCurrentUser(isOfflineDeviceReady);
         if (!authIsCurrent())
           throw new Error('Your session changed; sign in again.');
         if (!user) throw new Error('Please sign in to ScholarOS.');
@@ -529,7 +543,7 @@ export const registerAcademicActions = async (service: {
     () =>
       runSessionAction(sessionGuard, async (isCurrent) => {
         const cookie = authClient.getCookie();
-        const user = await getCurrentUser();
+        const user = await getCurrentUser(isOfflineDeviceReady);
         if (!isCurrent())
           throw new Error('Your session changed; sign in again.');
         if (user && !isAccountSessionCurrent(cookie))
@@ -582,22 +596,19 @@ export const registerAcademicActions = async (service: {
     },
     { requiresUser: false },
   );
-  handle('getOfflineDeviceReadiness', ({ userId }): OfflineDeviceReadiness => {
-    const settings = db
-      .select({ localSetupCompletedAt: SettingTable.localSetupCompletedAt })
-      .from(SettingTable)
-      .where(eq(SettingTable.userId, userId))
-      .get();
-    const workspace = db
-      .select({ verifiedAt: BrowserWorkspaceTable.verifiedAt })
-      .from(BrowserWorkspaceTable)
-      .where(eq(BrowserWorkspaceTable.userId, userId))
-      .get();
-    return {
-      configured: Boolean(
-        settings?.localSetupCompletedAt && workspace?.verifiedAt,
-      ),
-    };
+  handle(
+    'getOfflineDeviceReadiness',
+    ({ userId }): OfflineDeviceReadiness => ({
+      configured: isOfflineDeviceReady(userId),
+    }),
+  );
+  // This action is service-local and absent from the transport method schema.
+  handle('restoreOnlineState', ({ userId, isCurrent }) => {
+    if (boundAuthMode !== 'online')
+      throw new Error('Reconnect to use this feature.');
+    const state = getOnboardingState(userId);
+    const launchAtLogin = applyLaunchAtLogin(state.settings.launchAtLogin);
+    return prepareState(state, launchAtLogin, isCurrent);
   });
   handle('getState', ({ userId, isCurrent }) => {
     const state = getOnboardingState(userId);

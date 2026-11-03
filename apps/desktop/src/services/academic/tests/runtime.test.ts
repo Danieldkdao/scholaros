@@ -52,6 +52,44 @@ it('does not create the academic transport without Electron process ownership', 
   expect(mocks.createAcademicServer).not.toHaveBeenCalled();
 });
 
+it('restores through a service-only online-gated action', async () => {
+  mocks.hasSingleInstanceLock.mockReturnValue(true);
+  const restoreOnlineState = vi.fn();
+  const getState = vi.fn();
+  mocks.registerAcademicActions.mockImplementation(({ register }) => {
+    register('getCurrentUser', async () => ({ id: 'student' }));
+    register('getState', getState);
+    register('restoreOnlineState', restoreOnlineState);
+  });
+  const { runAcademicService } = await import('../runtime');
+  await runAcademicService();
+  expect(restoreOnlineState).toHaveBeenCalledOnce();
+  expect(getState).not.toHaveBeenCalled();
+  const willQuit = mocks.on.mock.calls.find(
+    ([event]) => event === 'will-quit',
+  )![1];
+  willQuit({ preventDefault: vi.fn() });
+});
+
+it('does not restore scheduler state for an offline-local user', async () => {
+  mocks.hasSingleInstanceLock.mockReturnValue(true);
+  const getState = vi.fn();
+  mocks.registerAcademicActions.mockImplementation(({ register }) => {
+    register('getCurrentUser', async () => ({
+      id: 'student',
+      authMode: 'offline-local',
+    }));
+    register('getState', getState);
+  });
+  const { runAcademicService } = await import('../runtime');
+  await runAcademicService();
+  expect(getState).not.toHaveBeenCalled();
+  const willQuit = mocks.on.mock.calls.find(
+    ([event]) => event === 'will-quit',
+  )![1];
+  willQuit({ preventDefault: vi.fn() });
+});
+
 it('creates the transport only while the Electron process lock is held', async () => {
   mocks.hasSingleInstanceLock.mockReturnValue(true);
   const { runAcademicService } = await import('../runtime');

@@ -47,9 +47,79 @@ beforeEach(() => {
   cookieMock.mockReturnValue('cookie-a');
   fetchMock.mockImplementation(async () => account());
 });
+it('does not issue a grant for an authenticated but unconfigured account', async () => {
+  await expect(getCurrentUser(async () => false)).resolves.toMatchObject({
+    id: 'student',
+  });
+  expect(offlineAccountMocks.save).not.toHaveBeenCalled();
+});
+
+it('rejects an existing grant when device setup is not ready', async () => {
+  fetchMock.mockRejectedValueOnce(new Error('offline'));
+  offlineAccountMocks.read.mockResolvedValueOnce({
+    id: 'student',
+    name: 'Student',
+    email: 's@example.edu',
+    image: null,
+    hasCompletedOnboarding: true,
+    authMode: 'offline-local',
+  });
+  await expect(getCurrentUser(async () => false)).rejects.toThrow(
+    'could not reach',
+  );
+});
+
+it('fails closed when readiness cannot be read without blocking online login', async () => {
+  const unavailable = () => {
+    throw new Error('database unavailable');
+  };
+  await expect(getCurrentUser(unavailable)).resolves.toMatchObject({
+    id: 'student',
+  });
+  expect(offlineAccountMocks.save).not.toHaveBeenCalled();
+  invalidateAccountCache();
+  fetchMock.mockRejectedValueOnce(new Error('offline'));
+  offlineAccountMocks.read.mockResolvedValueOnce({
+    id: 'student',
+    name: 'Student',
+    email: 's@example.edu',
+    image: null,
+    hasCompletedOnboarding: true,
+    authMode: 'offline-local',
+  });
+  await expect(getCurrentUser(unavailable)).rejects.toThrow('could not reach');
+});
+
+it('fences an offline grant if the session changes during readiness', async () => {
+  fetchMock.mockRejectedValueOnce(new Error('offline'));
+  offlineAccountMocks.read.mockResolvedValueOnce({
+    id: 'student',
+    name: 'Student',
+    email: 's@example.edu',
+    image: null,
+    hasCompletedOnboarding: true,
+    authMode: 'offline-local',
+  });
+  let release!: (ready: boolean) => void;
+  let started!: () => void;
+  const checkStarted = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const pending = getCurrentUser(() => {
+    started();
+    return new Promise<boolean>((resolve) => {
+      release = resolve;
+    });
+  });
+  await checkStarted;
+  invalidateAccountCache();
+  release(true);
+  await expect(pending).rejects.toThrow('could not reach');
+});
+
 describe('account cache', () => {
   it('stores a device-bound grant only after successful online authentication', async () => {
-    await getCurrentUser();
+    await getCurrentUser(() => true);
 
     expect(offlineAccountMocks.save).toHaveBeenCalledWith(
       {
@@ -74,7 +144,7 @@ describe('account cache', () => {
     fetchMock.mockRejectedValueOnce(new Error('offline'));
     offlineAccountMocks.read.mockResolvedValueOnce(offlineUser);
 
-    await expect(getCurrentUser()).resolves.toEqual(offlineUser);
+    await expect(getCurrentUser(() => true)).resolves.toEqual(offlineUser);
   });
   it('clears the offline grant after a confirmed unauthorized response', async () => {
     cookieMock.mockReturnValue('invalid-cookie');

@@ -141,7 +141,10 @@ export const markLocalSignOut = () => {
   }
 };
 
-export const getCurrentUser = async (): Promise<CurrentUser | null> => {
+export const getCurrentUser = async (
+  isDeviceReady: (accountId: string) => boolean | Promise<boolean> = () =>
+    false,
+): Promise<CurrentUser | null> => {
   // Signing out clears the local cookie first; a missing cookie is a
   // confirmed signed-out state, not an account-service outage.
   let cookie = '';
@@ -165,7 +168,17 @@ export const getCurrentUser = async (): Promise<CurrentUser | null> => {
   } catch (error) {
     if (!(error instanceof Error) || error.cause === undefined) throw error;
     const offlineUser = await readOfflineAccountGrant(cookie);
-    if (offlineUser && epoch === cacheEpoch && isAccountSessionCurrent(cookie))
+    const ready = offlineUser
+      ? await Promise.resolve()
+          .then(() => isDeviceReady(offlineUser.id))
+          .catch(() => false)
+      : false;
+    if (
+      offlineUser &&
+      ready &&
+      epoch === cacheEpoch &&
+      isAccountSessionCurrent(cookie)
+    )
       return offlineUser;
     throw error;
   }
@@ -186,7 +199,12 @@ export const getCurrentUser = async (): Promise<CurrentUser | null> => {
     image: typeof result.user.image === 'string' ? result.user.image : null,
     hasCompletedOnboarding: result.user.hasCompletedOnboarding === true,
   };
-  await saveOfflineAccountGrant(user, cookie).catch(() => false);
+  const ready = await Promise.resolve()
+    .then(() => isDeviceReady(user.id))
+    .catch(() => false);
+  if (epoch !== cacheEpoch || !isAccountSessionCurrent(cookie))
+    throw new Error('Your session changed; please try again.');
+  if (ready) await saveOfflineAccountGrant(user, cookie).catch(() => false);
   if (epoch !== cacheEpoch || !isAccountSessionCurrent(cookie)) {
     await clearOfflineAccountGrant(cookie);
     throw new Error('Your session changed; please try again.');

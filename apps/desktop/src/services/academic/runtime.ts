@@ -33,7 +33,12 @@ export const runAcademicService = async ({
     // The existing scheduler is restored from saved consent even without a window.
     const restore = async () => {
       const user = await actions.get('getCurrentUser')?.(undefined);
-      if (user) await actions.get('getState')?.(undefined);
+      if (
+        user &&
+        typeof user === 'object' &&
+        (!('authMode' in user) || user.authMode === 'online')
+      )
+        await actions.get('restoreOnlineState')?.(undefined);
     };
     await restore().catch(() => undefined);
     const timer = setInterval(() => {
