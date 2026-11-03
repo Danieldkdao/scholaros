@@ -1,6 +1,8 @@
 import type {
   CourseRecordSchema,
   CreateCourseRecordSchema,
+  ListCourseRecordSuppressionsSchema,
+  RestoreCourseRecordSuppressionSchema,
   UpdateCourseRecordSchema,
 } from '../courses/schemas';
 import type {
@@ -31,6 +33,7 @@ import type {
 import type { ConnectRunState } from './services/connect-run';
 import type { ConnectionCandidateSchema } from '@scholaros/services/ai/schemas';
 import type { CourseDetail, CoursesSnapshot } from '../courses/types';
+import type { CourseRecordSuppressionView } from '../courses/services/store';
 import type { OnboardingStep, PreviewCardKind, PreviewPrompt } from './schemas';
 import type { BrowserNavigationMode } from '@scholaros/env/browser-navigation';
 import type { WatchRuntimeStatus, WatchSettings } from '../watch/types';
@@ -292,6 +295,12 @@ export type ScholarBridge = LearningBridge & {
   createCourseRecord: (input: CreateCourseRecordSchema) => Promise<string>;
   updateCourseRecord: (input: UpdateCourseRecordSchema) => Promise<void>;
   deleteCourseRecord: (input: CourseRecordSchema) => Promise<void>;
+  listCourseRecordSuppressions: (
+    input: ListCourseRecordSuppressionsSchema,
+  ) => Promise<CourseRecordSuppressionView[] | null>;
+  restoreCourseRecordSuppression: (
+    input: RestoreCourseRecordSuppressionSchema,
+  ) => Promise<void>;
   getCourses: () => Promise<CoursesSnapshot | null>;
   getCourse: (courseId: string) => Promise<CourseDetail | null>;
   refreshCourses: () => Promise<CoursesSnapshot>;

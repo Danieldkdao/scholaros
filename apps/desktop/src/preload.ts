@@ -183,6 +183,10 @@ const bridge: ScholarBridge = {
     ipcRenderer.invoke('scholar:updateCourseRecord', input),
   deleteCourseRecord: (input) =>
     ipcRenderer.invoke('scholar:deleteCourseRecord', input),
+  listCourseRecordSuppressions: (input) =>
+    ipcRenderer.invoke('scholar:listCourseRecordSuppressions', input),
+  restoreCourseRecordSuppression: (input) =>
+    ipcRenderer.invoke('scholar:restoreCourseRecordSuppression', input),
   getCourses: () => ipcRenderer.invoke('scholar:getCourses'),
   getCourse: (courseId) => ipcRenderer.invoke('scholar:getCourse', courseId),
   refreshCourses: () => ipcRenderer.invoke('scholar:refreshCourses'),

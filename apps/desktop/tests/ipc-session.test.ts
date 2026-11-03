@@ -29,6 +29,8 @@ const mocks = vi.hoisted(() => ({
     sources: [],
     lastSuccessfulAt: null,
   })),
+  listSuppressions: vi.fn(() => []),
+  restoreSuppression: vi.fn(),
   getCourseDetail: vi.fn(() => null),
   subscribeCourseChanges: vi.fn(() => () => undefined),
   resolveConnections: vi.fn(),
@@ -121,6 +123,8 @@ vi.mock('../src/features/courses/services/refresh', () => ({
 vi.mock('../src/features/courses/services/store', () => ({
   getCoursesSnapshot: mocks.getCoursesSnapshot,
   getCourseDetail: mocks.getCourseDetail,
+  listCourseRecordSuppressions: mocks.listSuppressions,
+  restoreCourseRecordSuppression: mocks.restoreSuppression,
   subscribeCourseChanges: mocks.subscribeCourseChanges,
 }));
 vi.mock('../src/features/onboarding/services/browser-discovery', () => ({
@@ -277,6 +281,45 @@ describe('academic service session boundaries', () => {
     });
     expect(mocks.getCurrentUser).not.toHaveBeenCalled();
   });
+  it('scopes hidden-record reads and restores to the current account', async () => {
+    mocks.getCurrentUser.mockResolvedValue({ id: 'student-a' });
+    mocks.listSuppressions.mockReturnValue([]);
+    await expect(
+      invoke('listCourseRecordSuppressions', { courseId: 'course-a' }),
+    ).resolves.toEqual([]);
+    expect(mocks.listSuppressions).toHaveBeenCalledWith('student-a', {
+      courseId: 'course-a',
+    });
+    await expect(
+      invoke('listCourseRecordSuppressions', { userId: 'other' }),
+    ).resolves.toBeNull();
+    expect(mocks.listSuppressions).toHaveBeenCalledOnce();
+
+    const restoreInput = { scope: 'group', suppressionId: 'suppression-a' };
+    await invoke('restoreCourseRecordSuppression', restoreInput);
+    expect(mocks.restoreSuppression).toHaveBeenCalledWith(
+      'student-a',
+      restoreInput,
+    );
+  });
+
+  it('keeps hidden-record listing read-only while offline', async () => {
+    mocks.getCurrentUser.mockResolvedValue({
+      id: 'student-a',
+      authMode: 'offline-local',
+    });
+    await expect(
+      invoke('listCourseRecordSuppressions', { courseId: 'course-a' }),
+    ).resolves.toEqual([]);
+    await expect(
+      invoke('restoreCourseRecordSuppression', {
+        scope: 'group',
+        suppressionId: 'suppression-a',
+      }),
+    ).rejects.toThrow('Reconnect');
+    expect(mocks.restoreSuppression).not.toHaveBeenCalled();
+  });
+
   it('allows cached local reads but blocks background work for an offline grant', async () => {
     mocks.state = readyState();
     (

@@ -196,6 +196,8 @@ it('exposes only named learning and native capabilities to the renderer', async 
     listContextItems: (input: unknown) => Promise<unknown>;
     getTodayOverview: (input: unknown) => Promise<unknown>;
     chooseContextFiles: (input: unknown) => Promise<unknown>;
+    listCourseRecordSuppressions: (input: unknown) => Promise<unknown>;
+    restoreCourseRecordSuppression: (input: unknown) => Promise<unknown>;
     registerSelectedContextFiles?: unknown;
   };
   expect(preloadMocks.setupRenderer).toHaveBeenCalledOnce();
@@ -213,6 +215,19 @@ it('exposes only named learning and native capabilities to the renderer', async 
   expect(preloadMocks.invoke).toHaveBeenCalledWith(
     'scholar:native:chooseContextFiles',
     { saveToLibrary: true },
+  );
+  await bridge.listCourseRecordSuppressions({ courseId: 'course-a' });
+  expect(preloadMocks.invoke).toHaveBeenCalledWith(
+    'scholar:listCourseRecordSuppressions',
+    { courseId: 'course-a' },
+  );
+  await bridge.restoreCourseRecordSuppression({
+    scope: 'group',
+    suppressionId: 'suppression-a',
+  });
+  expect(preloadMocks.invoke).toHaveBeenCalledWith(
+    'scholar:restoreCourseRecordSuppression',
+    { scope: 'group', suppressionId: 'suppression-a' },
   );
 });
 

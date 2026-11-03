@@ -1,7 +1,9 @@
 import {
   courseRecordSchema,
-  updateCourseRecordSchema,
   createCourseRecordSchema,
+  listCourseRecordSuppressionsSchema,
+  restoreCourseRecordSuppressionSchema,
+  updateCourseRecordSchema,
 } from '../../courses/schemas';
 import { academicTasks } from './academic-tasks';
 import { createConnectRuntime } from './connect-runtime';
@@ -88,6 +90,8 @@ import {
   updateCourseRecord,
   createCourseRecord,
   deleteCourseRecord,
+  listCourseRecordSuppressions,
+  restoreCourseRecordSuppression,
   subscribeCourseChanges,
 } from '../../courses/services/store';
 import {
@@ -761,6 +765,17 @@ export const registerAcademicActions = (service: {
   });
   handle('getCourses', ({ userId }) => getCoursesAction(userId));
   handle('getCourse', ({ userId }, input) => getCourseAction(userId, input));
+  handle('listCourseRecordSuppressions', ({ userId }, input) => {
+    const parsed = listCourseRecordSuppressionsSchema.safeParse(input);
+    if (!parsed.success) return null;
+    return listCourseRecordSuppressions(userId, parsed.data);
+  });
+  handle('restoreCourseRecordSuppression', ({ userId }, input) => {
+    const parsed = restoreCourseRecordSuppressionSchema.safeParse(input);
+    if (!parsed.success)
+      throw new Error('The hidden-record restore request is invalid.');
+    return restoreCourseRecordSuppression(userId, parsed.data);
+  });
   // A manual refresh takes the study browser over from a scheduled one, exactly
   // like every other foreground browser action.
   handle('refreshCourses', async ({ userId, isCurrent }) => {

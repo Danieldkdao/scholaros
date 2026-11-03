@@ -94,6 +94,10 @@ it('reuses the service and exposes only named academic commands to trusted appli
     expect(mocks.handlers.has(`scholar:${method}`)).toBe(true);
   expect(mocks.handlers.has('scholar:listContextItems')).toBe(true);
   expect(mocks.handlers.has('scholar:getTodayOverview')).toBe(true);
+  expect(mocks.handlers.has('scholar:listCourseRecordSuppressions')).toBe(true);
+  expect(mocks.handlers.has('scholar:restoreCourseRecordSuppression')).toBe(
+    true,
+  );
   const frame = {};
   await expect(
     mocks.handlers.get('scholar:getCourses')!({
