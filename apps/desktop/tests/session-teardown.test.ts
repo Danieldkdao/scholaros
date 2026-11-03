@@ -455,7 +455,7 @@ describe('session teardown', () => {
       publish: vi.fn(),
       lifecycle: createLearningLifecycle(),
     };
-    const cleanup = registerLearningActions(registrar as never, [
+    const cleanup = await registerLearningActions(registrar as never, [
       () => {
         calls.push('register-a');
         return async () => {
