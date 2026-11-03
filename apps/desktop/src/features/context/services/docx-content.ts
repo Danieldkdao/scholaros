@@ -17,6 +17,7 @@ const { parentPort, workerData } = require('node:worker_threads');
 (async () => {
   try {
     const mammoth = require(workerData.mammothModulePath);
+    // Only the in-memory raw-text API is used; HTML conversion is never enabled.
     const result = await mammoth.extractRawText({
       buffer: Buffer.from(workerData.bytes),
     });
@@ -90,7 +91,7 @@ export const extractDocxContent = async (
       archive.status === 'unsupported' ? 'unsupported' : 'unreadable',
     );
 
-  // Resource limits bound parsing work but do not create an OS sandbox.
+  // V8 limits bound the JS heap, not total worker memory or OS access.
   const worker = new Worker(workerSource, {
     eval: true,
     name: 'scholaros-docx-reader',
@@ -108,22 +109,28 @@ export const extractDocxContent = async (
 
   return new Promise<DocxContentResult>((resolve, reject) => {
     let settled = false;
+    let termination: Promise<number> | undefined;
+    const terminateWorker = () => {
+      termination ??= worker.terminate().catch(() => -1);
+      return termination;
+    };
     const cleanup = () => {
       clearTimeout(timer);
       options.signal?.removeEventListener('abort', onAbort);
-      void worker.terminate().catch(() => undefined);
     };
     const finish = (result: DocxContentResult) => {
       if (settled) return;
       settled = true;
       cleanup();
-      resolve(result);
+      void terminateWorker().then(() => resolve(result));
     };
     const onAbort = () => {
       if (settled) return;
       settled = true;
       cleanup();
-      reject(new DOMException('Aborted', 'AbortError'));
+      void terminateWorker().then(() =>
+        reject(new DOMException('Aborted', 'AbortError')),
+      );
     };
     const timer = setTimeout(
       () => finish(emptyResult('unreadable')),
