@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   >(),
   powerListeners: new Map<string, () => void>(),
   appQuit: vi.fn(),
+  clearOfflineGrant: vi.fn(async () => undefined),
   getCurrentUser: vi.fn(),
   getCookie: vi.fn(() => 'initial-cookie'),
   capturePage: vi.fn(async (_id, _page, check) => {
@@ -81,6 +82,9 @@ vi.mock('../src/lib/auth/main', () => ({
   accountRequest: vi.fn(),
   markLocalSignOut: vi.fn(),
   isAccountSessionCurrent: (cookie: string) => cookie === mocks.getCookie(),
+}));
+vi.mock('../src/lib/offline-account', () => ({
+  clearOfflineAccountGrant: mocks.clearOfflineGrant,
 }));
 vi.mock('../src/db', () => ({ db: {} }));
 vi.mock('../src/features/onboarding/services/store', () => ({
@@ -272,6 +276,24 @@ describe('academic service session boundaries', () => {
       accountId: 'student-a',
     });
     expect(mocks.getCurrentUser).not.toHaveBeenCalled();
+  });
+  it('allows cached local reads but blocks background work for an offline grant', async () => {
+    mocks.state = readyState();
+    (
+      mocks.state.settings as { localSetupCompletedAt: string | null }
+    ).localSetupCompletedAt = '2026-11-01T12:00:00.000Z';
+    mocks.getCurrentUser.mockResolvedValue({
+      id: 'student-a',
+      hasCompletedOnboarding: true,
+      authMode: 'offline-local',
+    });
+    mocks.startCourseRefresh.mockResolvedValue(refreshed());
+    mocks.startCourseRefresh.mockClear();
+    await invoke('getCurrentUser');
+
+    await expect(invoke('getCourses')).resolves.toMatchObject({ courses: [] });
+    await expect(invoke('refreshCourses')).rejects.toThrow('Reconnect');
+    expect(mocks.startCourseRefresh).not.toHaveBeenCalled();
   });
 });
 
@@ -509,14 +531,20 @@ it('stops course watching before academic consent is revoked', async () => {
   expect(mocks.watchRuntime.stop).toHaveBeenCalledOnce();
 });
 
-it('pauses on system suspend and waits for watcher cleanup on explicit Quit', async () => {
+it('releases only its system suspension token after resume and waits for watcher cleanup on Quit', async () => {
+  const releaseSystemSuspend = vi.fn(async () => undefined);
+  mocks.watchRuntime.suspend.mockResolvedValueOnce(releaseSystemSuspend);
+  mocks.watchRuntime.pause.mockClear();
+  mocks.watchRuntime.resume.mockClear();
   mocks.powerListeners.get('suspend')?.();
-  await vi.waitFor(() => expect(mocks.watchRuntime.pause).toHaveBeenCalled());
+  await vi.waitFor(() => expect(mocks.watchRuntime.suspend).toHaveBeenCalled());
+  expect(mocks.watchRuntime.pause).not.toHaveBeenCalled();
 
   let finishStop!: () => void;
   mocks.watchRuntime.stop.mockImplementationOnce(
     () => new Promise<void>((resolve) => (finishStop = resolve)),
   );
+  mocks.watchRuntime.stop.mockClear();
   const preventDefault = vi.fn();
   mocks.appListeners.get('before-quit')!({ preventDefault });
   expect(preventDefault).toHaveBeenCalledOnce();
@@ -526,7 +554,8 @@ it('pauses on system suspend and waits for watcher cleanup on explicit Quit', as
   await vi.waitFor(() => expect(mocks.appQuit).toHaveBeenCalledOnce());
 
   mocks.powerListeners.get('resume')?.();
-  await vi.waitFor(() => expect(mocks.watchRuntime.resume).toHaveBeenCalled());
+  await vi.waitFor(() => expect(releaseSystemSuspend).toHaveBeenCalledOnce());
+  expect(mocks.watchRuntime.resume).not.toHaveBeenCalled();
 });
 
 it('requires consent and an authenticated account to resolve sites', async () => {

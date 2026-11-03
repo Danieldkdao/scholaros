@@ -11,13 +11,22 @@ import { protectMissionPage } from './mission-request-guard';
 import { createConnectionApprovalStore } from './connection-approval';
 import { resolveConnectionCandidates } from './connection-resolver';
 import { app, powerMonitor } from 'electron';
+import { offlineReadMethods } from '../../../services/academic/contracts';
 import type {
   AcademicAction,
   AcademicEventChannel,
+  AuthMode,
+  LearningActionRegistrar,
 } from '../../../services/academic/contracts';
+import {
+  createLearningLifecycle,
+  registerLearningActions,
+  type LearningActionModule,
+} from '../../../services/academic/learning-actions';
 import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
 import { authClient } from '../../../lib/auth/client';
+import { clearOfflineAccountGrant } from '../../../lib/offline-account';
 import {
   accountRequest,
   getCurrentUser,
@@ -96,18 +105,32 @@ import type { LaunchAtLoginPreference, OnboardingState } from '../types';
 
 const idSchema = z.string().min(1).max(300);
 const sessionGuard = createSessionGuard();
+const learningLifecycle = createLearningLifecycle();
 const connectionApprovals = createConnectionApprovalStore();
 let resolutionEpoch = 0;
 let stoppingBackgroundSync: Promise<void> | null = null;
 let broadcastingPreview = false;
+let watchPowerEventsRegistered = false;
+let systemSuspended = false;
+let pendingSystemWatchSuspend: Promise<void> | null = null;
+let releaseSystemBackgroundSuspend: (() => void) | null = null;
+let releaseSystemWatchSuspend: (() => Promise<void>) | null = null;
 let manualCourseRefresh: {
   userId: string;
   completion: Promise<CoursesSnapshot>;
 } | null = null;
 let boundAccountId: string | null = null;
+let boundAuthMode: AuthMode | null = null;
+let boundCookie: string | null = null;
 let boundOnboardingComplete = false;
+let cleanupLearningActions: () => Promise<void> = async () => undefined;
 
-type IpcContext = { userId: string; isCurrent: () => boolean };
+type IpcContext = {
+  userId: string;
+  epoch: number;
+  signal: AbortSignal;
+  isCurrent: () => boolean;
+};
 
 let backgroundSyncAccountId: string | null = null;
 let publish: (channel: AcademicEventChannel, value: unknown) => void = () =>
@@ -116,7 +139,6 @@ const watchRuntime = createWatchRuntime({
   onStatus: (accountId, enabled, status) =>
     publish('scholar:watchChange', { accountId, enabled, status }),
 });
-let watchPowerEventsRegistered = false;
 // Scheduled work runs the same pipeline as the manual button, so one set of
 // protections, bounds and persistence rules covers both.
 const backgroundSync = createBackgroundSyncController<CourseRefreshResult>({
@@ -159,12 +181,13 @@ const prepareState = (
   backgroundSyncAccountId = settled.accountId;
   void watchRuntime.configure(
     settled.accountId,
-    boundOnboardingComplete,
+    boundOnboardingComplete && boundAuthMode === 'online',
     isCurrent,
   );
   backgroundSync.configure({
     userId: settled.accountId,
     enabled:
+      boundAuthMode === 'online' &&
       boundOnboardingComplete &&
       !!settled.settings.localSetupCompletedAt &&
       settled.settings.backgroundSync &&
@@ -279,15 +302,32 @@ const connectRuntime = createConnectRuntime({
   },
 });
 
-const bindAccount = async (accountId: string | null) => {
-  if (boundAccountId && boundAccountId !== accountId) {
-    resolutionEpoch += 1;
-    connectionApprovals.reset();
-    connectRuntime.reset();
-    academicTasks.cancel();
-    await watchRuntime.stop();
+const bindAccount = async (
+  accountId: string | null,
+  authMode: AuthMode | null,
+  cookie: string | null,
+) => {
+  const accountChanged = boundAccountId !== accountId;
+  const accessChanged =
+    accountChanged || boundAuthMode !== authMode || boundCookie !== cookie;
+  if (accessChanged) {
+    await learningLifecycle.invalidate();
+    if (boundAccountId && accountChanged) {
+      resolutionEpoch += 1;
+      connectionApprovals.reset();
+      connectRuntime.reset();
+      backgroundSync.stop();
+      await watchRuntime.stop();
+      await cancelBrowserWork();
+    } else if (authMode === 'offline-local') {
+      backgroundSync.stop();
+      await watchRuntime.stop();
+      await cancelBrowserWork();
+    }
   }
   boundAccountId = accountId;
+  boundAuthMode = authMode;
+  boundCookie = cookie;
 };
 
 const stopBrowserWork = () => withBrowserWorkStopped(async () => undefined);
@@ -300,6 +340,8 @@ const registerQuitCleanup = () => {
     quitting = true;
     void (async () => {
       sessionGuard.invalidate();
+      await learningLifecycle.invalidate();
+      await cleanupLearningActions();
       resolutionEpoch += 1;
       connectionApprovals.reset();
       backgroundSyncAccountId = null;
@@ -318,11 +360,35 @@ const registerQuitCleanup = () => {
 export const registerAcademicActions = (service: {
   register: (method: string, action: AcademicAction) => void;
   publish: typeof publish;
+  learningModules?: readonly LearningActionModule[];
 }) => {
   publish = service.publish;
   if (!watchPowerEventsRegistered) {
-    powerMonitor.on('suspend', () => void watchRuntime.pause());
-    powerMonitor.on('resume', () => void watchRuntime.resume());
+    powerMonitor.on('suspend', () => {
+      systemSuspended = true;
+      learningLifecycle.cancelOperations();
+      releaseSystemBackgroundSuspend ??= backgroundSync.suspend();
+      if (!pendingSystemWatchSuspend && !releaseSystemWatchSuspend) {
+        pendingSystemWatchSuspend = watchRuntime
+          .suspend()
+          .then((release) => {
+            if (systemSuspended) releaseSystemWatchSuspend = release;
+            else void release().catch(() => undefined);
+          })
+          .catch(() => undefined)
+          .finally(() => {
+            pendingSystemWatchSuspend = null;
+          });
+      }
+    });
+    powerMonitor.on('resume', () => {
+      systemSuspended = false;
+      releaseSystemBackgroundSuspend?.();
+      releaseSystemBackgroundSuspend = null;
+      const releaseWatch = releaseSystemWatchSuspend;
+      releaseSystemWatchSuspend = null;
+      if (releaseWatch) void releaseWatch().catch(() => undefined);
+    });
     watchPowerEventsRegistered = true;
   }
   const handle = (
@@ -332,21 +398,38 @@ export const registerAcademicActions = (service: {
   ) => {
     const invoke = async (input: unknown) => {
       if (options.requiresUser === false)
-        return action({ userId: '', isCurrent: () => true }, input);
+        return action(
+          {
+            userId: '',
+            epoch: learningLifecycle.epoch,
+            signal: learningLifecycle.signal,
+            isCurrent: () => true,
+          },
+          input,
+        );
       const cookie = authClient.getCookie();
       return runSessionAction(sessionGuard, async (sessionIsCurrent) => {
-        const isCurrent = () =>
+        const authIsCurrent = () =>
           sessionIsCurrent() && isAccountSessionCurrent(cookie);
         const user = await getCurrentUser();
-        if (!isCurrent())
+        if (!authIsCurrent())
           throw new Error('Your session changed; sign in again.');
         if (!user) throw new Error('Please sign in to ScholarOS.');
-        await bindAccount(user.id);
+        await bindAccount(user.id, user.authMode ?? 'online', cookie);
         boundOnboardingComplete = user.hasCompletedOnboarding === true;
+        if (
+          user.authMode === 'offline-local' &&
+          !offlineReadMethods.some((offlineMethod) => offlineMethod === method)
+        )
+          throw new Error('Reconnect to use this feature.');
+        const epoch = learningLifecycle.epoch;
+        const signal = learningLifecycle.signal;
         const accountIsCurrent = () =>
-          isCurrent() && boundAccountId === user.id;
+          authIsCurrent() &&
+          learningLifecycle.isCurrent(epoch) &&
+          boundAccountId === user.id;
         const result = await action(
-          { userId: user.id, isCurrent: accountIsCurrent },
+          { userId: user.id, epoch, signal, isCurrent: accountIsCurrent },
           input,
         );
         if (!accountIsCurrent())
@@ -356,6 +439,16 @@ export const registerAcademicActions = (service: {
     };
     service.register(method, invoke);
   };
+  const learningRegistrar: LearningActionRegistrar = {
+    handle: (method, action) =>
+      handle(method, (context, input) => action(context, input as never)),
+    publish: (event) => publish('scholar:productEvent', event),
+    lifecycle: learningLifecycle,
+  };
+  cleanupLearningActions = registerLearningActions(
+    learningRegistrar,
+    service.learningModules ?? [],
+  );
   if (!broadcastingPreview) {
     academicTasks.subscribe((accountId) =>
       publish('scholar:coursesChange', { accountId, courseId: null }),
@@ -375,10 +468,17 @@ export const registerAcademicActions = (service: {
     'getCurrentUser',
     () =>
       runSessionAction(sessionGuard, async (isCurrent) => {
+        const cookie = authClient.getCookie();
         const user = await getCurrentUser();
         if (!isCurrent())
           throw new Error('Your session changed; sign in again.');
-        await bindAccount(user?.id ?? null);
+        if (user && !isAccountSessionCurrent(cookie))
+          throw new Error('Your session changed; sign in again.');
+        await bindAccount(
+          user?.id ?? null,
+          user ? (user.authMode ?? 'online') : null,
+          cookie || null,
+        );
         boundOnboardingComplete = user?.hasCompletedOnboarding === true;
         return user;
       }),
@@ -388,12 +488,17 @@ export const registerAcademicActions = (service: {
     'signOut',
     async () => {
       boundAccountId = null;
+      boundAuthMode = null;
+      boundCookie = null;
       boundOnboardingComplete = false;
       markLocalSignOut();
       resolutionEpoch += 1;
       connectionApprovals.reset();
       await tearDownSession({
-        invalidateSession: sessionGuard.invalidate,
+        invalidateSession: async () => {
+          sessionGuard.invalidate();
+          await learningLifecycle.invalidate();
+        },
         stopMissions: async () => {
           backgroundSyncAccountId = null;
           backgroundSync.stop();
@@ -412,6 +517,7 @@ export const registerAcademicActions = (service: {
             .then(() => undefined),
         closeBrowser: closeWorkspace,
       });
+      await clearOfflineAccountGrant();
       applyLaunchAtLogin(false);
     },
     { requiresUser: false },
@@ -458,6 +564,7 @@ export const registerAcademicActions = (service: {
     if (changes.consent === false) {
       resolutionEpoch += 1;
       connectionApprovals.reset();
+      learningLifecycle.cancelOperations();
       backgroundSync.stop();
       await watchRuntime.stop();
       await cancelBrowserWork();
@@ -600,6 +707,7 @@ export const registerAcademicActions = (service: {
   });
   handle('removeResource', async ({ userId, isCurrent }, input) => {
     const connectionId = idSchema.parse(input);
+    learningLifecycle.cancelOperations();
     const state = await withBrowserWorkStopped(async () => {
       if (!isCurrent()) throw new Error('Your session changed; sign in again.');
       return removeAcademicConnection(userId, connectionId);
