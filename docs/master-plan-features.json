@@ -1,0 +1,164 @@
+{
+  "schema": 1,
+  "plan": "docs/master-plan.md",
+  "features": [
+    {
+      "id": "context-foundation",
+      "title": "Finish the existing context and sync foundation",
+      "status": "in_progress",
+      "depends_on": [],
+      "plan_sections": ["F01"],
+      "acceptance_criteria": [
+        "F01-AC01",
+        "F01-AC02",
+        "F01-AC03",
+        "F01-AC04",
+        "F01-AC05"
+      ],
+      "continuation": {
+        "branch": "feat/context",
+        "worktree": "/Users/danieldao/Desktop/scholaros",
+        "remaining_work": [
+          "Inventory and verify existing context/watch/navigation/material/identity changes",
+          "Finish missing requirements and actual Schoology verification before new features",
+          "Preserve relevant existing work in focused checkpoint commits before parallel branches fork"
+        ],
+        "included_changes": [
+          "Scoped existing context/watch/course/browser-mode/material/inference/migration/test changes after inspection",
+          "docs/master-plan.md",
+          "docs/master-plan-features.json",
+          "docs/current-state-inventory.json",
+          "AGENTS.md UI-primitives instructions",
+          ".greptile/config.json",
+          "docs/hermes-kickoff.md"
+        ],
+        "excluded_changes": [
+          "Secrets and .env files",
+          "Browser/account/runtime data and local databases",
+          "Logs/downloads/generated caches/node_modules/.worktrees",
+          "Unrelated user changes"
+        ],
+        "prior_evidence": [
+          "HEAD 2d5cf67 merged course feature",
+          "Current code/test presence is not proof of passing tests"
+        ],
+        "existing_pr": null
+      }
+    },
+    {
+      "id": "context-library",
+      "title": "Build the Context page and reusable study-material library",
+      "status": "planned",
+      "depends_on": ["context-foundation"],
+      "plan_sections": ["F02"],
+      "acceptance_criteria": ["F02-AC01", "F02-AC02", "F02-AC03", "F02-AC04"]
+    },
+    {
+      "id": "grades-integrity",
+      "title": "Add grade consent and verified coursework assistance rules",
+      "status": "planned",
+      "depends_on": ["context-foundation"],
+      "plan_sections": ["F03"],
+      "acceptance_criteria": [
+        "F03-AC01",
+        "F03-AC02",
+        "F03-AC03",
+        "F03-AC04",
+        "F03-AC05"
+      ]
+    },
+    {
+      "id": "session-core",
+      "title": "Create focused study sessions with durable history",
+      "status": "planned",
+      "depends_on": ["context-library", "grades-integrity"],
+      "plan_sections": ["F04"],
+      "acceptance_criteria": ["F04-AC01", "F04-AC02", "F04-AC03", "F04-AC04"]
+    },
+    {
+      "id": "grounded-tutor",
+      "title": "Deliver contextual Meta tutoring and safe conversational tools",
+      "status": "planned",
+      "depends_on": ["session-core"],
+      "plan_sections": ["F05"],
+      "acceptance_criteria": ["F05-AC01", "F05-AC02", "F05-AC03", "F05-AC04"]
+    },
+    {
+      "id": "interactive-document",
+      "title": "Generate and preserve useful inline learning activities",
+      "status": "planned",
+      "depends_on": ["grounded-tutor"],
+      "plan_sections": ["F06"],
+      "acceptance_criteria": ["F06-AC01", "F06-AC02", "F06-AC03", "F06-AC04"]
+    },
+    {
+      "id": "practice-assessment",
+      "title": "Add adaptive quizzes exams and meaningful learning feedback",
+      "status": "planned",
+      "depends_on": ["interactive-document"],
+      "plan_sections": ["F07"],
+      "acceptance_criteria": ["F07-AC01", "F07-AC02", "F07-AC03", "F07-AC04"]
+    },
+    {
+      "id": "adaptive-memory",
+      "title": "Build inspectable personal memory and learning progress",
+      "status": "planned",
+      "depends_on": ["practice-assessment"],
+      "plan_sections": ["F08"],
+      "acceptance_criteria": ["F08-AC01", "F08-AC02", "F08-AC03", "F08-AC04"]
+    },
+    {
+      "id": "speech-input",
+      "title": "Add live Meta dictation to the editable composer",
+      "status": "planned",
+      "depends_on": ["grounded-tutor"],
+      "plan_sections": ["F09"],
+      "acceptance_criteria": ["F09-AC01", "F09-AC02", "F09-AC03"]
+    },
+    {
+      "id": "today-progress",
+      "title": "Create the useful Today overview and next-study recommendations",
+      "status": "planned",
+      "depends_on": ["adaptive-memory"],
+      "plan_sections": ["F10"],
+      "acceptance_criteria": ["F10-AC01", "F10-AC02", "F10-AC03"]
+    },
+    {
+      "id": "settings-device",
+      "title": "Organize Settings and support browser reconfiguration",
+      "status": "planned",
+      "depends_on": ["context-library", "grades-integrity", "adaptive-memory"],
+      "plan_sections": ["F11"],
+      "acceptance_criteria": ["F11-AC01", "F11-AC02", "F11-AC03", "F11-AC04"]
+    },
+    {
+      "id": "notifications",
+      "title": "Add user-controlled desktop notification preferences",
+      "status": "planned",
+      "depends_on": ["settings-device", "today-progress", "speech-input"],
+      "plan_sections": ["F12"],
+      "acceptance_criteria": ["F12-AC01", "F12-AC02", "F12-AC03"]
+    },
+    {
+      "id": "release-verification",
+      "title": "Polish and verify the full macOS product and demo",
+      "status": "planned",
+      "depends_on": [
+        "context-foundation",
+        "context-library",
+        "grades-integrity",
+        "session-core",
+        "grounded-tutor",
+        "interactive-document",
+        "practice-assessment",
+        "adaptive-memory",
+        "speech-input",
+        "today-progress",
+        "settings-device",
+        "notifications"
+      ],
+      "plan_sections": ["F13"],
+      "acceptance_criteria": ["F13-AC01", "F13-AC02", "F13-AC03", "F13-AC04"]
+    }
+  ]
+}

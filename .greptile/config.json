@@ -1,0 +1,5 @@
+{
+  "autoReview": ["open"],
+  "triggerOnUpdates": false,
+  "triggerOnDrafts": false
+}
