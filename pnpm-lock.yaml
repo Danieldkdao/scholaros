@@ -525,9 +525,6 @@ importers:
       '@ai-sdk/openai':
         specifier: ^4.0.105
         version: 4.0.105(zod@4.6.7)
-      '@ai-sdk/typesafe-ai':
-        specifier: 3.0.29
-        version: 3.0.29(zod@4.6.7)
       '@scholaros/env':
         specifier: workspace:*
         version: link:../env
@@ -677,12 +674,6 @@ packages:
   '@ai-sdk/provider@4.0.34':
     resolution: {integrity: sha512-Ip7ZQBq/FiGpM1mmOVseTtX9PBjnzo0bLC41WTgBSBBRUBz6LhNFGbYaNUzI6hPm6ll1oNSPOAZc/q/z+3QZEQ==}
     engines: {node: '>=22'}
-
-  '@ai-sdk/typesafe-ai@3.0.29':
-    resolution: {integrity: sha512-YobM4P1PGoJkUJcfIspB5Vpje7AsnaTe1VAmnJNMmtkyrjcgw23NQhhNYXu+71bqh5Jf9nH+aHbSx70/SWbPhQ==}
-    engines: {node: '>=22'}
-    peerDependencies:
-      zod: ^3.25.76 || ^4.1.8
 
   '@alcalzone/ansi-tokenize@0.3.1':
     resolution: {integrity: sha512-cUD0PT0YX+rImRhfn7BfMRduP/tX/Zqt/N0dHlAyn2RlcJssCb5KsCJkhln61eh9vuJDkH8wKn3L8zJzzWXPFg==}
@@ -6156,12 +6147,6 @@ snapshots:
   '@ai-sdk/provider@4.0.34':
     dependencies:
       json-schema: 0.4.0
-
-  '@ai-sdk/typesafe-ai@3.0.29(zod@4.6.7)':
-    dependencies:
-      '@ai-sdk/provider': 4.0.34
-      '@ai-sdk/provider-utils': 5.0.70(zod@4.6.7)
-      zod: 4.6.7
 
   '@alcalzone/ansi-tokenize@0.3.1':
     dependencies:
