@@ -27,6 +27,7 @@ const mocks = vi.hoisted(() => ({
     return event;
   }),
   runService: vi.fn(),
+  loadLearningModules: vi.fn(async () => [vi.fn()]),
 }));
 vi.mock('electron', () => ({
   app: {
@@ -94,6 +95,13 @@ vi.mock('../src/services/academic/client', () => ({
 vi.mock('../src/services/academic/runtime', () => ({
   runAcademicService: mocks.runService,
 }));
+vi.mock(
+  '../src/services/academic/learning-actions',
+  async (importOriginal) => ({
+    ...(await importOriginal()),
+    loadLearningActionModules: mocks.loadLearningModules,
+  }),
+);
 beforeEach(() => {
   vi.clearAllMocks();
   vi.resetModules();
@@ -144,6 +152,10 @@ it('runs the service without a desktop window or renderer authentication bridges
   mocks.serviceMode = true;
   await import('../src/main');
   await vi.waitFor(() => expect(mocks.runService).toHaveBeenCalledOnce());
+  expect(mocks.loadLearningModules).toHaveBeenCalledOnce();
+  expect(mocks.runService).toHaveBeenCalledWith({
+    learningModules: expect.arrayContaining([expect.any(Function)]),
+  });
   expect(mocks.windows).toBe(0);
   expect(mocks.register).not.toHaveBeenCalled();
   expect(mocks.setupAuth).not.toHaveBeenCalled();

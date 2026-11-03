@@ -33,6 +33,7 @@ import {
   stopAcademicService,
   disconnectAcademicService,
 } from './services/academic/client';
+import { loadLearningActionModules } from './services/academic/learning-actions';
 
 const serviceMode = app.commandLine.hasSwitch('academic-service');
 if (serviceMode) {
@@ -191,7 +192,8 @@ app
     if (serviceMode) {
       const { runAcademicService } =
         await import('./services/academic/runtime');
-      await runAcademicService();
+      const learningModules = await loadLearningActionModules();
+      await runAcademicService({ learningModules });
       return;
     }
 

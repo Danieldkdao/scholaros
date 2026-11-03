@@ -131,3 +131,76 @@ export const registerLearningActions = (
 
   return () => runCleanups(cleanups);
 };
+
+export const loadLearningActionModules = async (): Promise<
+  LearningActionModule[]
+> => {
+  const [
+    contextActions,
+    gradeActions,
+    sessionActions,
+    artifactActions,
+    memoryActions,
+    todayActions,
+    notificationActions,
+    originalStore,
+    database,
+  ] = await Promise.all([
+    import('../../features/context/services/library-actions'),
+    import('../../features/grades/services/grade-actions'),
+    import('../../features/study/services/session-actions'),
+    import('../../features/study/services/artifact-actions'),
+    import('../../features/memory/services/memory-actions'),
+    import('../../features/today/services/today-actions'),
+    import('../../features/notifications/services/notification-actions'),
+    import('../../features/context/services/original-store'),
+    import('../../db'),
+  ]);
+
+  let sessionStore: ReturnType<
+    typeof sessionActions.createSessionStore
+  > | null = null;
+
+  return [
+    contextActions.registerContextActions,
+    (registrar) => {
+      sessionStore = sessionActions.createSessionStore({
+        now: () => registrar.lifecycle.now(),
+        publish: (event) => registrar.publish(event),
+        cleanupOriginals: async (context, userId, storageKeys) => {
+          if (context.userId !== userId)
+            throw new Error('The study session owner changed.');
+          await Promise.all(
+            storageKeys.map((storageKey) =>
+              originalStore.removeContextOriginal(userId, storageKey),
+            ),
+          );
+        },
+      });
+      return sessionActions.registerSessionActions(registrar, {
+        store: sessionStore,
+      });
+    },
+    (registrar) => {
+      if (!sessionStore)
+        throw new Error('The study session store is unavailable.');
+      const activeSessionStore = sessionStore;
+      return gradeActions.registerGradeActions(registrar, {
+        onSettingsChanged: async (context, settings, deletedCollected) => {
+          if (!settings.enabled || deletedCollected)
+            await activeSessionStore.purgeGradeDerivedStudyContent(context, {
+              consentRevision: settings.revision,
+            });
+        },
+      });
+    },
+    (registrar) =>
+      artifactActions.registerArtifactActions(
+        registrar,
+        artifactActions.createArtifactStore({ db: database.db }),
+      ),
+    memoryActions.registerMemoryActions,
+    todayActions.registerTodayActions,
+    notificationActions.registerNotificationActions,
+  ];
+};
