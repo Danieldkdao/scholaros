@@ -3,6 +3,7 @@ const mocks = vi.hoisted(() => ({
   serviceMode: false,
   windows: 0,
   listeners: new Map<string, ((event?: unknown) => void)[]>(),
+  ipcHandlers: new Map<string, (event: unknown, input?: unknown) => unknown>(),
   ready: vi.fn(),
   register: vi.fn(),
   request: vi.fn(),
@@ -12,6 +13,13 @@ const mocks = vi.hoisted(() => ({
   exit: vi.fn(),
   errorBox: vi.fn(),
   setupAuth: vi.fn(),
+  requestAuth: vi.fn(async () => undefined),
+  getTrustedWindow: vi.fn(() => ({ id: 'trusted-window' })),
+  installTrustedFocusedWebContentsGuard: vi.fn(),
+  requireTrustedSender: vi.fn((event: { trusted?: boolean }) => {
+    if (!event.trusted) throw new Error('Untrusted application frame.');
+    return event;
+  }),
   runService: vi.fn(),
 }));
 vi.mock('electron', () => ({
@@ -47,13 +55,27 @@ vi.mock('electron', () => ({
     loadURL() {}
   },
   dialog: { showErrorBox: mocks.errorBox },
+  ipcMain: {
+    handle: (
+      channel: string,
+      handler: (event: unknown, input?: unknown) => unknown,
+    ) => mocks.ipcHandlers.set(channel, handler),
+  },
+  webContents: { getFocusedWebContents: () => null },
 }));
 vi.mock('electron-squirrel-startup', () => ({ default: false }));
 vi.mock('../src/lib/auth/client', () => ({
-  authClient: { setupMain: mocks.setupAuth },
+  authClient: { setupMain: mocks.setupAuth, requestAuth: mocks.requestAuth },
 }));
 vi.mock('../src/lib/window-navigation', () => ({
   protectWindowNavigation: vi.fn(),
+}));
+vi.mock('../src/lib/trusted-windows', () => ({
+  getTrustedWindow: mocks.getTrustedWindow,
+  installTrustedFocusedWebContentsGuard:
+    mocks.installTrustedFocusedWebContentsGuard,
+  registerTrustedWindow: vi.fn(() => vi.fn()),
+  requireTrustedSender: mocks.requireTrustedSender,
 }));
 vi.mock('../src/services/academic/client', () => ({
   registerAcademicClient: mocks.register,
@@ -68,6 +90,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.resetModules();
   mocks.listeners.clear();
+  mocks.ipcHandlers.clear();
   mocks.windows = 0;
   mocks.serviceMode = false;
   mocks.ready.mockResolvedValue(undefined);
@@ -120,6 +143,28 @@ it('stops the service on explicit Quit even when background syncing is enabled',
   await vi.waitFor(() => expect(mocks.stop).toHaveBeenCalledOnce());
   expect(mocks.disconnect).not.toHaveBeenCalled();
 });
+it('uses only trusted authentication windows and guards the user-initiated auth bridge', async () => {
+  await import('../src/main');
+  await vi.waitFor(() => expect(mocks.windows).toBe(1));
+
+  const authConfig = mocks.setupAuth.mock.calls[0]?.[0] as {
+    bridges?: boolean;
+    getWindow?: () => unknown;
+  };
+  expect(authConfig.bridges).toBe(false);
+  expect(authConfig.getWindow?.()).toEqual({ id: 'trusted-window' });
+  expect(mocks.installTrustedFocusedWebContentsGuard).toHaveBeenCalledOnce();
+
+  const requestAuth = mocks.ipcHandlers.get('better-auth:requestAuth');
+  expect(requestAuth).toBeTypeOf('function');
+  await expect(
+    Promise.resolve().then(() => requestAuth?.({ trusted: false })),
+  ).rejects.toThrow('Untrusted');
+  expect(mocks.requestAuth).not.toHaveBeenCalled();
+  await expect(requestAuth?.({ trusted: true })).resolves.toBeUndefined();
+  expect(mocks.requestAuth).toHaveBeenCalledOnce();
+});
+
 it('shows a useful startup failure before exiting when storage ownership cannot be acquired', async () => {
   const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
   mocks.register.mockRejectedValueOnce(

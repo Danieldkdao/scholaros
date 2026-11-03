@@ -1,4 +1,9 @@
-import type { BrowserWindow, IpcMainEvent, IpcMainInvokeEvent } from 'electron';
+import type {
+  BrowserWindow,
+  IpcMainEvent,
+  IpcMainInvokeEvent,
+  WebContents,
+} from 'electron';
 
 type TrustedWindowEntry = {
   window: BrowserWindow;
@@ -22,6 +27,47 @@ const canonicalDocument = (value: string) => {
 
 const matchesDocument = (value: string, expectedDocument: string) =>
   canonicalDocument(value) === expectedDocument;
+
+const matchesTrustedEntry = (entry: TrustedWindowEntry) => {
+  const { window, expectedDocument } = entry;
+  try {
+    const { webContents } = window;
+    return (
+      !window.isDestroyed() &&
+      !webContents.isDestroyed() &&
+      matchesDocument(webContents.getURL(), expectedDocument) &&
+      matchesDocument(webContents.mainFrame.url, expectedDocument)
+    );
+  } catch {
+    return false;
+  }
+};
+
+export const isTrustedWebContents = (webContents: WebContents) => {
+  const entry = trustedWindows.get(webContents.id);
+  return (
+    !!entry &&
+    entry.window.webContents === webContents &&
+    matchesTrustedEntry(entry)
+  );
+};
+
+export const installTrustedFocusedWebContentsGuard = (api: {
+  getFocusedWebContents: () => WebContents | null;
+}) => {
+  const original = api.getFocusedWebContents;
+  const getFocusedWebContents = original.bind(api);
+  const guarded = () => {
+    const focused = getFocusedWebContents();
+    return focused && isTrustedWebContents(focused) ? focused : null;
+  };
+
+  api.getFocusedWebContents = guarded;
+  return () => {
+    if (api.getFocusedWebContents === guarded)
+      api.getFocusedWebContents = original;
+  };
+};
 
 const unregisterEntry = (id: number, entry: TrustedWindowEntry) => {
   entry.dispose();
@@ -76,15 +122,7 @@ export const unregisterTrustedWindow = (id: number) => {
 
 export const getTrustedWindows = () =>
   [...trustedWindows.values()]
-    .filter(({ window, expectedDocument }) => {
-      const { webContents } = window;
-      return (
-        !window.isDestroyed() &&
-        !webContents.isDestroyed() &&
-        matchesDocument(webContents.getURL(), expectedDocument) &&
-        matchesDocument(webContents.mainFrame.url, expectedDocument)
-      );
-    })
+    .filter(matchesTrustedEntry)
     .map(({ window }) => window);
 
 export const getTrustedWindow = () => getTrustedWindows()[0] ?? null;

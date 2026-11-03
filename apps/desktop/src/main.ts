@@ -1,9 +1,16 @@
 import './lib/application-paths';
-import { app, BrowserWindow, dialog } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, webContents } from 'electron';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import started from 'electron-squirrel-startup';
 import { mkdirSync } from 'node:fs';
 import { authClient } from './lib/auth/client';
+import {
+  getTrustedWindow,
+  installTrustedFocusedWebContentsGuard,
+  registerTrustedWindow,
+  requireTrustedSender,
+} from './lib/trusted-windows';
 import { protectWindowNavigation } from './lib/window-navigation';
 import {
   registerAcademicClient,
@@ -31,14 +38,17 @@ if (started) {
 }
 
 if (!started && !serviceMode && !app.commandLine.hasSwitch('migrate-db')) {
-  // Explicit flags retain plugin behavior when supplying a window resolver.
+  // Better Auth's error bridge targets the globally focused WebContents.
+  installTrustedFocusedWebContentsGuard(webContents);
   authClient.setupMain({
     csp: true,
     scheme: true,
-    bridges: true,
-    getWindow: () =>
-      BrowserWindow.getAllWindows()[0] ??
-      (app.isReady() ? createWindow() : null),
+    bridges: false,
+    getWindow: getTrustedWindow,
+  });
+  ipcMain.handle('better-auth:requestAuth', (event) => {
+    requireTrustedSender(event);
+    return authClient.requestAuth();
   });
 }
 
@@ -57,16 +67,21 @@ const createWindow = () => {
       sandbox: true,
     },
   });
+  const rendererFile = path.join(
+    __dirname,
+    `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`,
+  );
+  const expectedDocument = MAIN_WINDOW_VITE_DEV_SERVER_URL
+    ? MAIN_WINDOW_VITE_DEV_SERVER_URL
+    : pathToFileURL(rendererFile).href;
 
+  registerTrustedWindow(mainWindow, expectedDocument);
   protectWindowNavigation(mainWindow.webContents);
 
-  // and load the index.html of the app.
   if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
     mainWindow.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL);
   } else {
-    mainWindow.loadFile(
-      path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`),
-    );
+    mainWindow.loadFile(rendererFile);
   }
 
   // Keep developer tools out of the packaged consumer application.

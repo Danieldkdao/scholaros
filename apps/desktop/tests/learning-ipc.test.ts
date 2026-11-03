@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   getTrustedWindow,
+  installTrustedFocusedWebContentsGuard,
+  isTrustedWebContents,
   registerTrustedWindow,
   requireTrustedSender,
 } from '../src/lib/trusted-windows';
@@ -133,5 +135,30 @@ describe('trusted application windows', () => {
       }),
     ).toThrow('Untrusted application frame.');
     expect(getTrustedWindow()).toBeNull();
+  });
+
+  it('only forwards focused-window errors to a currently trusted renderer', () => {
+    const trusted = makeWindow(41, 'https://app.local/index.html');
+    const remote = makeWindow(42, 'https://outside.example/');
+    trustedWindows.push(
+      registerTrustedWindow(
+        trusted.window as never,
+        'https://app.local/index.html',
+      ),
+    );
+    let focusedContents = trusted.contents;
+    const focusApi = { getFocusedWebContents: () => focusedContents as never };
+    const restore = installTrustedFocusedWebContentsGuard(focusApi as never);
+
+    expect(isTrustedWebContents(trusted.contents as never)).toBe(true);
+    expect(focusApi.getFocusedWebContents()).toBe(trusted.contents);
+    focusedContents = remote.contents;
+    expect(focusApi.getFocusedWebContents()).toBeNull();
+    trusted.contents.mainFrame.url = 'https://outside.example/';
+    focusedContents = trusted.contents;
+    expect(focusApi.getFocusedWebContents()).toBeNull();
+
+    restore();
+    expect(focusApi.getFocusedWebContents()).toBe(trusted.contents);
   });
 });
