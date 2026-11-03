@@ -835,3 +835,31 @@ it('can cancel academic work after cloud authentication expires', async () => {
   await expect(invoke('cancelCourseRefresh')).resolves.toBeUndefined();
   expect(cancelCourseRefresh).toHaveBeenCalledOnce();
 });
+
+it('re-registers learning modules after account and session teardown', async () => {
+  const cleanup = vi.fn();
+  const registerModule = vi.fn(() => cleanup);
+  registerAcademicActions({
+    register: (method, action) =>
+      mocks.handlers.set(`scholar:${method}`, async (_event, input) =>
+        action(input),
+      ),
+    publish: () => undefined,
+    learningModules: [registerModule],
+  });
+  mocks.getCurrentUser.mockResolvedValue({ id: 'student-a' });
+
+  await invoke('getCurrentUser');
+  expect(registerModule).toHaveBeenCalledTimes(2);
+  expect(cleanup).toHaveBeenCalledOnce();
+
+  mocks.getCookie.mockReturnValue('account-b-cookie');
+  mocks.getCurrentUser.mockResolvedValue({ id: 'student-b' });
+  await invoke('getCurrentUser');
+  expect(registerModule).toHaveBeenCalledTimes(3);
+  expect(cleanup).toHaveBeenCalledTimes(2);
+
+  await invoke('signOut');
+  expect(registerModule).toHaveBeenCalledTimes(4);
+  expect(cleanup).toHaveBeenCalledTimes(3);
+});

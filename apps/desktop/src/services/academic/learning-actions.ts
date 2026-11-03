@@ -54,6 +54,7 @@ export const createLearningLifecycle = (): LearningLifecycleRuntime => {
         return Promise.reject(error);
       }
     });
+    teardownCallbacks.clear();
     void Promise.allSettled(teardowns).then((results) => {
       controller = new AbortController();
       if (invalidating === currentInvalidation) invalidating = null;
@@ -118,7 +119,10 @@ export const registerLearningActions = (
   try {
     for (const module of modules) {
       const cleanup = module(registrar);
-      if (cleanup) cleanups.push(cleanup);
+      if (cleanup) {
+        cleanups.push(cleanup);
+        registrar.lifecycle.onTeardown(cleanup);
+      }
     }
   } catch (error) {
     void runCleanups(cleanups).catch(() => undefined);

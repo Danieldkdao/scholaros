@@ -127,7 +127,23 @@ let boundAccountId: string | null = null;
 let boundAuthMode: AuthMode | null = null;
 let boundCookie: string | null = null;
 let boundOnboardingComplete = false;
-let cleanupLearningActions: () => Promise<void> = async () => undefined;
+let learningActionRegistrar: LearningActionRegistrar | null = null;
+let learningActionModules: readonly LearningActionModule[] = [];
+let learningActionRebind: Promise<void> = Promise.resolve();
+
+const registerLearningActionModules = () => {
+  if (learningActionRegistrar)
+    registerLearningActions(learningActionRegistrar, learningActionModules);
+};
+
+const rebindLearningActionModules = () => {
+  const rebinding = learningActionRebind.then(async () => {
+    await learningLifecycle.invalidate();
+    registerLearningActionModules();
+  });
+  learningActionRebind = rebinding.catch(() => undefined);
+  return rebinding;
+};
 
 type IpcContext = {
   userId: string;
@@ -315,7 +331,7 @@ const bindAccount = async (
   const accessChanged =
     accountChanged || boundAuthMode !== authMode || boundCookie !== cookie;
   if (accessChanged) {
-    await learningLifecycle.invalidate();
+    await rebindLearningActionModules();
     if (boundAccountId && accountChanged) {
       resolutionEpoch += 1;
       connectionApprovals.reset();
@@ -345,7 +361,6 @@ const registerQuitCleanup = () => {
     void (async () => {
       sessionGuard.invalidate();
       await learningLifecycle.invalidate();
-      await cleanupLearningActions();
       resolutionEpoch += 1;
       connectionApprovals.reset();
       backgroundSyncAccountId = null;
@@ -449,10 +464,9 @@ export const registerAcademicActions = (service: {
     publish: (event) => publish('scholar:productEvent', event),
     lifecycle: learningLifecycle,
   };
-  cleanupLearningActions = registerLearningActions(
-    learningRegistrar,
-    service.learningModules ?? [],
-  );
+  learningActionRegistrar = learningRegistrar;
+  learningActionModules = service.learningModules ?? [];
+  registerLearningActionModules();
   if (!broadcastingPreview) {
     academicTasks.subscribe((accountId) =>
       publish('scholar:coursesChange', { accountId, courseId: null }),
@@ -501,7 +515,7 @@ export const registerAcademicActions = (service: {
       await tearDownSession({
         invalidateSession: async () => {
           sessionGuard.invalidate();
-          await learningLifecycle.invalidate();
+          await rebindLearningActionModules();
         },
         stopMissions: async () => {
           backgroundSyncAccountId = null;
