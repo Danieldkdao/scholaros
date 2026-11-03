@@ -16,8 +16,13 @@ import {
   stagehandExtensionDirectory,
 } from './stagehand-assets.mts';
 
+const packageRequire = createRequire(import.meta.url);
 const sqlitePackage = path.dirname(
-  createRequire(import.meta.url).resolve('better-sqlite3/package.json'),
+  packageRequire.resolve('better-sqlite3/package.json'),
+);
+const pdfjsPackage = path.resolve(
+  path.dirname(packageRequire.resolve('pdfjs-dist/legacy/build/pdf.mjs')),
+  '../..',
 );
 
 const config: ForgeConfig = {
@@ -33,14 +38,15 @@ const config: ForgeConfig = {
   rebuildConfig: {},
   hooks: {
     packageAfterCopy: async (_forgeConfig, buildPath) => {
-      // Forge's Vite plugin omits node_modules, including external native modules.
-      await cp(
-        sqlitePackage,
-        path.join(buildPath, 'node_modules/better-sqlite3'),
-        {
+      // Forge's Vite plugin omits runtime packages that use dynamic resolution.
+      await Promise.all([
+        cp(sqlitePackage, path.join(buildPath, 'node_modules/better-sqlite3'), {
           recursive: true,
-        },
-      );
+        }),
+        cp(pdfjsPackage, path.join(buildPath, 'node_modules/pdfjs-dist'), {
+          recursive: true,
+        }),
+      ]);
     },
   },
   makers: [
