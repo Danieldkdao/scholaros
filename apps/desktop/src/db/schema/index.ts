@@ -10,5 +10,6 @@ export * from './course-source';
 export * from './navigation-location';
 export * from './course-material';
 export * from './course-material-chunk';
+export * from './course-material-version';
 export * from './course-record-tombstone';
 export * from './watch-target';

@@ -23,6 +23,7 @@ export const CourseMaterialTable = sqliteTable(
     title: text('title').notNull(),
     sourceType: text('source_type').$type<CourseMaterialSourceType>().notNull(),
     contentHash: text('content_hash'),
+    currentUsableVersion: text('current_usable_version'),
     extractionStatus: text('extraction_status')
       .$type<CourseMaterialExtractionStatus>()
       .notNull()
@@ -36,6 +37,8 @@ export const CourseMaterialTable = sqliteTable(
     verifiedAt: text('verified_at'),
     contentChangedAt: text('content_changed_at'),
     active: integer('active', { mode: 'boolean' }).notNull().default(true),
+    suppressionId: text('suppression_id'),
+    suppressedAt: text('suppressed_at'),
   },
   (table) => [
     uniqueIndex('course_materials_source_identity_idx').on(

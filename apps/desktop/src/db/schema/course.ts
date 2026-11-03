@@ -8,6 +8,14 @@ import {
 } from 'drizzle-orm/sqlite-core';
 import type { CourseScanStatus } from '../../features/courses/types';
 
+export type CourseLocalOverrides = Partial<{
+  name: string;
+  code: string | null;
+  term: string | null;
+  instructor: string | null;
+  description: string | null;
+}>;
+
 export const CourseTable = sqliteTable(
   'courses',
   {
@@ -29,6 +37,12 @@ export const CourseTable = sqliteTable(
     firstSeenAt: text('first_seen_at').notNull(),
     lastSeenAt: text('last_seen_at').notNull(),
     content: text('content', { mode: 'json' }).$type<ExtractedCourseSchema>(),
+    localOverrides: text('local_overrides', {
+      mode: 'json',
+    }).$type<CourseLocalOverrides>(),
+    localEditedAt: text('local_edited_at'),
+    suppressionId: text('suppression_id'),
+    suppressedAt: text('suppressed_at'),
     contentChangedAt: text('content_changed_at'),
     overviewSyncedAt: text('overview_synced_at'),
     announcementsStatus: text('announcements_status')
@@ -41,6 +55,12 @@ export const CourseTable = sqliteTable(
       .notNull()
       .default('pending'),
     assignmentsSyncedAt: text('assignments_synced_at'),
+    materialsStatus: text('materials_status')
+      .$type<CourseScanStatus>()
+      .notNull()
+      .default('pending'),
+    materialsAttemptedAt: text('materials_attempted_at'),
+    materialsSyncedAt: text('materials_synced_at'),
   },
   (table) => [
     uniqueIndex('courses_user_source_key_idx').on(

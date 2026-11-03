@@ -17,6 +17,7 @@ export const CourseRecordTombstoneTable = sqliteTable(
     courseSourceKey: text('course_source_key').notNull(),
     kind: text('kind').$type<CourseRecordTombstoneKind>().notNull(),
     resourceSourceKey: text('resource_source_key').notNull(),
+    suppressionId: text('suppression_id'),
     createdAt: text('created_at').notNull(),
   },
   (table) => [
@@ -31,6 +32,13 @@ export const CourseRecordTombstoneTable = sqliteTable(
       table.userId,
       table.connectionId,
       table.courseSourceKey,
+    ),
+    index('course_record_tombstones_group_idx').on(
+      table.userId,
+      table.connectionId,
+      table.courseSourceKey,
+      table.kind,
+      table.suppressionId,
     ),
   ],
 );

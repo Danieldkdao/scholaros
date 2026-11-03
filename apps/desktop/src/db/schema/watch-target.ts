@@ -7,6 +7,17 @@ import {
 } from 'drizzle-orm/sqlite-core';
 import type { WatchTargetStatus } from '../../features/watch/types';
 
+export const watchTargetFailureCategories = [
+  'needs-sign-in',
+  'rate-limited',
+  'network',
+  'navigation',
+  'scope-changed',
+  'unknown',
+] as const;
+export type WatchTargetFailureCategory =
+  (typeof watchTargetFailureCategories)[number];
+
 export const WatchTargetTable = sqliteTable(
   'watch_targets',
   {
@@ -24,6 +35,15 @@ export const WatchTargetTable = sqliteTable(
     pendingChange: integer('pending_change', { mode: 'boolean' })
       .notNull()
       .default(false),
+    pendingSince: text('pending_since'),
+    pendingSinceEstimated: integer('pending_since_estimated', {
+      mode: 'boolean',
+    })
+      .notNull()
+      .default(false),
+    lastFailureCategory: text(
+      'last_failure_category',
+    ).$type<WatchTargetFailureCategory>(),
     nextCheckAt: text('next_check_at'),
     status: text('status')
       .$type<WatchTargetStatus>()

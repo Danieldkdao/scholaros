@@ -7,6 +7,13 @@ import {
   uniqueIndex,
 } from 'drizzle-orm/sqlite-core';
 
+export type CourseAssignmentLocalOverrides = Partial<{
+  title: string;
+  body: string | null;
+  dateText: string | null;
+  dateValue: string | null;
+}>;
+
 export const CourseAssignmentTable = sqliteTable(
   'course_assignments',
   {
@@ -26,6 +33,12 @@ export const CourseAssignmentTable = sqliteTable(
     content: text('content', {
       mode: 'json',
     }).$type<ExtractedAssignmentSchema>(),
+    localOverrides: text('local_overrides', {
+      mode: 'json',
+    }).$type<CourseAssignmentLocalOverrides>(),
+    localEditedAt: text('local_edited_at'),
+    suppressionId: text('suppression_id'),
+    suppressedAt: text('suppressed_at'),
     contentChangedAt: text('content_changed_at'),
   },
   (table) => [
