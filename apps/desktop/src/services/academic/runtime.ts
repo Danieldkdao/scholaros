@@ -1,9 +1,16 @@
 import { app } from 'electron';
 import path from 'node:path';
+import type { LearningActionModule } from './learning-actions';
 import { createAcademicServer } from './transport';
 import type { AcademicAction } from './contracts';
 
-export const runAcademicService = async () => {
+type AcademicServiceOptions = {
+  learningModules?: readonly LearningActionModule[];
+};
+
+export const runAcademicService = async ({
+  learningModules = [],
+}: AcademicServiceOptions = {}) => {
   if (!app.hasSingleInstanceLock())
     throw new Error('The academic service requires the single-instance lock.');
   const actions = new Map<string, AcademicAction>();
@@ -18,6 +25,7 @@ export const runAcademicService = async () => {
     registerAcademicActions({
       register: (method, action) => actions.set(method, action),
       publish: server.publish,
+      learningModules,
     });
     actions.set('shutdown', () => {
       setTimeout(() => app.quit(), 20);

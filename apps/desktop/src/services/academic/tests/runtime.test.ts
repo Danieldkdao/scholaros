@@ -55,10 +55,14 @@ it('does not create the academic transport without Electron process ownership', 
 it('creates the transport only while the Electron process lock is held', async () => {
   mocks.hasSingleInstanceLock.mockReturnValue(true);
   const { runAcademicService } = await import('../runtime');
+  const learningModules = [vi.fn()];
 
-  const service = await runAcademicService();
+  const service = await runAcademicService({ learningModules });
   expect(mocks.createAcademicServer).toHaveBeenCalledOnce();
   expect(mocks.registerAcademicActions).toHaveBeenCalledOnce();
+  expect(mocks.registerAcademicActions).toHaveBeenCalledWith(
+    expect.objectContaining({ learningModules }),
+  );
   expect(service).toBe(await mocks.createAcademicServer.mock.results[0]!.value);
 
   const willQuit = mocks.on.mock.calls.find(
