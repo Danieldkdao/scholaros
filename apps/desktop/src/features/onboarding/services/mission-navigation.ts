@@ -13,6 +13,7 @@ type PolicyContext = {
 type MissionNavigationOptions = {
   scopeId?: string;
   onNavigate?: (url: string) => void;
+  onPageOpened?: (url: string) => void;
   onWait?: (milliseconds: number) => void;
 };
 const browserRenderingCaches = new WeakMap<
@@ -23,12 +24,38 @@ const browserRenderingCaches = new WeakMap<
 // Stagehand applies its domain policy to subresources too. Learn only observed
 // rendering origins; the mission guard retains the original navigation hosts.
 export const createMissionNavigator = (
-  context: PolicyContext,
+  context: PolicyContext | (() => PolicyContext),
   hosts: string[],
   signal: AbortSignal,
   isCurrent: () => boolean = () => true,
   options: MissionNavigationOptions = {},
-) => {
+): ((
+  page: Page,
+  url: string,
+  continuation?: AccountContinuation,
+) => Promise<void>) => {
+  if (typeof context === 'function') {
+    const navigators = new WeakMap<
+      PolicyContext,
+      ReturnType<typeof createMissionNavigator>
+    >();
+    return (page, url, continuation) => {
+      // Stagehand replaces its context when a mission changes the model callback.
+      const current = context();
+      let navigator = navigators.get(current);
+      if (!navigator) {
+        navigator = createMissionNavigator(
+          current,
+          hosts,
+          signal,
+          isCurrent,
+          options,
+        );
+        navigators.set(current, navigator);
+      }
+      return navigator(page, url, continuation);
+    };
+  }
   // A relaunched browser must bootstrap its own rendering dependencies.
   let renderingCache = browserRenderingCaches.get(context);
   if (!renderingCache) {
@@ -95,6 +122,7 @@ export const createMissionNavigator = (
         )
           throw missionTraffic.recordRateLimit(destination, retryAfter);
       }
+      options.onPageOpened?.(await page.url());
     };
     options.onNavigate?.(url);
     await goTo();

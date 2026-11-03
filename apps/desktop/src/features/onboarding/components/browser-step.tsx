@@ -153,7 +153,7 @@ export const BrowserStep = ({ state, busy, run, update }: BrowserStepProps) => {
           {workspaceStatus.description}
         </p>
       )}
-      <Collapsible className="mt-2 w-full rounded-lg bg-muted/50">
+      <Collapsible className="mt-2 w-full rounded-lg">
         <CollapsibleTrigger className="group/more-info flex w-full cursor-pointer items-center justify-between gap-2 font-medium">
           <span>Why do I need to do this?</span>
           <ChevronDownIcon className="size-4 shrink-0 transition-transform group-data-panel-open/more-info:rotate-180 motion-reduce:transition-none" />

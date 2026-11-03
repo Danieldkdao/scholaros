@@ -1,5 +1,15 @@
 import { createEnv } from '@t3-oss/env-core';
 import { z } from 'zod';
+import { browserNavigationModeSchema } from './browser-navigation';
+
+export {
+  browserNavigationModeSchema,
+  browserNavigationModeValues,
+} from './browser-navigation';
+export type {
+  BrowserNavigationCapability,
+  BrowserNavigationMode,
+} from './browser-navigation';
 
 export const nodeEnvValues = ['development', 'production', 'test'] as const;
 export type NodeEnv = (typeof nodeEnvValues)[number];
@@ -32,11 +42,12 @@ export const serverEnv = createEnv({
     BASETEN_API_KEY: z.string().min(1).optional(),
     META_API_KEY: z.string().min(1).optional(),
     INFERENCE_PROVIDER: inferenceProviderSchema,
+    BROWSER_NAV: browserNavigationModeSchema.default('decision'),
     BASETEN_MODEL: z
       .string()
       .min(1)
       .default('meta-models/muse-spark-open-1026'),
-    META_MODEL: z.string().min(1).default('muse-spark-1.3-contributor'),
+    META_MODEL: z.string().min(1).default('muse-spark-1.3'),
   },
   runtimeEnvStrict: {
     NODE_ENV: process.env.NODE_ENV,
@@ -57,6 +68,7 @@ export const serverEnv = createEnv({
     META_MODEL: process.env.META_MODEL,
     BASETEN_MODEL: process.env.BASETEN_MODEL,
     INFERENCE_PROVIDER: process.env.INFERENCE_PROVIDER,
+    BROWSER_NAV: process.env.BROWSER_NAV,
   },
   emptyStringAsUndefined: true,
 });

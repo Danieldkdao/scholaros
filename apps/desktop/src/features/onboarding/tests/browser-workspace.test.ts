@@ -6,6 +6,8 @@ const browserMocks = vi.hoisted(() => ({
   closeStagehand: vi.fn(),
   closeBrowser: vi.fn(),
   createStagehand: vi.fn(),
+  createModel: vi.fn(),
+  generateModel: vi.fn(),
   stopOwnedProcesses: vi.fn(),
 }));
 
@@ -34,6 +36,9 @@ vi.mock('@browserbasehq/stagehand', () => ({
 
 vi.mock('../services/browser-process', () => ({
   stopOwnedBrowserProcesses: browserMocks.stopOwnedProcesses,
+}));
+vi.mock('../services/browser-model', () => ({
+  createBrowserModel: browserMocks.createModel,
 }));
 
 const installations = new Map([
@@ -74,7 +79,7 @@ vi.mock('../services/browser-discovery', () => ({
 const { db } = await import('../../../db');
 const { AcademicConnectionTable, BrowserWorkspaceTable } =
   await import('../../../db/schema');
-const { closeWorkspace, createWorkspace, getWorkspace } =
+const { closeWorkspace, createWorkspace, getWorkspace, withMissionStagehand } =
   await import('../services/browser-workspace');
 const { profileDirectoryFor } = await import('../lib/profile-directory');
 
@@ -118,6 +123,8 @@ beforeEach(async () => {
   browserMocks.closeStagehand.mockReset();
   browserMocks.closeBrowser.mockReset();
   browserMocks.createStagehand.mockReset();
+  browserMocks.createModel.mockReset();
+  browserMocks.generateModel.mockReset();
   browserMocks.stopOwnedProcesses.mockReset();
   browserMocks.stopOwnedProcesses.mockResolvedValue(0);
   browserMocks.closeStagehand.mockResolvedValue(undefined);
@@ -125,6 +132,7 @@ beforeEach(async () => {
   browserMocks.createStagehand.mockImplementation(async () => ({
     close: browserMocks.closeStagehand,
   }));
+  browserMocks.createModel.mockReturnValue(browserMocks.generateModel);
   browserMocks.launch.mockImplementation(async () => browserFor());
 });
 
@@ -143,6 +151,35 @@ describe('browser workspace ownership', () => {
       installations.get('chrome-install')!.executable,
     );
     expect(browserMocks.launch).toHaveBeenCalledOnce();
+  });
+
+  it('binds an inout Stagehand instance to one mission and restores the base instance', async () => {
+    await createWorkspace(accounts.first, 'chrome-install');
+    const workspace = await getWorkspace(accounts.first);
+    const signal = new AbortController().signal;
+    const isCurrent = vi.fn(() => true);
+    const result = await withMissionStagehand(
+      workspace,
+      { signal, isCurrent },
+      async (stagehand) => stagehand,
+    );
+
+    expect(browserMocks.createStagehand).toHaveBeenCalledTimes(3);
+    expect(browserMocks.createModel).toHaveBeenCalledWith({
+      signal,
+      isCurrent,
+    });
+    expect(browserMocks.createStagehand.mock.calls[1]?.[0]).toMatchObject({
+      model: { generate: browserMocks.generateModel },
+      selfHeal: false,
+      logging: { level: 'off' },
+    });
+    expect(result).toBe(
+      await browserMocks.createStagehand.mock.results[1]?.value,
+    );
+    expect(workspace.stagehand).toBe(
+      await browserMocks.createStagehand.mock.results[2]?.value,
+    );
   });
 
   it('launches the selected installation before recording a switch', async () => {

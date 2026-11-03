@@ -7,8 +7,11 @@ import type { ConnectRunState } from './services/connect-run';
 import type { ConnectionCandidateSchema } from '@scholaros/services/ai/schemas';
 import type { CourseDetail, CoursesSnapshot } from '../courses/types';
 import type { OnboardingStep, PreviewCardKind, PreviewPrompt } from './schemas';
+import type { BrowserNavigationMode } from '@scholaros/env/browser-navigation';
+import type { WatchRuntimeStatus, WatchSettings } from '../watch/types';
 
 export type { OnboardingStep, PreviewCardKind, PreviewPrompt };
+export type { BrowserNavigationMode };
 
 export type CurrentUser = {
   id: string;
@@ -140,7 +143,14 @@ export type OnboardingState = {
   primaryLms: string | null;
   discovery: AcademicDiscovery;
   preferences: OnboardingPreferences;
+  watch?: { enabled: boolean; status: WatchRuntimeStatus };
 };
+export type WatchRuntimeState = {
+  enabled: boolean;
+  status: WatchRuntimeStatus;
+};
+export type WatchRuntimeChange = WatchRuntimeState & { accountId: string };
+export type { WatchSettings };
 export type ActivityType =
   | 'waiting'
   | 'opening'
@@ -196,6 +206,10 @@ export type ScholarBridge = {
   cancelConnectRun: () => Promise<void>;
   onConnectChange: (listener: (state: ConnectRunState) => void) => () => void;
   getState: () => Promise<OnboardingState>;
+  getWatchSettings: () => Promise<WatchSettings>;
+  saveWatchSettings: (settings: WatchSettings) => Promise<WatchSettings>;
+  getWatchRuntimeState: () => Promise<WatchRuntimeState>;
+  onWatchChange: (listener: (change: WatchRuntimeChange) => void) => () => void;
   saveSettings: (
     changes: Partial<
       Pick<

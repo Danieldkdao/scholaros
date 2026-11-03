@@ -12,11 +12,33 @@ import {
 } from '@scholaros/services/ai/schemas';
 import { getCurrentUser } from '@/lib/auth/helpers';
 import { serverEnv } from '@/data/env/server';
+import { browserNavigationModeSchema } from '@scholaros/env/browser-navigation';
+import { generateBrowserModel } from '@scholaros/services/ai/browser-model';
+import { browserModelRequestSchema } from '@scholaros/services/ai/browser-schemas';
 
 export const runtime = 'nodejs';
 const requestBodyLimit = 150_000;
 const requestWindowMs = 60_000;
 const requestBudgets = new Map<string, { since: number; count: number }>();
+
+export const GET = async (request: Request) => {
+  const origin = request.headers.get('origin');
+  if (origin && origin !== new URL(serverEnv.BETTER_AUTH_URL).origin)
+    return Response.json({ error: 'Invalid origin' }, { status: 403 });
+  const currentUser = await getCurrentUser(request.headers);
+  if (!currentUser?.userId)
+    return Response.json({ error: 'Unauthorized' }, { status: 401 });
+  const mode = browserNavigationModeSchema.safeParse(serverEnv.BROWSER_NAV);
+  if (!mode.success)
+    return Response.json(
+      { error: 'Browser navigation mode is misconfigured.' },
+      { status: 500, headers: { 'Cache-Control': 'no-store' } },
+    );
+  return Response.json(
+    { browserNavigationMode: mode.data },
+    { headers: { 'Cache-Control': 'no-store' } },
+  );
+};
 
 const readBoundedText = async (request: Request, limit: number) => {
   const contentLength = request.headers.get('content-length');
@@ -85,6 +107,36 @@ export const POST = async (request: Request) => {
         { status: 400 },
       );
     }
+    const requestedMode =
+      body && typeof body === 'object'
+        ? 'kind' in body && body.kind === 'browser-model'
+          ? 'inout'
+          : 'browserNavigationMode' in body
+            ? body.browserNavigationMode
+            : undefined
+        : undefined;
+    if (requestedMode !== undefined) {
+      const mode = browserNavigationModeSchema.safeParse(serverEnv.BROWSER_NAV);
+      const expected = browserNavigationModeSchema.safeParse(requestedMode);
+      if (!expected.success)
+        return Response.json(
+          { error: 'Invalid browser navigation mode.' },
+          { status: 400 },
+        );
+      if (!mode.success)
+        return Response.json(
+          { error: 'Browser navigation mode is misconfigured.' },
+          { status: 500 },
+        );
+      if (expected.data !== mode.data)
+        return Response.json(
+          {
+            error:
+              'Browser navigation mode changed; restart academic browser work.',
+          },
+          { status: 409, headers: { 'Cache-Control': 'no-store' } },
+        );
+    }
     const resolution = connectionResolveRequestSchema.safeParse(body);
     if (resolution.success) {
       requestKind = 'resolve';
@@ -101,6 +153,23 @@ export const POST = async (request: Request) => {
         resolution.data.prompt,
         signal,
       );
+      return Response.json(result, {
+        headers: { 'Cache-Control': 'no-store' },
+      });
+    }
+    const browserModel = browserModelRequestSchema.safeParse(body);
+    if (browserModel.success) {
+      requestKind = 'browser-model';
+      if (!isInferenceConfigured())
+        return Response.json(
+          { error: 'The AI assistant is unavailable.' },
+          { status: 503 },
+        );
+      const signal = AbortSignal.any([
+        request.signal,
+        AbortSignal.timeout(60_000),
+      ]);
+      const result = await generateBrowserModel(browserModel.data, signal);
       return Response.json(result, {
         headers: { 'Cache-Control': 'no-store' },
       });
@@ -132,6 +201,17 @@ export const POST = async (request: Request) => {
           : await extractAcademicEvidence(parsed.data, signal);
     return Response.json(result, { headers: { 'Cache-Control': 'no-store' } });
   } catch (error) {
+    const browserErrors = [
+      'The Stagehand browser request uses unsupported content.',
+      'The Stagehand browser response schema is unsupported.',
+      'The generated browser response did not match its schema.',
+    ];
+    if (
+      error instanceof Error &&
+      requestKind === 'browser-model' &&
+      browserErrors.includes(error.message)
+    )
+      return Response.json({ error: error.message }, { status: 502 });
     // Provider errors can contain full academic responses; log only their category.
     console.error('[api/agent] request failed', {
       kind: requestKind,

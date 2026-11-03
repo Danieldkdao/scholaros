@@ -3,6 +3,37 @@ import { expect, it, vi } from 'vitest';
 import { createMissionNavigator } from '../services/mission-navigation';
 import { createAccountContinuation } from '../services/account-continuation';
 
+it('resolves the live browser context after Stagehand replaces its RPC client', async () => {
+  const closed = {
+    setDomainPolicy: vi.fn(async (): Promise<void> => {
+      throw new Error('RPC client is closed');
+    }),
+  };
+  const fresh = { setDomainPolicy: vi.fn(async () => undefined) };
+  let context = closed;
+  const navigate = createMissionNavigator(
+    () => context,
+    ['live.school.edu'],
+    new AbortController().signal,
+  );
+  context = fresh;
+  const page = {
+    goto: vi.fn(async () => undefined),
+    reload: vi.fn(async () => undefined),
+    url: async () => 'https://live.school.edu/courses',
+    evaluate: vi.fn(async () => []),
+  };
+  const continuation = createAccountContinuation('live.school.edu', '', '');
+  await navigate(
+    page as never,
+    'https://live.school.edu/courses',
+    continuation,
+  );
+  expect(closed.setDomainPolicy).not.toHaveBeenCalled();
+  expect(fresh.setDomainPolicy).toHaveBeenCalled();
+  expect(page.goto).toHaveBeenCalledOnce();
+});
+
 it('reloads the current academic page instead of replaying a sign-in entry URL when assets are learned', async () => {
   const page = {
     goto: vi.fn(async () => undefined),
@@ -164,12 +195,16 @@ it('does not reload pages without new rendering dependencies', async () => {
     url: async () => 'https://school.example/',
     evaluate: vi.fn(async () => []),
   };
+  const onPageOpened = vi.fn();
   await createMissionNavigator(
     context,
     ['school.example'],
     new AbortController().signal,
+    undefined,
+    { onPageOpened },
   )(page as never, 'https://school.example/');
   expect(page.goto).toHaveBeenCalledOnce();
+  expect(onPageOpened).toHaveBeenCalledOnce();
   expect(context.setDomainPolicy).not.toHaveBeenCalled();
 });
 it('stops before reloading after cancellation during dependency observation', async () => {
@@ -211,11 +246,14 @@ it('stops on a 429 response before dependency reloads', async () => {
     url: async () => 'https://limited.example/',
     evaluate: vi.fn(async () => []),
   };
+  const onPageOpened = vi.fn();
   await expect(
     createMissionNavigator(
       context,
       ['limited.example'],
       new AbortController().signal,
+      undefined,
+      { onPageOpened },
     )(page as never, 'https://limited.example/'),
   ).rejects.toThrow('cooldown');
   expect(missionTraffic.recordRateLimit).toHaveBeenCalledWith(
@@ -223,6 +261,7 @@ it('stops on a 429 response before dependency reloads', async () => {
     '120',
   );
   expect(page.evaluate).not.toHaveBeenCalled();
+  expect(onPageOpened).not.toHaveBeenCalled();
 });
 it('reuses rendering dependencies on a later mission for the same account', async () => {
   const page = {

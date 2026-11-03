@@ -47,7 +47,7 @@ const performAcademicDiscovery = async (
       blockedDomains: [],
     });
     const navigatePage = createMissionNavigator(
-      workspace.browser.context,
+      () => workspace.browser.context,
       hosts,
       signal,
       isCurrent,

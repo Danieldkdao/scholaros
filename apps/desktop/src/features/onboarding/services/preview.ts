@@ -7,13 +7,16 @@ import {
   type MissionProtection,
 } from './mission-request-guard';
 import { academicTasks } from './academic-tasks';
-import type { Page } from '@browserbasehq/stagehand';
-import { accountRequest } from '../../../lib/auth/main';
-import { getWorkspace } from './browser-workspace';
+import type { Page, Stagehand } from '@browserbasehq/stagehand';
+import type { BrowserNavigationMode } from '@scholaros/env/browser-navigation';
+import { getWorkspace, withMissionStagehand } from './browser-workspace';
 import { getOnboardingState } from './store';
 import { resolveMissionEntry } from '../lib/mission-policy';
 import { validatePreviewCards } from '../lib/preview-validation';
 import { runReadOnlyMission } from './mission';
+import { createBrowserNavigationAdapter } from './browser-navigation';
+import type { ResourceExtractionRequest } from './browser-navigation';
+import { getBrowserNavigationMode } from './browser-mode';
 import { readPage, revealCourseNavigation } from './page-content';
 import { waitForMissionPage } from './page-readiness';
 import type { AgentActivity, PreviewPrompt, PreviewState } from '../types';
@@ -98,7 +101,9 @@ const runPreview = async (
   prompt: PreviewPrompt,
   signal: AbortSignal,
   run: number,
-) => {
+  browserMode?: BrowserNavigationMode,
+  stagehand?: Stagehand,
+): Promise<void> => {
   const isActive = () => activeRun === run;
   const addActivity = (event: AgentActivity) => {
     if (!isActive()) return;
@@ -116,6 +121,9 @@ const runPreview = async (
     connections.find((item) => item.id === state.primaryLms) ?? connections[0];
   if (!connection)
     throw new Error('Connect and verify an academic resource first.');
+  const effectiveBrowserMode =
+    browserMode ??
+    (await getBrowserNavigationMode({ signal, isCurrent: isActive }));
   const composedNotes = composeAgentNotes(
     connection.host,
     connection.notes,
@@ -134,6 +142,20 @@ const runPreview = async (
     userId,
     () => isActive() && !signal.aborted,
   );
+  if (effectiveBrowserMode === 'inout' && !stagehand)
+    return withMissionStagehand(
+      workspace,
+      { signal, isCurrent: isActive },
+      (missionStagehand) =>
+        runPreview(
+          userId,
+          prompt,
+          signal,
+          run,
+          effectiveBrowserMode,
+          missionStagehand,
+        ),
+    );
   signal.throwIfAborted();
   const goal = goalForPrompt(prompt);
   await workspace.browser.context.setDomainPolicy({
@@ -141,7 +163,7 @@ const runPreview = async (
     blockedDomains: [],
   });
   const navigatePage = createMissionNavigator(
-    workspace.browser.context,
+    () => workspace.browser.context,
     hosts,
     signal,
     () => isActive(),
@@ -159,6 +181,15 @@ const runPreview = async (
     signal.throwIfAborted();
     releaseProtection = await protectMissionPage(page, workspace.cdpUrl, hosts);
     signal.throwIfAborted();
+    const navigation = createBrowserNavigationAdapter(effectiveBrowserMode, {
+      page,
+      stagehand,
+      hosts,
+      signal,
+      isCurrent: isActive,
+      assertReadable: () => releaseProtection?.assertReadable?.(),
+      onWait: () => addActivity({ type: 'waiting' }),
+    });
     addActivity({ type: 'opening', detail: connection.name });
     const mission = await runReadOnlyMission({
       connection,
@@ -175,22 +206,12 @@ const runPreview = async (
         }),
       choose: async (pages, targets) => {
         releaseProtection?.assertReadable?.();
-        const choice = await accountRequest(
-          '/api/agent',
-          {
-            kind: 'choose',
-            goal,
-            notes: composedNotes.notes,
-            pages,
-            targets,
-          },
-          signal,
-        );
-        releaseProtection?.assertReadable?.();
-        return choice as {
-          operation: 'NAVIGATE' | 'DONE' | 'BLOCKED';
-          target: string | null;
-        } | null;
+        return navigation.choose({
+          goal,
+          notes: composedNotes.notes,
+          pages,
+          targets,
+        });
       },
       addActivity,
       signal,
@@ -221,7 +242,9 @@ const runPreview = async (
         url: link.url,
       })),
     };
-    const extracted = await accountRequest('/api/agent', request, signal);
+    const extracted = await navigation.extract(
+      request as ResourceExtractionRequest,
+    );
     signal.throwIfAborted();
     releaseProtection?.assertReadable?.();
     const cards = validatePreviewCards(extracted, request);
