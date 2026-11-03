@@ -23,7 +23,6 @@
   },
   "dependencies": {
     "@ai-sdk/openai": "^4.0.105",
-    "@ai-sdk/typesafe-ai": "3.0.29",
     "@scholaros/env": "workspace:*",
     "ai": "7.0.156",
     "node-mailjet": "6.0.11",
