@@ -15,10 +15,12 @@ import type {
 import { extractDocxContent } from './docx-content';
 import {
   contextFileLimits,
+  isContextFileBatchWithinLimits,
   validateContextFile,
   type ContextFileValidationInput,
 } from './file-validation';
 import {
+  createUtilityProcessImageDecoder,
   prepareContextImage,
   type ContextImageContentResult,
   type ContextImageDecoder,
@@ -30,10 +32,11 @@ import {
 } from './preview-content';
 import { extractPdfContent, type PdfContentResult } from './pdf-content';
 
-const maxPendingIngestions = 8;
-const maxReservedBatchBytes = 24 * 1024 * 1024;
+const maxPendingIngestions = contextFileLimits.batchFiles;
 const maxInterpretedPdfPages = 20;
+const maxStoredPdfPages = 200;
 const maxExtractedCharacters = 1_000_000;
+const maxStoredTextCharacters = 2_000_000;
 const maxRememberedOperations = 256;
 
 export const ingestSelectedFileInputSchema = z.strictObject({
@@ -111,6 +114,7 @@ export type StoredContextOriginal = {
 
 export type ContextIngestionItem = {
   id: string;
+  revision: number;
   removed: boolean;
   currentVersionId: string | null;
   status: IngestionStatus;
@@ -161,6 +165,8 @@ export type ContextIngestionVersionInput = {
   itemId: string;
   attemptId: string;
   operationId: string;
+  expectedRevision: number;
+  originalIsNew: boolean;
   originalHash: string;
   originalStorageKey: string;
   contentHash: string;
@@ -309,7 +315,6 @@ type IngestionJob = {
   controller: AbortController;
   done: Promise<void>;
   resolveDone: () => void;
-  reservedBytes: number;
   state: 'queued' | 'running' | 'finished';
   onContextAbort: () => void;
 };
@@ -351,12 +356,11 @@ const shortTextHash = (
   originalHash: string,
   text: string | null,
 ) => {
+  if (text !== null) return createHash('sha256').update(text).digest('hex');
   const digest = createHash('sha256');
   digest.update(mimeType);
   digest.update('\0');
   digest.update(originalHash);
-  digest.update('\0');
-  digest.update(text ?? '');
   return digest.digest('hex');
 };
 
@@ -415,7 +419,7 @@ const formatPdfText = (pages: Array<{ pageNumber: number; text: string }>) =>
 
 const pdfLocators = (pages: Array<{ pageNumber: number; text: string }>) =>
   pages
-    .slice(0, 200)
+    .slice(0, maxStoredPdfPages)
     .map(({ pageNumber }) => ({ kind: 'page' as const, page: pageNumber }));
 
 const validInterpretedPages = (
@@ -487,6 +491,11 @@ const contextErrorCode = (error: unknown): ContextIngestionErrorCode => {
   return 'storage-failed';
 };
 
+const interpretationErrorCode = (error: unknown): ContextIngestionErrorCode => {
+  const code = contextErrorCode(error);
+  return code === 'storage-failed' ? 'provider-failed' : code;
+};
+
 const assertRequest = <T>(schema: z.ZodType<T>, input: unknown): T => {
   const parsed = schema.safeParse(input);
   if (!parsed.success) throw new ContextIngestionError('invalid-input');
@@ -524,6 +533,10 @@ export const createContextIngestionService = (
   dependencies: ContextIngestionDependencies,
 ): ContextIngestionService => {
   const queue: IngestionJob[] = [];
+  const imageDecoder =
+    dependencies.imageDecoder === undefined
+      ? createUtilityProcessImageDecoder()
+      : dependencies.imageDecoder;
   const jobs = new Map<string, IngestionJob>();
   const ticketOperations = new Map<string, string>();
   const ticketAdmissions = new Map<
@@ -532,7 +545,7 @@ export const createContextIngestionService = (
   >();
   const retryOperations = new Map<string, string>();
   const retryAdmissions = new Map<string, Promise<{ operationId: string }>>();
-  let reservedBytes = 0;
+  const reservedFileBytes = new Map<string, number>();
   let pendingAdmissions = 0;
   let activeJob: IngestionJob | null = null;
   let drainPromise: Promise<void> | null = null;
@@ -561,6 +574,7 @@ export const createContextIngestionService = (
     );
     if (!item || item.removed)
       throw new ContextIngestionError('permission-revoked');
+    return item;
   };
 
   const saveSpecificAttemptStatus = async (
@@ -618,17 +632,24 @@ export const createContextIngestionService = (
     job: IngestionJob,
     version: Omit<
       ContextIngestionVersionInput,
-      'itemId' | 'attemptId' | 'operationId' | 'signal'
+      | 'itemId'
+      | 'attemptId'
+      | 'operationId'
+      | 'expectedRevision'
+      | 'originalIsNew'
+      | 'signal'
     > & {
       attemptId?: string;
     },
   ) => {
-    await assertItemAvailable(job);
+    const item = await assertItemAvailable(job);
     const result = await dependencies.writeVersion(job.context, {
       ...version,
       itemId: job.itemId,
       attemptId: version.attemptId ?? job.attemptId,
       operationId: job.operationId,
+      expectedRevision: item.revision,
+      originalIsNew: job.source.kind === 'ticket',
       signal: job.controller.signal,
     });
     emit(makeEvent(job.context, result.revision, job.itemId, job.operationId));
@@ -661,8 +682,9 @@ export const createContextIngestionService = (
 
   const finishJob = (job: IngestionJob) => {
     job.state = 'finished';
-    jobs.delete(operationKey(job.context, job.operationId));
-    reservedBytes = Math.max(0, reservedBytes - job.reservedBytes);
+    const key = operationKey(job.context, job.operationId);
+    jobs.delete(key);
+    reservedFileBytes.delete(key);
     job.context.signal.removeEventListener('abort', job.onContextAbort);
     job.resolveDone();
   };
@@ -690,7 +712,7 @@ export const createContextIngestionService = (
     const parsePdf = dependencies.extractPdf ?? extractPdfContent;
     const parsed = await parsePdf(file.bytes, {
       signal: job.controller.signal,
-      maxPages: 200,
+      maxPages: maxStoredPdfPages,
       maxCharacters: maxExtractedCharacters,
       timeoutMs: 15_000,
     });
@@ -700,17 +722,22 @@ export const createContextIngestionService = (
     const localTextTruncated =
       fullPdfText(pages).length > maxExtractedCharacters;
     const pageCount = Math.max(parsed.pageCount, pages.at(-1)?.pageNumber ?? 0);
+    const pageCountOutOfBounds = pageCount > maxStoredPdfPages;
+    const storedPageCount = pageCountOutOfBounds ? null : pageCount;
     if (parsed.status !== 'unreadable' && localText.trim()) {
       const status =
-        parsed.status === 'partial' || localTextTruncated
+        parsed.status === 'partial' ||
+        localTextTruncated ||
+        pageCountOutOfBounds
           ? 'partial'
           : 'complete';
-      const uncertainty =
-        status === 'partial'
-          ? localTextTruncated
-            ? 'PDF text was truncated at the extraction limit.'
-            : 'PDF text extraction reached a processing limit.'
-          : null;
+      const uncertainty = localTextTruncated
+        ? 'PDF text was truncated at the extraction limit.'
+        : pageCountOutOfBounds
+          ? 'PDF exceeds the 200-page processing limit; some pages were not extracted.'
+          : status === 'partial'
+            ? 'PDF text extraction reached a processing limit.'
+            : null;
       await persistVersion(job, {
         originalHash: original.originalHash,
         originalStorageKey: original.storageKey,
@@ -723,7 +750,7 @@ export const createContextIngestionService = (
         byteLength: file.bytes.byteLength,
         extractedText: localText,
         extractionStatus: status,
-        pageCount,
+        pageCount: storedPageCount,
         interpretedPages: [],
         uncertainty,
         locators: pdfLocators(pages),
@@ -737,8 +764,9 @@ export const createContextIngestionService = (
       return;
     }
 
-    const scanUncertainty =
-      pageCount > maxInterpretedPdfPages
+    const scanUncertainty = pageCountOutOfBounds
+      ? 'Scanned PDF exceeds the 200-page processing limit; some pages were not extracted.'
+      : pageCount > maxInterpretedPdfPages
         ? 'This scanned PDF exceeds the 20-page interpretation limit; no pages were sent.'
         : 'No selectable PDF text was found; visual interpretation is required.';
     await persistVersion(job, {
@@ -753,7 +781,7 @@ export const createContextIngestionService = (
       byteLength: file.bytes.byteLength,
       extractedText: null,
       extractionStatus: 'partial',
-      pageCount,
+      pageCount: storedPageCount,
       interpretedPages: [],
       uncertainty: scanUncertainty,
       locators: pdfLocators(pages),
@@ -868,21 +896,19 @@ export const createContextIngestionService = (
       });
       await completeAttempt(job, finalStatus, undefined, uncertainty);
     } catch (error) {
-      const status =
-        contextErrorCode(error) === 'cancelled' ? 'cancelled' : 'failed';
+      const errorCode = interpretationErrorCode(error);
+      const status = errorCode === 'cancelled' ? 'cancelled' : 'failed';
       try {
         await saveSpecificAttemptStatus(
           job,
           interpretationAttemptId,
           status,
-          contextErrorCode(error),
+          errorCode,
         );
       } catch {
         return;
       }
-      if (status === 'cancelled')
-        await completeAttempt(job, 'cancelled', 'cancelled');
-      else throw error;
+      await completeAttempt(job, status, errorCode);
     }
   };
 
@@ -898,7 +924,7 @@ export const createContextIngestionService = (
       dependencies.prepareImage ??
       ((bytes, mimeType, signal) =>
         prepareContextImage(bytes, mimeType, {
-          decode: dependencies.imageDecoder ?? null,
+          decode: imageDecoder,
           signal,
         }));
     const prepared = await prepare(
@@ -1022,21 +1048,19 @@ export const createContextIngestionService = (
       });
       await completeAttempt(job, finalStatus, undefined, uncertainty);
     } catch (error) {
-      const status =
-        contextErrorCode(error) === 'cancelled' ? 'cancelled' : 'failed';
+      const errorCode = interpretationErrorCode(error);
+      const status = errorCode === 'cancelled' ? 'cancelled' : 'failed';
       try {
         await saveSpecificAttemptStatus(
           job,
           interpretationAttemptId,
           status,
-          contextErrorCode(error),
+          errorCode,
         );
       } catch {
         return;
       }
-      if (status === 'cancelled')
-        await completeAttempt(job, 'cancelled', 'cancelled');
-      else throw error;
+      await completeAttempt(job, status, errorCode);
     }
   };
 
@@ -1122,7 +1146,25 @@ export const createContextIngestionService = (
 
       switch (validated.kind) {
         case 'text': {
-          const text = validated.text ?? '';
+          const sourceText = validated.text ?? '';
+          const textLimit = Math.min(
+            sourceText.length,
+            maxStoredTextCharacters,
+          );
+          const lastCodeUnit = sourceText.charCodeAt(textLimit - 1);
+          const endsWithSplitSurrogate =
+            textLimit < sourceText.length &&
+            lastCodeUnit >= 0xd800 &&
+            lastCodeUnit <= 0xdbff;
+          const text = sourceText.slice(
+            0,
+            textLimit - (endsWithSplitSurrogate ? 1 : 0),
+          );
+          const textTruncated = sourceText.length > text.length;
+          const uncertainty = textTruncated
+            ? 'Text extraction was truncated at the 2,000,000-character storage limit.'
+            : null;
+          const status = textTruncated ? 'partial' : 'complete';
           await persistVersion(job, {
             originalHash: original.originalHash,
             originalStorageKey: original.storageKey,
@@ -1134,16 +1176,16 @@ export const createContextIngestionService = (
             mimeType: validated.mimeType,
             byteLength: bytes.byteLength,
             extractedText: text,
-            extractionStatus: 'complete',
+            extractionStatus: status,
             pageCount: null,
             interpretedPages: [],
-            uncertainty: null,
+            uncertainty,
             locators: textLocators(
               text,
               validated.mimeType === 'text/markdown',
             ),
           });
-          await completeAttempt(job, 'complete');
+          await completeAttempt(job, status, undefined, uncertainty);
           return;
         }
         case 'docx': {
@@ -1255,9 +1297,14 @@ export const createContextIngestionService = (
       maxPendingIngestions
     )
       throw new ContextIngestionError('busy');
-    if (reservedBytes + input.fileInfo.byteLength > maxReservedBatchBytes)
+    if (
+      !isContextFileBatchWithinLimits([
+        ...reservedFileBytes.values(),
+        input.fileInfo.byteLength,
+      ])
+    )
       throw new ContextIngestionError('limit-exceeded');
-    reservedBytes += input.fileInfo.byteLength;
+    reservedFileBytes.set(key, input.fileInfo.byteLength);
 
     let attempt: Awaited<
       ReturnType<ContextIngestionDependencies['writeAttempt']>
@@ -1271,11 +1318,11 @@ export const createContextIngestionService = (
         status: 'queued',
       });
     } catch (error) {
-      reservedBytes = Math.max(0, reservedBytes - input.fileInfo.byteLength);
+      reservedFileBytes.delete(key);
       throw error;
     }
     if (attempt.existing) {
-      reservedBytes = Math.max(0, reservedBytes - input.fileInfo.byteLength);
+      reservedFileBytes.delete(key);
       return {
         operationId: attempt.operationId ?? input.operationId,
         existing: true,
@@ -1297,7 +1344,6 @@ export const createContextIngestionService = (
       controller,
       done,
       resolveDone,
-      reservedBytes: input.fileInfo.byteLength,
       state: 'queued' as const,
       onContextAbort,
     } as IngestionJob & { onContextAbort: () => void };
@@ -1510,7 +1556,7 @@ export const createContextIngestionService = (
           dependencies.prepareImage ??
           ((bytes, mimeType, signal) =>
             prepareContextImage(bytes, mimeType, {
-              decode: dependencies.imageDecoder ?? null,
+              decode: imageDecoder,
               signal,
             }));
         const prepared = await prepare(

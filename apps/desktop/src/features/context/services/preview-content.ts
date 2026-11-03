@@ -7,6 +7,7 @@ import {
 const maxPreviewTextCharacters = 50_000;
 const maxPreviewLocators = 200;
 const maxPreviewImageBytes = 1_048_576;
+const maxPreviewImageEdge = 512;
 
 export type TextPreviewInput = {
   text: string;
@@ -50,7 +51,8 @@ export const createImagePreview = (
     !Number.isSafeInteger(input.width) ||
     !Number.isSafeInteger(input.height) ||
     input.width <= 0 ||
-    input.height <= 0
+    input.height <= 0 ||
+    Math.max(input.width, input.height) > maxPreviewImageEdge
   )
     return { kind: 'unavailable', reason: 'unreadable' };
   const parsed = contextPreviewSchema.safeParse({
