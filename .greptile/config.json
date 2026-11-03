@@ -1,5 +1,7 @@
 {
-  "autoReview": ["open"],
+  "autoReview": [],
   "triggerOnUpdates": false,
-  "triggerOnDrafts": false
+  "triggerOnDrafts": false,
+  "effort": "apex",
+  "statusCheck": true
 }
