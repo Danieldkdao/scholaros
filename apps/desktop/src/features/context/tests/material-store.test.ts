@@ -279,6 +279,29 @@ describe('course material storage', () => {
     expect(ftsCount('Mitochondria').count).toBe(1);
   });
 
+  it('does not reactivate a suppressed material during refresh', () => {
+    const previous = write('Mitochondria power the cell.')!;
+    db.$client
+      .prepare(
+        'UPDATE course_materials SET suppression_id = ?, suppressed_at = ? WHERE id = ?',
+      )
+      .run('student-hidden-material', secondTime, previous.material.id);
+
+    const refreshed = write('Cell membranes control transport.', secondTime);
+
+    expect(refreshed).toBeNull();
+    expect(db.select().from(CourseMaterialTable).all()).toMatchObject([
+      {
+        id: previous.material.id,
+        suppressionId: 'student-hidden-material',
+        suppressedAt: secondTime,
+        currentUsableVersion: previous.material.contentHash,
+      },
+    ]);
+    expect(ftsCount('Mitochondria').count).toBe(1);
+    expect(ftsCount('membranes').count).toBe(0);
+  });
+
   it('preserves the previous version if a passage write fails inside the transaction', () => {
     const first = write('# Syllabus\nFinal exam: December 8, 2026.')!;
     const content = buildContent('# Syllabus\nFinal exam: December 9, 2026.');
