@@ -1631,7 +1631,24 @@ export const saveContextIngestionResult = async (
   input: unknown,
 ): Promise<ContextItemDTO> => {
   assertAuthorized(context);
-  const parsed = parseOrThrow(contextVersionWriteInputSchema, input);
+  const result = contextVersionWriteInputSchema.safeParse(input);
+  if (!result.success) {
+    // Only a syntactically valid, explicitly transferred key may be cleaned up.
+    // The original store checks its account scope and the reference check keeps
+    // any version-owned bytes, including historical checkpoints.
+    const ownership = z
+      .object({
+        originalIsNew: z.literal(true),
+        originalStorageKey: z.string().min(1).max(160),
+      })
+      .safeParse(input);
+    if (ownership.success)
+      await removeOriginalKeysIfUnreferenced(context.userId, [
+        ownership.data.originalStorageKey,
+      ]).catch(() => {});
+    throw new ContextStoreError('invalid-input');
+  }
+  const parsed = result.data;
   const cleanupNewOriginal = async () => {
     if (parsed.originalIsNew && parsed.originalStorageKey)
       await removeOriginalKeysIfUnreferenced(context.userId, [

@@ -52,6 +52,7 @@ const {
   resolveHistoricalContextCitation,
   saveGeneratedContextItem,
   saveContextIngestionResult,
+  setContextIngestionStatus,
   updateContextItem,
 } = await import('../services/library-store');
 
@@ -1199,5 +1200,303 @@ describe('Context library store', () => {
     await expect(
       getContextItem(cancelledContext, { itemId: note.id }),
     ).resolves.toBeNull();
+  });
+});
+
+describe('P09 ingestion against P08 storage', () => {
+  it('removes a newly owned orphan after schema rejection without removing referenced bytes', async () => {
+    const itemId = randomUUID();
+    await createUploadedContextItem(context, {
+      itemId,
+      title: 'scan.pdf',
+      kind: 'document',
+      saveToLibrary: true,
+    });
+    const bytes = Buffer.from('original');
+    const original = await originalStore.write(userId, bytes);
+    const valid = {
+      itemId,
+      expectedRevision: 0,
+      attemptId: randomUUID(),
+      originalHash: original.hash,
+      contentHash: createHash('sha256').update('saved').digest('hex'),
+      mimeType: 'application/pdf',
+      byteLength: bytes.length,
+      originalStorageKey: original.storageKey,
+      extractedText: 'saved',
+      extractionStatus: 'complete',
+      uncertainty: null,
+      pageCount: 1,
+      interpretedPages: [],
+      locators: [],
+      originalIsNew: true,
+    };
+    await saveContextIngestionResult(context, valid);
+    const orphan = await originalStore.write(userId, bytes);
+    await expect(
+      saveContextIngestionResult(context, {
+        ...valid,
+        attemptId: randomUUID(),
+        originalStorageKey: orphan.storageKey,
+        mimeType: '',
+      }),
+    ).rejects.toThrow();
+    expect(await originalStore.has(userId, orphan.storageKey)).toBe(false);
+    await expect(
+      saveContextIngestionResult(context, {
+        ...valid,
+        attemptId: randomUUID(),
+        mimeType: '',
+      }),
+    ).rejects.toThrow();
+    expect(await originalStore.read(userId, original.storageKey)).toEqual(
+      bytes,
+    );
+  });
+
+  it('fences stale revisions and foreign accounts while retaining referenced originals', async () => {
+    const itemId = randomUUID();
+    await createUploadedContextItem(context, {
+      itemId,
+      title: 'scan.pdf',
+      kind: 'document',
+      saveToLibrary: true,
+    });
+    const bytes = Buffer.from('retained original');
+    const original = await originalStore.write(userId, bytes);
+    const payload = {
+      itemId,
+      expectedRevision: 0,
+      attemptId: randomUUID(),
+      originalHash: original.hash,
+      contentHash: createHash('sha256').update('saved').digest('hex'),
+      mimeType: 'application/pdf',
+      byteLength: bytes.length,
+      originalStorageKey: original.storageKey,
+      extractedText: 'saved',
+      extractionStatus: 'complete',
+      uncertainty: null,
+      pageCount: 1,
+      interpretedPages: [],
+      locators: [],
+      originalIsNew: true,
+    };
+    const saved = await saveContextIngestionResult(context, payload);
+    await expect(
+      saveContextIngestionResult(context, {
+        ...payload,
+        attemptId: randomUUID(),
+      }),
+    ).rejects.toMatchObject({ code: 'revision-conflict' });
+    const foreign = { ...context, userId: 'other-account' };
+    await expect(
+      saveContextIngestionResult(foreign, {
+        ...payload,
+        attemptId: randomUUID(),
+        expectedRevision: saved.revision,
+      }),
+    ).rejects.toThrow();
+    const stale = { ...context, isCurrent: () => false };
+    await expect(
+      saveContextIngestionResult(stale, {
+        ...payload,
+        attemptId: randomUUID(),
+        expectedRevision: saved.revision,
+      }),
+    ).rejects.toThrow();
+    expect(
+      (await getContextItem(context, { itemId }))?.item.currentVersionId,
+    ).toBe(saved.currentVersionId);
+    expect(db.select().from(ContextVersionTable).all()).toHaveLength(1);
+    expect(await originalStore.read(userId, original.storageKey)).toEqual(
+      bytes,
+    );
+  });
+
+  it('retries a scanned checkpoint without a current version from persisted bytes', async () => {
+    const { createContextIngestionService } =
+      await import('../services/ingestion');
+    const bytes = Buffer.from('%PDF-1.7\nsynthetic pages');
+    const itemId = randomUUID();
+    await createUploadedContextItem(context, {
+      itemId,
+      title: 'scan.pdf',
+      kind: 'document',
+      saveToLibrary: true,
+    });
+    const writeErrors: unknown[] = [];
+    let interpretedText: string | null = null;
+    const readItem = async (ctx: AuthorizedContext, id: string) => {
+      const detail = await getContextItem(ctx, { itemId: id });
+      return detail ? { ...detail.item, removed: false } : null;
+    };
+    const service = createContextIngestionService({
+      inspectSelectedFile: async () => ({
+        fileName: 'scan.pdf',
+        contentType: 'application/pdf',
+        byteLength: bytes.length,
+      }),
+      readSelectedFile: async () => bytes,
+      readItem,
+      readVersion: async (ctx, id, versionId) => {
+        if (!ctx.isCurrent() || ctx.signal.aborted) return null;
+        const item = await readItem(ctx, id);
+        if (!item) return null;
+        return (
+          db
+            .select()
+            .from(ContextVersionTable)
+            .all()
+            .find(
+              (v) =>
+                v.userId === ctx.userId &&
+                v.itemId === id &&
+                v.id === (versionId ?? item.currentVersionId),
+            ) ?? null
+        );
+      },
+      storeOriginal: async (ctx, input) => {
+        const stored = await originalStore.write(ctx.userId, input.bytes);
+        return { originalHash: stored.hash, storageKey: stored.storageKey };
+      },
+      readOriginal: async (ctx, id, _signal, key) => {
+        if (!(await readItem(ctx, id))) return null;
+        const versions = db
+          .select()
+          .from(ContextVersionTable)
+          .all()
+          .filter(
+            (v) =>
+              v.userId === ctx.userId &&
+              v.itemId === id &&
+              v.originalStorageKey &&
+              (!key || v.originalStorageKey === key),
+          );
+        const v = versions.at(-1);
+        if (!v?.originalStorageKey) return null;
+        return {
+          fileName: 'scan.pdf',
+          contentType: v.mimeType,
+          originalHash: v.originalHash,
+          storageKey: v.originalStorageKey,
+          bytes: await originalStore.read(
+            ctx.userId,
+            v.originalStorageKey,
+            v.originalHash,
+          ),
+        };
+      },
+      writeAttempt: async (ctx, input) => {
+        const item = await readItem(ctx, input.itemId);
+        if (!item) throw Error('missing item');
+        return {
+          revision: (
+            await setContextIngestionStatus(ctx, {
+              itemId: input.itemId,
+              expectedRevision: item.revision,
+              status: input.status,
+            })
+          ).revision,
+        };
+      },
+      updateAttemptStatus: async (ctx, input) => {
+        const item = await readItem(ctx, input.itemId);
+        if (!item) throw Error('missing item');
+        return {
+          revision: (
+            await setContextIngestionStatus(ctx, {
+              itemId: input.itemId,
+              expectedRevision: item.revision,
+              status: input.status,
+            })
+          ).revision,
+        };
+      },
+      writeVersion: async (ctx, input) => {
+        const { signal, operationId: _operationId, ...stored } = input;
+        if (signal.aborted) throw Error('aborted');
+        try {
+          const item = await saveContextIngestionResult(ctx, stored);
+          const version = db
+            .select()
+            .from(ContextVersionTable)
+            .all()
+            .find(
+              (v) =>
+                v.itemId === input.itemId && v.attemptId === input.attemptId,
+            )!;
+          return {
+            versionId: version.id,
+            revision: item.revision,
+            currentVersionId: item.currentVersionId,
+            usable: item.usable,
+          };
+        } catch (error) {
+          writeErrors.push(error);
+          throw error;
+        }
+      },
+      publish: () => {},
+      extractPdf: async () => ({ status: 'complete', pageCount: 1, text: '' }),
+      interpretMetaPdf: async () =>
+        interpretedText === null
+          ? {
+              status: 'unreadable',
+              pages: [],
+              interpretedPages: [],
+              uncertainty: null,
+            }
+          : {
+              status: 'complete',
+              pages: [
+                { pageNumber: 1, text: interpretedText, uncertainty: null },
+              ],
+              interpretedPages: [1],
+              uncertainty: null,
+            },
+    });
+    await service.ingestSelectedFile(context, { itemId, ticketId: 'ticket' });
+    await service.whenIdle();
+    const first = await getContextItem(context, { itemId });
+    expect(writeErrors).toEqual([]);
+    expect(first?.item.currentVersionId).toBeNull();
+    expect(first?.versions).toHaveLength(1);
+    const originalKey = db
+      .select()
+      .from(ContextVersionTable)
+      .all()[0]!.originalStorageKey!;
+    expect(await originalStore.read(userId, originalKey)).toEqual(bytes);
+    interpretedText = 'Recovered from the scan';
+    await service.retryContextIngestion(context, {
+      itemId,
+      requestId: randomUUID(),
+    });
+    await service.whenIdle();
+    expect(writeErrors).toEqual([]);
+    const recovered = await getContextItem(context, { itemId });
+    expect(recovered?.item.usable).toBe(true);
+    expect(recovered?.item.currentVersionId).not.toBeNull();
+    interpretedText = null;
+    await service.retryContextIngestion(context, {
+      itemId,
+      requestId: randomUUID(),
+    });
+    await service.whenIdle();
+    expect(writeErrors).toEqual([]);
+    const afterFailure = await getContextItem(context, { itemId });
+    expect(afterFailure?.item.currentVersionId).toBe(
+      recovered?.item.currentVersionId,
+    );
+    const versions = db.select().from(ContextVersionTable).all();
+    expect(versions).toHaveLength(4);
+    expect(versions.map((v) => v.originalStorageKey)).toEqual([
+      originalKey,
+      originalKey,
+      originalKey,
+      originalKey,
+    ]);
+    expect(new Set(versions.map((v) => v.attemptId)).size).toBe(4);
+    expect(versions[2]?.extractedText).toContain('Recovered from the scan');
+    expect(await originalStore.read(userId, originalKey)).toEqual(bytes);
   });
 });
