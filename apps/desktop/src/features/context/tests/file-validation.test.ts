@@ -1,6 +1,12 @@
 import { deflateRawSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
-import { validateContextFile } from '../services/file-validation';
+import {
+  contextFileLimits,
+  inspectImageHeader,
+  isContextFileBatchWithinLimits,
+  validateContextFile,
+  type ContextFileValidationInput,
+} from '../services/file-validation';
 
 const crc32 = (bytes: Buffer) => {
   let crc = 0xffffffff;
@@ -12,16 +18,15 @@ const crc32 = (bytes: Buffer) => {
   return (crc ^ 0xffffffff) >>> 0;
 };
 
-const docxBytes = () => {
+const docxBytes = (
+  rootRelationshipsXml = '<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
+) => {
   const files = [
     [
       '[Content_Types].xml',
       '<Types><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
     ],
-    [
-      '_rels/.rels',
-      '<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
-    ],
+    ['_rels/.rels', rootRelationshipsXml],
     ['word/document.xml', '<w:document/>'],
   ] as const;
   const localRecords: Buffer[] = [];
@@ -78,6 +83,32 @@ const pngBytes = (width = 1, height = 1) => {
   return bytes;
 };
 
+const pngChunk = (type: string, data: Buffer) => {
+  const chunk = Buffer.alloc(12 + data.length);
+  chunk.writeUInt32BE(data.length, 0);
+  chunk.write(type, 4, 'ascii');
+  data.copy(chunk, 8);
+  chunk.writeUInt32BE(
+    crc32(chunk.subarray(4, 8 + data.length)),
+    8 + data.length,
+  );
+  return chunk;
+};
+
+const pngContainerWithoutImageData = () => {
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(1, 0);
+  header.writeUInt32BE(1, 4);
+  header[8] = 8;
+  header[9] = 2;
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    pngChunk('IHDR', header),
+    pngChunk('IDAT', Buffer.alloc(0)),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
+};
+
 const jpegBytes = (width = 1, height = 1) =>
   Buffer.from([
     0xff,
@@ -105,6 +136,13 @@ const jpegBytes = (width = 1, height = 1) =>
     0xd9,
   ]);
 
+const jpegBytesWithEmptyScan = () =>
+  Buffer.concat([
+    jpegBytes().subarray(0, -2),
+    Buffer.from([0xff, 0xda, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3f, 0x00]),
+    Buffer.from([0xff, 0xd9]),
+  ]);
+
 const webpBytes = (width = 1, height = 1, animated = false) => {
   const bytes = Buffer.alloc(30);
   bytes.write('RIFF', 0, 'ascii');
@@ -118,6 +156,29 @@ const webpBytes = (width = 1, height = 1, animated = false) => {
   return bytes;
 };
 
+const validPngBytes = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADUlEQVQImWP4z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==',
+  'base64',
+);
+const pngWithTextPadding = (totalBytes: number) => {
+  const textData = Buffer.alloc(totalBytes - validPngBytes.length - 12, 0x78);
+  Buffer.from('padding\0').copy(textData);
+  const iendOffset = validPngBytes.length - 12;
+  return Buffer.concat([
+    validPngBytes.subarray(0, iendOffset),
+    pngChunk('tEXt', textData),
+    validPngBytes.subarray(iendOffset),
+  ]);
+};
+const validJpegBytes = Buffer.from(
+  '/9j/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQODwwQFxQYGBcUFhYaHSUfGhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/2wBDAQcHBwoIChMKChMoGhYaKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCj/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAf/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAABgj/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdABykX//Z',
+  'base64',
+);
+const validWebpBytes = Buffer.from(
+  'UklGRjwAAABXRUJQVlA4IDAAAADQAQCdASoBAAEAAUAmJaACdLoB+AADsAD+8ut//NgVzXPv9//S4P0uD9Lg/9KQAAA=',
+  'base64',
+);
+
 describe('validateContextFile', () => {
   it.each([
     ['notes.txt', 'text/plain', Buffer.from('A short note', 'utf8'), 'text'],
@@ -129,9 +190,9 @@ describe('validateContextFile', () => {
       docxBytes(),
       'docx',
     ],
-    ['photo.png', 'image/png', pngBytes(), 'image'],
-    ['photo.jpeg', 'image/jpeg', jpegBytes(), 'image'],
-    ['photo.webp', 'image/webp', webpBytes(), 'image'],
+    ['photo.png', 'image/png', validPngBytes, 'image'],
+    ['photo.jpeg', 'image/jpeg', validJpegBytes, 'image'],
+    ['photo.webp', 'image/webp', validWebpBytes, 'image'],
   ])(
     'accepts bounded %s by its actual content',
     (fileName, contentType, bytes, kind) => {
@@ -140,6 +201,22 @@ describe('validateContextFile', () => {
       expect(result.status).toBe('valid');
       if (result.status !== 'valid') throw new Error('Expected a valid file.');
       expect(result.kind).toBe(kind);
+    },
+  );
+
+  it.each(['Exter&#x6e;al', 'Exter&#110;al'])(
+    'rejects an external DOCX relationship hidden by a character reference',
+    (targetMode) => {
+      const rootRelationshipsXml = `<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.invalid/" TargetMode="${targetMode}"/></Relationships>`;
+
+      expect(
+        validateContextFile({
+          fileName: 'reading.docx',
+          contentType:
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          bytes: docxBytes(rootRelationshipsXml),
+        }),
+      ).toMatchObject({ status: 'unsupported', reason: 'unsafe-archive' });
     },
   );
 
@@ -217,6 +294,13 @@ describe('validateContextFile', () => {
     ).toMatchObject({ status: 'unsupported', reason: 'limit-exceeded' });
   });
 
+  it('accepts exactly 20 megapixels at image header preflight', () => {
+    expect(inspectImageHeader(pngBytes(5000, 4000))).toMatchObject({
+      status: 'valid',
+      image: { width: 5000, height: 4000 },
+    });
+  });
+
   it('rejects animated WebP rather than decoding unbounded frames', () => {
     expect(
       validateContextFile({
@@ -225,5 +309,198 @@ describe('validateContextFile', () => {
         bytes: webpBytes(1, 1, true),
       }),
     ).toMatchObject({ status: 'unsupported', reason: 'animated-image' });
+  });
+
+  it('rejects PDF bytes selected as plain text even when the header is UTF-8', () => {
+    expect(
+      validateContextFile({
+        fileName: 'notes.txt',
+        contentType: 'text/plain',
+        bytes: Buffer.from('%PDF-1.7\\n'),
+      }),
+    ).toMatchObject({ status: 'unsupported', reason: 'mislabeled' });
+  });
+
+  it('rejects PNG chunks with corrupt checksums', () => {
+    const bytes = Buffer.from(validPngBytes);
+    const idatOffset = bytes.indexOf('IDAT');
+    const idatLength = bytes.readUInt32BE(idatOffset - 4);
+    const checksumOffset = idatOffset + 4 + idatLength;
+    bytes[checksumOffset] = bytes[checksumOffset]! ^ 1;
+
+    expect(
+      validateContextFile({
+        fileName: 'photo.png',
+        contentType: 'image/png',
+        bytes,
+      }),
+    ).toMatchObject({ status: 'unreadable', reason: 'invalid-container' });
+  });
+
+  it.each([
+    ['PNG', 'photo.png', 'image/png', pngContainerWithoutImageData()],
+    ['JPEG', 'photo.jpg', 'image/jpeg', jpegBytesWithEmptyScan()],
+  ])(
+    'rejects %s containers with no image payload',
+    (_format, fileName, contentType, bytes) => {
+      expect(
+        validateContextFile({ fileName, contentType, bytes }),
+      ).toMatchObject({
+        status: 'unreadable',
+        reason: 'invalid-container',
+      });
+    },
+  );
+
+  it.each([
+    ['PNG', 'photo.png', 'image/png', pngBytes()],
+    ['JPEG', 'photo.jpg', 'image/jpeg', jpegBytes()],
+    ['WebP', 'photo.webp', 'image/webp', webpBytes()],
+  ])(
+    'rejects a truncated %s container',
+    (_format, fileName, contentType, bytes) => {
+      expect(
+        validateContextFile({ fileName, contentType, bytes }),
+      ).toMatchObject({
+        status: 'unreadable',
+        reason: 'invalid-container',
+      });
+    },
+  );
+
+  it('rejects invalid runtime selection metadata without throwing', () => {
+    expect(() =>
+      validateContextFile(null as unknown as ContextFileValidationInput),
+    ).not.toThrow();
+    expect(
+      validateContextFile(null as unknown as ContextFileValidationInput),
+    ).not.toMatchObject({ status: 'valid' });
+  });
+
+  it('exposes bounded per-file and aggregate intake limits', () => {
+    const MiB = 1024 * 1024;
+
+    expect(contextFileLimits).toMatchObject({
+      documentBytes: 10 * MiB,
+      textBytes: 2 * MiB,
+      imageBytes: 8 * MiB,
+      imagePixels: 20_000_000,
+      batchBytes: 24 * MiB,
+      batchFiles: 8,
+    });
+    expect(isContextFileBatchWithinLimits([10 * MiB, 10 * MiB, 4 * MiB])).toBe(
+      true,
+    );
+    expect(
+      isContextFileBatchWithinLimits([10 * MiB, 10 * MiB, 4 * MiB + 1]),
+    ).toBe(false);
+    expect(isContextFileBatchWithinLimits(Array(9).fill(0))).toBe(false);
+    expect(isContextFileBatchWithinLimits([Number.NaN])).toBe(false);
+    expect(isContextFileBatchWithinLimits([-1])).toBe(false);
+    expect(isContextFileBatchWithinLimits([10 * MiB + 1])).toBe(false);
+  });
+
+  it('rejects oversized images before accepting their advertised dimensions', () => {
+    const bytes = Buffer.concat([
+      validPngBytes,
+      Buffer.alloc(contextFileLimits.imageBytes + 1 - validPngBytes.length),
+    ]);
+
+    expect(
+      validateContextFile({
+        fileName: 'large.png',
+        contentType: 'image/png',
+        bytes,
+      }),
+    ).toMatchObject({ status: 'unsupported', reason: 'limit-exceeded' });
+  });
+
+  it('accepts a valid image exactly at its byte limit', () => {
+    const bytes = pngWithTextPadding(contextFileLimits.imageBytes);
+
+    expect(bytes.byteLength).toBe(contextFileLimits.imageBytes);
+    expect(
+      validateContextFile({
+        fileName: 'large.png',
+        contentType: 'image/png',
+        bytes,
+      }),
+    ).toMatchObject({ status: 'valid', kind: 'image' });
+  });
+
+  it('accepts strict UTF-8 text exactly at its byte limit', () => {
+    const bytes = Buffer.alloc(contextFileLimits.textBytes, 0x61);
+
+    expect(
+      validateContextFile({
+        fileName: 'notes.txt',
+        contentType: 'text/plain',
+        bytes,
+      }),
+    ).toMatchObject({ status: 'valid', kind: 'text' });
+  });
+
+  it('enforces the 10 MiB original boundary for PDFs and DOCX', () => {
+    const pdfBytes = Buffer.alloc(contextFileLimits.documentBytes, 0x20);
+    Buffer.from('%PDF-1.7\\n').copy(pdfBytes);
+    expect(
+      validateContextFile({
+        fileName: 'large.pdf',
+        contentType: 'application/pdf',
+        bytes: pdfBytes,
+      }),
+    ).toMatchObject({ status: 'valid', kind: 'pdf' });
+
+    const oversizedPdf = Buffer.alloc(
+      contextFileLimits.documentBytes + 1,
+      0x20,
+    );
+    Buffer.from('%PDF-1.7\\n').copy(oversizedPdf);
+    const oversizedDocx = Buffer.alloc(contextFileLimits.documentBytes + 1);
+    Buffer.from([0x50, 0x4b, 0x03, 0x04]).copy(oversizedDocx);
+    expect(
+      validateContextFile({
+        fileName: 'large.pdf',
+        contentType: 'application/pdf',
+        bytes: oversizedPdf,
+      }),
+    ).toMatchObject({ status: 'unsupported', reason: 'limit-exceeded' });
+    expect(
+      validateContextFile({
+        fileName: 'large.docx',
+        contentType:
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        bytes: oversizedDocx,
+      }),
+    ).toMatchObject({ status: 'unsupported', reason: 'limit-exceeded' });
+  });
+
+  it.each([
+    '../notes.txt',
+    'C:\\notes.txt',
+    `notes.txt${String.fromCharCode(0)}`,
+  ])('rejects unsafe selected filename %s', (fileName) => {
+    expect(
+      validateContextFile({
+        fileName,
+        contentType: 'text/plain',
+        bytes: Buffer.from('text'),
+      }),
+    ).toMatchObject({ status: 'unsupported', reason: 'mislabeled' });
+  });
+
+  it('rejects a generic ZIP selected as supported text', () => {
+    const emptyZip = Buffer.concat([
+      Buffer.from([0x50, 0x4b, 0x05, 0x06]),
+      Buffer.alloc(18),
+    ]);
+
+    expect(
+      validateContextFile({
+        fileName: 'archive.txt',
+        contentType: 'text/plain',
+        bytes: emptyZip,
+      }),
+    ).toMatchObject({ status: 'unsupported', reason: 'mislabeled' });
   });
 });

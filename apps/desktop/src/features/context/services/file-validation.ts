@@ -6,6 +6,8 @@ const maxDocBytes = 10 * MiB;
 const maxTextBytes = 2 * MiB;
 const maxImageBytes = 8 * MiB;
 const maxImagePixels = 20_000_000;
+const maxBatchBytes = 24 * MiB;
+const maxBatchFiles = 8;
 const maxDocxEntries = 2_000;
 const maxDocxInflatedBytes = 50 * MiB;
 const maxDocxRatio = 100;
@@ -13,17 +15,39 @@ const maxInspectedXmlBytes = 2 * MiB;
 const zipEndSignature = 0x06054b50;
 const zipCentralSignature = 0x02014b50;
 const zipLocalSignature = 0x04034b50;
+const pngSignature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 
 export const contextFileLimits = {
   documentBytes: maxDocBytes,
   textBytes: maxTextBytes,
   imageBytes: maxImageBytes,
   imagePixels: maxImagePixels,
+  batchBytes: maxBatchBytes,
+  batchFiles: maxBatchFiles,
   imageLongestEdge: 4096,
   docxEntries: maxDocxEntries,
   docxInflatedBytes: maxDocxInflatedBytes,
   docxExpansionRatio: maxDocxRatio,
 } as const;
+
+export const isContextFileBatchWithinLimits = (
+  byteLengths: readonly number[],
+) => {
+  if (!Array.isArray(byteLengths) || byteLengths.length > maxBatchFiles)
+    return false;
+  let totalBytes = 0;
+  for (const byteLength of byteLengths) {
+    if (
+      !Number.isSafeInteger(byteLength) ||
+      byteLength < 0 ||
+      byteLength > maxDocBytes
+    )
+      return false;
+    totalBytes += byteLength;
+    if (totalBytes > maxBatchBytes) return false;
+  }
+  return true;
+};
 
 export type ContextFileKind = 'text' | 'pdf' | 'docx' | 'image';
 
@@ -130,7 +154,7 @@ const extensionOf = (fileName: string) => {
 const hasControlCharacters = (value: string) =>
   Array.from(value).some((character) => {
     const code = character.charCodeAt(0);
-    return code < 0x20 || code === 0x7f;
+    return code < 0x20 || (code >= 0x7f && code <= 0x9f);
   });
 
 const normalizedContentType = (contentType?: string) =>
@@ -228,6 +252,49 @@ const inflateEntry = (archive: Buffer, entry: DocxArchiveEntry) => {
   )
     throw new Error('invalid-entry');
   return content;
+};
+
+// Normalize XML references before scanning security-sensitive attributes.
+const decodeXmlReferences = (xml: string): string | null => {
+  if (/&(?!(?:#x[0-9a-f]+|#[0-9]+|amp|apos|gt|lt|quot);)/i.test(xml))
+    return null;
+  let invalidReference = false;
+  const normalizedXml = xml.replace(
+    /&(#x[0-9a-f]+|#[0-9]+|amp|apos|gt|lt|quot);/gi,
+    (_reference, entity: string) => {
+      switch (entity.toLowerCase()) {
+        case 'amp':
+          return '&';
+        case 'apos':
+          return "'";
+        case 'gt':
+          return '>';
+        case 'lt':
+          return '<';
+        case 'quot':
+          return '"';
+      }
+      const codePoint = entity.toLowerCase().startsWith('#x')
+        ? Number.parseInt(entity.slice(2), 16)
+        : Number.parseInt(entity.slice(1), 10);
+      if (
+        !Number.isSafeInteger(codePoint) ||
+        !(
+          codePoint === 0x09 ||
+          codePoint === 0x0a ||
+          codePoint === 0x0d ||
+          (codePoint >= 0x20 && codePoint <= 0xd7ff) ||
+          (codePoint >= 0xe000 && codePoint <= 0xfffd) ||
+          (codePoint >= 0x10000 && codePoint <= 0x10ffff)
+        )
+      ) {
+        invalidReference = true;
+        return '';
+      }
+      return String.fromCodePoint(codePoint);
+    },
+  );
+  return invalidReference ? null : normalizedXml;
 };
 
 export const inspectDocxArchive = (
@@ -388,11 +455,13 @@ export const inspectDocxArchive = (
       const xml = new TextDecoder('utf-8', { fatal: true }).decode(
         inflateEntry(archive, entry),
       );
-      if (entry.name === '[Content_Types].xml') contentTypesXml = xml;
-      if (entry.name === '_rels/.rels') rootRelationshipsXml = xml;
+      const normalizedXml = decodeXmlReferences(xml);
+      if (normalizedXml === null) return unsupportedZip('unsafe-archive');
+      if (entry.name === '[Content_Types].xml') contentTypesXml = normalizedXml;
+      if (entry.name === '_rels/.rels') rootRelationshipsXml = normalizedXml;
       if (
-        /macroEnabled|vbaProject|oleObject|TargetMode\s*=\s*["']External["']|<!DOCTYPE|<!ENTITY|<\s*(?:[\w.-]+:)?(?:altChunk|object|OLEObject)\b/i.test(
-          xml,
+        /macroEnabled|vbaProject|oleObject|TargetMode\s*=\s*["']\s*External\s*["']|<!DOCTYPE|<!ENTITY|<\s*(?:[\w.-]+:)?(?:altChunk|object|OLEObject)\b/i.test(
+          normalizedXml,
         )
       )
         return unsupportedZip('unsafe-archive');
@@ -419,12 +488,10 @@ export const inspectDocxArchive = (
   return { status: 'valid', entries, uncompressedBytes };
 };
 
-const parsePng = (bytes: Buffer): ContextImageHeaderResult => {
+const parsePngHeader = (bytes: Buffer): ContextImageHeaderResult => {
   if (
-    bytes.byteLength < 24 ||
-    !bytes
-      .subarray(0, 8)
-      .equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) ||
+    bytes.length < 24 ||
+    !bytes.subarray(0, 8).equals(pngSignature) ||
     !isBuffer(bytes, 12, 'IHDR')
   )
     return { status: 'unreadable', reason: 'invalid-container' };
@@ -435,14 +502,8 @@ const parsePng = (bytes: Buffer): ContextImageHeaderResult => {
   );
 };
 
-const isJpegStartOfFrame = (marker: number) =>
-  [
-    0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce,
-    0xcf,
-  ].includes(marker);
-
-const parseJpeg = (bytes: Buffer): ContextImageHeaderResult => {
-  if (bytes.byteLength < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8)
+const parseJpegHeader = (bytes: Buffer): ContextImageHeaderResult => {
+  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8)
     return { status: 'unreadable', reason: 'invalid-container' };
   let offset = 2;
   while (offset < bytes.length) {
@@ -477,12 +538,12 @@ const parseJpeg = (bytes: Buffer): ContextImageHeaderResult => {
   return { status: 'unreadable', reason: 'invalid-container' };
 };
 
-const parseWebp = (bytes: Buffer): ContextImageHeaderResult => {
+const parseWebpHeader = (bytes: Buffer): ContextImageHeaderResult => {
   if (
-    bytes.byteLength < 25 ||
+    bytes.length < 25 ||
     !isBuffer(bytes, 0, 'RIFF') ||
     !isBuffer(bytes, 8, 'WEBP') ||
-    bytes.readUInt32LE(4) + 8 !== bytes.byteLength
+    bytes.readUInt32LE(4) + 8 !== bytes.length
   )
     return { status: 'unreadable', reason: 'invalid-container' };
   let offset = 12;
@@ -493,7 +554,7 @@ const parseWebp = (bytes: Buffer): ContextImageHeaderResult => {
     const chunkLength = bytes.readUInt32LE(offset + 4);
     const dataOffset = offset + 8;
     const paddedLength = chunkLength + (chunkLength % 2);
-    if (dataOffset + paddedLength > bytes.length)
+    if (paddedLength > bytes.length - dataOffset)
       return { status: 'unreadable', reason: 'invalid-container' };
     if (chunk === 'ANIM' || chunk === 'ANMF') animated = true;
     if (chunk === 'VP8X') {
@@ -535,6 +596,312 @@ const parseWebp = (bytes: Buffer): ContextImageHeaderResult => {
   return imageHeader('image/webp', dimensions.width, dimensions.height);
 };
 
+const parsePng = (bytes: Buffer): ContextImageHeaderResult => {
+  if (
+    bytes.length < 24 ||
+    !bytes.subarray(0, 8).equals(pngSignature) ||
+    bytes.readUInt32BE(8) !== 13 ||
+    !isBuffer(bytes, 12, 'IHDR')
+  )
+    return { status: 'unreadable', reason: 'invalid-container' };
+  const headerDimensions = imageHeader(
+    'image/png',
+    bytes.readUInt32BE(16),
+    bytes.readUInt32BE(20),
+  );
+  if (headerDimensions.status !== 'valid') return headerDimensions;
+
+  let offset = 8;
+  let width: number | null = null;
+  let height: number | null = null;
+  let sawIdat = false;
+  let idatDataLength = 0;
+  let idatEnded = false;
+  let sawIend = false;
+  while (offset < bytes.length) {
+    if (offset + 12 > bytes.length)
+      return { status: 'unreadable', reason: 'invalid-container' };
+    const chunkLength = bytes.readUInt32BE(offset);
+    if (chunkLength > bytes.length - offset - 12)
+      return { status: 'unreadable', reason: 'invalid-container' };
+    const typeOffset = offset + 4;
+    const dataOffset = offset + 8;
+    const crcOffset = dataOffset + chunkLength;
+    const type = bytes.toString('ascii', typeOffset, typeOffset + 4);
+    if (!/^[A-Za-z]{4}$/.test(type))
+      return { status: 'unreadable', reason: 'invalid-container' };
+    if (
+      crc32(bytes.subarray(typeOffset, crcOffset)) !==
+      bytes.readUInt32BE(crcOffset)
+    )
+      return { status: 'unreadable', reason: 'invalid-container' };
+
+    if (width === null) {
+      if (type !== 'IHDR' || chunkLength !== 13)
+        return { status: 'unreadable', reason: 'invalid-container' };
+      width = bytes.readUInt32BE(dataOffset);
+      height = bytes.readUInt32BE(dataOffset + 4);
+      const dimensions = imageHeader('image/png', width, height);
+      if (dimensions.status !== 'valid') return dimensions;
+      const bitDepth = bytes[dataOffset + 8]!;
+      const colorType = bytes[dataOffset + 9]!;
+      const validBitDepth =
+        colorType === 0
+          ? [1, 2, 4, 8, 16].includes(bitDepth)
+          : colorType === 2 || colorType === 4 || colorType === 6
+            ? bitDepth === 8 || bitDepth === 16
+            : colorType === 3
+              ? [1, 2, 4, 8].includes(bitDepth)
+              : false;
+      if (
+        !validBitDepth ||
+        bytes[dataOffset + 10] !== 0 ||
+        bytes[dataOffset + 11] !== 0 ||
+        bytes[dataOffset + 12]! > 1
+      )
+        return { status: 'unreadable', reason: 'invalid-container' };
+    } else {
+      if (type === 'IHDR')
+        return { status: 'unreadable', reason: 'invalid-container' };
+      if (type === 'IDAT') {
+        if (idatEnded)
+          return { status: 'unreadable', reason: 'invalid-container' };
+        sawIdat = true;
+        idatDataLength += chunkLength;
+      } else if (sawIdat && type !== 'IEND') {
+        idatEnded = true;
+      }
+      if (type === 'IEND') {
+        if (chunkLength !== 0 || !sawIdat || crcOffset + 4 !== bytes.length)
+          return { status: 'unreadable', reason: 'invalid-container' };
+        sawIend = true;
+        break;
+      }
+    }
+    offset = crcOffset + 4;
+  }
+
+  if (
+    width === null ||
+    height === null ||
+    !sawIdat ||
+    idatDataLength === 0 ||
+    !sawIend
+  )
+    return { status: 'unreadable', reason: 'invalid-container' };
+  return imageHeader('image/png', width, height);
+};
+
+const isJpegStartOfFrame = (marker: number) =>
+  [
+    0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce,
+    0xcf,
+  ].includes(marker);
+
+const parseJpeg = (bytes: Buffer): ContextImageHeaderResult => {
+  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8)
+    return { status: 'unreadable', reason: 'invalid-container' };
+
+  let offset = 2;
+  let width: number | null = null;
+  let height: number | null = null;
+  let sawScan = false;
+  let currentScanHasData = false;
+  let inScan = false;
+  while (offset < bytes.length) {
+    if (inScan) {
+      while (offset < bytes.length) {
+        if (bytes[offset] !== 0xff) {
+          currentScanHasData = true;
+          offset += 1;
+          continue;
+        }
+        const markerOffset = offset;
+        while (bytes[offset] === 0xff) offset += 1;
+        if (offset >= bytes.length)
+          return { status: 'unreadable', reason: 'invalid-container' };
+        const marker = bytes[offset]!;
+        if (marker === 0x00) {
+          currentScanHasData = true;
+          offset += 1;
+          continue;
+        }
+        if (marker >= 0xd0 && marker <= 0xd7) {
+          offset += 1;
+          continue;
+        }
+        if (!currentScanHasData)
+          return { status: 'unreadable', reason: 'invalid-container' };
+        inScan = false;
+        offset = markerOffset;
+        break;
+      }
+      if (inScan) return { status: 'unreadable', reason: 'invalid-container' };
+      continue;
+    }
+
+    if (bytes[offset] !== 0xff)
+      return { status: 'unreadable', reason: 'invalid-container' };
+    while (bytes[offset] === 0xff) offset += 1;
+    if (offset >= bytes.length)
+      return { status: 'unreadable', reason: 'invalid-container' };
+    const marker = bytes[offset]!;
+    offset += 1;
+    if (marker === 0xd9) {
+      if (
+        width === null ||
+        height === null ||
+        !sawScan ||
+        offset !== bytes.length
+      )
+        return { status: 'unreadable', reason: 'invalid-container' };
+      return imageHeader('image/jpeg', width, height);
+    }
+    if (
+      marker === 0xd8 ||
+      marker === 0x00 ||
+      (marker >= 0xd0 && marker <= 0xd7)
+    )
+      return { status: 'unreadable', reason: 'invalid-container' };
+    if (marker === 0x01) continue;
+    if (offset + 2 > bytes.length)
+      return { status: 'unreadable', reason: 'invalid-container' };
+    const segmentLength = bytes.readUInt16BE(offset);
+    if (segmentLength < 2 || offset + segmentLength > bytes.length)
+      return { status: 'unreadable', reason: 'invalid-container' };
+
+    if (isJpegStartOfFrame(marker)) {
+      if (width !== null || segmentLength < 8)
+        return { status: 'unreadable', reason: 'invalid-container' };
+      const componentCount = bytes[offset + 7]!;
+      if (componentCount === 0 || segmentLength !== 8 + componentCount * 3)
+        return { status: 'unreadable', reason: 'invalid-container' };
+      height = bytes.readUInt16BE(offset + 3);
+      width = bytes.readUInt16BE(offset + 5);
+      const dimensions = imageHeader('image/jpeg', width, height);
+      if (dimensions.status !== 'valid') return dimensions;
+    } else if (marker === 0xda) {
+      if (width === null || height === null || segmentLength < 6)
+        return { status: 'unreadable', reason: 'invalid-container' };
+      const componentCount = bytes[offset + 2]!;
+      if (componentCount === 0 || segmentLength !== 6 + componentCount * 2)
+        return { status: 'unreadable', reason: 'invalid-container' };
+      sawScan = true;
+      currentScanHasData = false;
+      inScan = true;
+    }
+    offset += segmentLength;
+  }
+  return { status: 'unreadable', reason: 'invalid-container' };
+};
+
+const parseWebp = (bytes: Buffer): ContextImageHeaderResult => {
+  if (
+    bytes.length < 20 ||
+    !isBuffer(bytes, 0, 'RIFF') ||
+    !isBuffer(bytes, 8, 'WEBP') ||
+    bytes.readUInt32LE(4) + 8 !== bytes.length
+  )
+    return { status: 'unreadable', reason: 'invalid-container' };
+
+  let offset = 12;
+  let dimensions: { width: number; height: number } | null = null;
+  let hasExtendedHeader = false;
+  let hasBitstream = false;
+  let animated = false;
+  while (offset < bytes.length) {
+    if (offset + 8 > bytes.length)
+      return { status: 'unreadable', reason: 'invalid-container' };
+    const chunk = bytes.toString('ascii', offset, offset + 4);
+    const chunkLength = bytes.readUInt32LE(offset + 4);
+    const dataOffset = offset + 8;
+    const paddedLength = chunkLength + (chunkLength % 2);
+    if (paddedLength > bytes.length - dataOffset)
+      return { status: 'unreadable', reason: 'invalid-container' };
+    if (chunkLength % 2 !== 0 && bytes[dataOffset + chunkLength] !== 0)
+      return { status: 'unreadable', reason: 'invalid-container' };
+
+    if (chunk === 'VP8X') {
+      if (offset !== 12 || hasExtendedHeader || chunkLength !== 10)
+        return { status: 'unreadable', reason: 'invalid-container' };
+      const flags = bytes[dataOffset]!;
+      if (
+        (flags & 0xc1) !== 0 ||
+        bytes[dataOffset + 1] !== 0 ||
+        bytes[dataOffset + 2] !== 0 ||
+        bytes[dataOffset + 3] !== 0
+      )
+        return { status: 'unreadable', reason: 'invalid-container' };
+      animated ||= (flags & 0x02) !== 0;
+      dimensions = {
+        width: 1 + bytes.readUIntLE(dataOffset + 4, 3),
+        height: 1 + bytes.readUIntLE(dataOffset + 7, 3),
+      };
+      const checked = imageHeader(
+        'image/webp',
+        dimensions.width,
+        dimensions.height,
+      );
+      if (checked.status !== 'valid') return checked;
+      hasExtendedHeader = true;
+    } else if (chunk === 'VP8L') {
+      if (hasBitstream || chunkLength < 5 || bytes[dataOffset] !== 0x2f)
+        return { status: 'unreadable', reason: 'invalid-container' };
+      const b1 = bytes[dataOffset + 1]!;
+      const b2 = bytes[dataOffset + 2]!;
+      const b3 = bytes[dataOffset + 3]!;
+      const b4 = bytes[dataOffset + 4]!;
+      if ((b4 & 0xe0) !== 0)
+        return { status: 'unreadable', reason: 'invalid-container' };
+      const bitstreamDimensions = {
+        width: 1 + (((b2 & 0x3f) << 8) | b1),
+        height: 1 + (((b4 & 0x0f) << 10) | (b3 << 2) | ((b2 & 0xc0) >> 6)),
+      };
+      const checked = imageHeader(
+        'image/webp',
+        bitstreamDimensions.width,
+        bitstreamDimensions.height,
+      );
+      if (checked.status !== 'valid') return checked;
+      dimensions ??= bitstreamDimensions;
+      hasBitstream = true;
+    } else if (chunk === 'VP8 ') {
+      if (
+        hasBitstream ||
+        chunkLength < 10 ||
+        bytes[dataOffset + 3] !== 0x9d ||
+        bytes[dataOffset + 4] !== 0x01 ||
+        bytes[dataOffset + 5] !== 0x2a
+      )
+        return { status: 'unreadable', reason: 'invalid-container' };
+      const bitstreamDimensions = {
+        width: bytes.readUInt16LE(dataOffset + 6) & 0x3fff,
+        height: bytes.readUInt16LE(dataOffset + 8) & 0x3fff,
+      };
+      const checked = imageHeader(
+        'image/webp',
+        bitstreamDimensions.width,
+        bitstreamDimensions.height,
+      );
+      if (checked.status !== 'valid') return checked;
+      dimensions ??= bitstreamDimensions;
+      hasBitstream = true;
+    } else if (chunk === 'ANIM' || chunk === 'ANMF') {
+      animated = true;
+      if ((chunk === 'ANIM' && chunkLength !== 6) || chunkLength < 16)
+        return { status: 'unreadable', reason: 'invalid-container' };
+    }
+    offset = dataOffset + paddedLength;
+  }
+
+  if (offset !== bytes.length)
+    return { status: 'unreadable', reason: 'invalid-container' };
+  if (animated) return { status: 'unsupported', reason: 'animated-image' };
+  if (!dimensions || !hasBitstream)
+    return { status: 'unreadable', reason: 'invalid-container' };
+  return imageHeader('image/webp', dimensions.width, dimensions.height);
+};
+
 const imageHeader = (
   mimeType: ContextImageMimeType,
   width: number,
@@ -555,19 +922,22 @@ const imageHeader = (
   };
 };
 
+// This reads dimensions for bounded decoding; validateContextFile checks full containers.
 export const inspectImageHeader = (
   bytes: Uint8Array,
   mimeType?: string,
 ): ContextImageHeaderResult => {
+  if (!(bytes instanceof Uint8Array))
+    return { status: 'unreadable', reason: 'invalid-container' };
+  if (bytes.byteLength > maxImageBytes)
+    return { status: 'unsupported', reason: 'limit-exceeded' };
   const buffer = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let result: ContextImageHeaderResult;
-  if (
-    buffer.byteLength >= 8 &&
-    buffer.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
-  )
-    result = parsePng(buffer);
-  else if (buffer[0] === 0xff && buffer[1] === 0xd8) result = parseJpeg(buffer);
-  else if (isBuffer(buffer, 0, 'RIFF')) result = parseWebp(buffer);
+  if (buffer.subarray(0, 8).equals(pngSignature))
+    result = parsePngHeader(buffer);
+  else if (buffer[0] === 0xff && buffer[1] === 0xd8)
+    result = parseJpegHeader(buffer);
+  else if (isBuffer(buffer, 0, 'RIFF')) result = parseWebpHeader(buffer);
   else return { status: 'unreadable', reason: 'invalid-container' };
   if (
     result.status === 'valid' &&
@@ -579,27 +949,89 @@ export const inspectImageHeader = (
   return result;
 };
 
-export const validateContextFile = ({
-  fileName,
-  contentType,
-  bytes,
-}: ContextFileValidationInput): ContextFileValidationResult => {
+const isZipSignature = (bytes: Buffer) =>
+  bytes.length >= 4 &&
+  bytes[0] === 0x50 &&
+  bytes[1] === 0x4b &&
+  ((bytes[2] === 0x03 && bytes[3] === 0x04) ||
+    (bytes[2] === 0x05 && bytes[3] === 0x06) ||
+    (bytes[2] === 0x07 && bytes[3] === 0x08));
+
+const imageMimeTypeForSignature = (
+  bytes: Buffer,
+): ContextImageMimeType | null => {
+  if (bytes.subarray(0, 8).equals(pngSignature)) return 'image/png';
+  if (bytes[0] === 0xff && bytes[1] === 0xd8) return 'image/jpeg';
+  if (isBuffer(bytes, 0, 'RIFF') && isBuffer(bytes, 8, 'WEBP'))
+    return 'image/webp';
+  return null;
+};
+
+const inspectImageContainer = (
+  bytes: Uint8Array,
+  mimeType: ContextImageMimeType,
+): ContextImageHeaderResult => {
+  if (!(bytes instanceof Uint8Array))
+    return { status: 'unreadable', reason: 'invalid-container' };
+  if (bytes.byteLength > maxImageBytes)
+    return { status: 'unsupported', reason: 'limit-exceeded' };
+  const buffer = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  switch (mimeType) {
+    case 'image/png':
+      return parsePng(buffer);
+    case 'image/jpeg':
+      return parseJpeg(buffer);
+    case 'image/webp':
+      return parseWebp(buffer);
+  }
+};
+
+const hasForbiddenTextControls = (bytes: Uint8Array) => {
+  for (let index = 0; index < bytes.byteLength; index += 1) {
+    const byte = bytes[index]!;
+    if (
+      (byte < 0x20 && byte !== 0x09 && byte !== 0x0a && byte !== 0x0d) ||
+      byte === 0x7f
+    )
+      return true;
+    if (
+      byte === 0xc2 &&
+      bytes[index + 1] !== undefined &&
+      bytes[index + 1]! >= 0x80 &&
+      bytes[index + 1]! <= 0x9f
+    )
+      return true;
+  }
+  return false;
+};
+
+export const validateContextFile = (
+  input: ContextFileValidationInput,
+): ContextFileValidationResult => {
+  if (!input || typeof input !== 'object') return unsupported('mislabeled');
+  const { fileName, contentType, bytes } = input;
   if (
-    !fileName ||
+    typeof fileName !== 'string' ||
+    fileName.trim().length === 0 ||
     fileName.length > 255 ||
     fileName.includes('/') ||
     fileName.includes('\\') ||
-    hasControlCharacters(fileName)
+    hasControlCharacters(fileName) ||
+    (contentType !== undefined && typeof contentType !== 'string')
   )
     return unsupported('mislabeled');
+  if (!(bytes instanceof Uint8Array)) return unreadable('invalid-container');
   if (bytes.byteLength > maxDocBytes) return unsupported('limit-exceeded');
+
   const extension = extensionOf(fileName);
   const declared = normalizedContentType(contentType);
   const buffer = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 
-  if (isBuffer(buffer, 0, '%PDF-')) {
+  if (isBuffer(buffer, 0, '%PDF')) {
+    if (!isBuffer(buffer, 0, '%PDF-')) return unreadable('invalid-container');
     if (extension !== 'pdf' || !hasMatchingType(declared, ['application/pdf']))
       return unsupported('mislabeled');
+    // P05 performs full PDF parsing after this bounded signature check.
     return {
       status: 'valid',
       kind: 'pdf',
@@ -609,7 +1041,7 @@ export const validateContextFile = ({
     };
   }
 
-  if (isBuffer(buffer, 0, 'PK\x03\x04')) {
+  if (isZipSignature(buffer)) {
     if (
       extension !== 'docx' ||
       !hasMatchingType(declared, [
@@ -632,24 +1064,30 @@ export const validateContextFile = ({
     };
   }
 
-  const image = inspectImageHeader(bytes);
-  if (image.status !== 'unreadable') {
-    if (image.status === 'unsupported')
-      return unsupported(
-        image.reason === 'animated-image' ? 'animated-image' : 'limit-exceeded',
-      );
+  const imageMimeType = imageMimeTypeForSignature(buffer);
+  if (imageMimeType) {
     const acceptedExtensions =
-      image.image.mimeType === 'image/png'
+      imageMimeType === 'image/png'
         ? ['png']
-        : image.image.mimeType === 'image/jpeg'
+        : imageMimeType === 'image/jpeg'
           ? ['jpg', 'jpeg']
           : ['webp'];
     if (
       !acceptedExtensions.includes(extension) ||
-      !hasMatchingType(declared, [image.image.mimeType])
+      !hasMatchingType(declared, [imageMimeType])
     )
       return unsupported('mislabeled');
     if (bytes.byteLength > maxImageBytes) return unsupported('limit-exceeded');
+
+    const image = inspectImageContainer(bytes, imageMimeType);
+    if (image.status === 'unsupported') {
+      if (image.reason === 'animated-image')
+        return unsupported('animated-image');
+      if (image.reason === 'limit-exceeded')
+        return unsupported('limit-exceeded');
+      return unsupported('unsupported-format');
+    }
+    if (image.status === 'unreadable') return unreadable('invalid-container');
     return {
       status: 'valid',
       kind: 'image',
@@ -662,10 +1100,23 @@ export const validateContextFile = ({
     };
   }
 
+  if (isBuffer(buffer, 0, 'RIFF')) {
+    if (extension === 'webp' || declared.startsWith('image/'))
+      return unreadable('invalid-container');
+    return unsupported('mislabeled');
+  }
+
   if (
-    image.status === 'unreadable' &&
-    (['png', 'jpg', 'jpeg', 'webp'].includes(extension) ||
-      declared.startsWith('image/'))
+    ['png', 'jpg', 'jpeg', 'webp'].includes(extension) ||
+    declared.startsWith('image/')
+  )
+    return unreadable('invalid-container');
+  if (
+    extension === 'pdf' ||
+    extension === 'docx' ||
+    declared === 'application/pdf' ||
+    declared ===
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
   )
     return unreadable('invalid-container');
 
@@ -674,8 +1125,8 @@ export const validateContextFile = ({
       return unsupported('mislabeled');
     if (bytes.byteLength > maxTextBytes) return unsupported('limit-exceeded');
     try {
+      if (hasForbiddenTextControls(bytes)) return unreadable('invalid-utf8');
       const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-      if (text.includes('\0')) return unreadable('invalid-utf8');
       return {
         status: 'valid',
         kind: 'text',
