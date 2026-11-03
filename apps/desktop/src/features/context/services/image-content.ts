@@ -2,10 +2,16 @@ import {
   contextImageMimeTypes,
   type ContextImageMimeType,
 } from '@scholaros/services/learning/context-contracts';
+import path from 'node:path';
 import { contextFileLimits, inspectImageHeader } from './file-validation';
+import type {
+  ImageDecoderFailureCode,
+  ImageDecoderResponse,
+} from '../workers/image-decoder';
 
 const maxDecodeTimeMs = 15_000;
 const maxPreviewBytes = 1_048_576;
+const maxPreviewLongestEdge = 512;
 
 export type ContextImageInspection = {
   status: 'valid' | 'unsupported' | 'unreadable';
@@ -66,6 +72,25 @@ export type PrepareContextImageOptions = {
   timeoutMs?: number;
 };
 
+type ElectronMainModule = typeof import('electron/main');
+
+export type ContextImageUtilityProcess = Pick<
+  ElectronMainModule['utilityProcess'],
+  'fork'
+>;
+
+export type CreateUtilityProcessImageDecoderOptions = {
+  utilityProcess?: ContextImageUtilityProcess;
+  workerPath?: string;
+};
+
+class ContextImageDecoderProcessError extends Error {
+  constructor(readonly code: ImageDecoderFailureCode) {
+    super(code);
+    this.name = 'ContextImageDecoderProcessError';
+  }
+}
+
 const imageFailure = (
   status: 'unsupported' | 'unreadable',
   reason: ContextImageFailureReason,
@@ -97,6 +122,110 @@ const boundedTimeout = (value: number | undefined) =>
 const isSupportedMimeType = (value: string): value is ContextImageMimeType =>
   contextImageMimeTypes.includes(value as ContextImageMimeType);
 
+const imageDecoderFailureCodes: ImageDecoderFailureCode[] = [
+  'animated-image',
+  'decode-failed',
+  'invalid-container',
+  'limit-exceeded',
+];
+
+const isImageDecoderResponse = (
+  value: unknown,
+): value is ImageDecoderResponse => {
+  if (!value || typeof value !== 'object') return false;
+  const response = value as Record<string, unknown>;
+  if (response.type === 'result')
+    return !!response.result && typeof response.result === 'object';
+  return (
+    response.type === 'error' &&
+    typeof response.code === 'string' &&
+    imageDecoderFailureCodes.includes(response.code as ImageDecoderFailureCode)
+  );
+};
+
+export const createUtilityProcessImageDecoder =
+  (
+    options: CreateUtilityProcessImageDecoderOptions = {},
+  ): ContextImageDecoder =>
+  async ({ bytes, mimeType, width, height, maxLongestEdge, signal }) => {
+    if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+    const { utilityProcess } = options.utilityProcess
+      ? { utilityProcess: options.utilityProcess }
+      : await import('electron/main');
+    const workerPath =
+      options.workerPath ?? path.join(__dirname, 'image-decoder.cjs');
+    const child = utilityProcess.fork(workerPath, [], {
+      serviceName: 'ScholarOS image decoder',
+      stdio: 'ignore',
+    });
+
+    return new Promise<ContextImageDecodeResult>((resolve, reject) => {
+      let response: ContextImageDecodeResult | undefined;
+      let failure: ImageDecoderFailureCode | undefined;
+      let abortError: DOMException | undefined;
+      let stopping = false;
+      let exited = false;
+      const terminate = () => {
+        if (stopping) return;
+        stopping = true;
+        child.kill();
+      };
+      const onAbort = () => {
+        abortError = new DOMException('Aborted', 'AbortError');
+        terminate();
+      };
+      const onExit = () => {
+        if (exited) return;
+        exited = true;
+        signal.removeEventListener('abort', onAbort);
+        if (abortError) reject(abortError);
+        else if (failure) reject(new ContextImageDecoderProcessError(failure));
+        else if (response) resolve(response);
+        else reject(new ContextImageDecoderProcessError('decode-failed'));
+      };
+      child.on('message', (message) => {
+        if (stopping || abortError) return;
+        if (!isImageDecoderResponse(message)) {
+          failure = 'decode-failed';
+          terminate();
+          return;
+        }
+        if (message.type === 'error') failure = message.code;
+        else response = message.result;
+        terminate();
+      });
+      child.on('error', () => {
+        failure = 'decode-failed';
+        terminate();
+      });
+      child.on('exit', onExit);
+      signal.addEventListener('abort', onAbort, { once: true });
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      try {
+        child.postMessage({
+          type: 'decode',
+          bytes: new Uint8Array(bytes),
+          mimeType,
+          width,
+          height,
+          maxLongestEdge,
+        });
+      } catch {
+        failure = 'decode-failed';
+        terminate();
+      }
+    });
+  };
+
+type DecoderOutcome =
+  | { type: 'complete'; value: ContextImageDecodeResult }
+  | { type: 'error'; error: unknown }
+  | { type: 'aborted' }
+  | { type: 'timeout' };
+
 const awaitDecoder = async (
   operation: Promise<ContextImageDecodeResult>,
   signal: AbortSignal,
@@ -107,23 +236,29 @@ const awaitDecoder = async (
     decoderController.abort();
     throw new DOMException('Aborted', 'AbortError');
   }
+  const operationOutcome: Promise<DecoderOutcome> = operation.then(
+    (value) => ({ type: 'complete', value }),
+    (error: unknown) => ({ type: 'error', error }),
+  );
   let onAbort: (() => void) | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    return await Promise.race([
-      operation,
-      new Promise<never>((_, reject) => {
-        onAbort = () => {
-          decoderController.abort();
-          reject(new DOMException('Aborted', 'AbortError'));
-        };
-        signal.addEventListener('abort', onAbort, { once: true });
-        timer = setTimeout(() => {
-          decoderController.abort();
-          reject(new Error('decode-timeout'));
-        }, timeoutMs);
-      }),
-    ]);
+    const interruption = new Promise<DecoderOutcome>((resolve) => {
+      onAbort = () => resolve({ type: 'aborted' });
+      signal.addEventListener('abort', onAbort, { once: true });
+      if (signal.aborted) onAbort();
+      timer = setTimeout(() => resolve({ type: 'timeout' }), timeoutMs);
+    });
+    const outcome = await Promise.race([operationOutcome, interruption]);
+    if (outcome.type === 'aborted' || outcome.type === 'timeout') {
+      decoderController.abort();
+      await operationOutcome;
+      if (outcome.type === 'aborted')
+        throw new DOMException('Aborted', 'AbortError');
+      throw new Error('decode-timeout');
+    }
+    if (outcome.type === 'error') throw outcome.error;
+    return outcome.value;
   } finally {
     if (timer) clearTimeout(timer);
     if (onAbort) signal.removeEventListener('abort', onAbort);
@@ -156,8 +291,7 @@ const outputMatchesBudget = (
     output.previewHeight <= 0 ||
     output.previewWidth * output.previewHeight >
       contextFileLimits.imagePixels ||
-    Math.max(output.previewWidth, output.previewHeight) >
-      contextFileLimits.imageLongestEdge
+    Math.max(output.previewWidth, output.previewHeight) > maxPreviewLongestEdge
   )
     return false;
 
@@ -254,6 +388,14 @@ export const prepareContextImage = async (
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError')
       throw error;
+    if (error instanceof ContextImageDecoderProcessError) {
+      if (error.code === 'animated-image')
+        return imageFailure('unsupported', 'animated-image');
+      if (error.code === 'limit-exceeded')
+        return imageFailure('unsupported', 'limit-exceeded');
+      if (error.code === 'invalid-container')
+        return imageFailure('unreadable', 'invalid-container');
+    }
     return imageFailure('unreadable', 'decode-failed');
   }
 };
