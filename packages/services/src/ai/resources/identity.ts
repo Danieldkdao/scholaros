@@ -56,6 +56,7 @@ type IdentifiedObservation<T extends ResourceIdentityRecord> = {
   verifiedUrlId: string | null;
   verifiedItemUrl: string | null;
   fallbackAlias: string | null;
+  identityConflict: boolean;
   state: string | null;
   stableKey: string;
 };
@@ -142,6 +143,9 @@ const itemIdFromUrl = (value: string) => {
   }
 };
 
+const isVerifiedItemUrl = (itemUrl: string, sourcePageUrl: string | null) =>
+  itemUrl !== sourcePageUrl || !!itemIdFromUrl(itemUrl);
+
 const identify = <T extends ResourceIdentityRecord>(
   observation: ResourceIdentityObservation<T>,
 ): IdentifiedObservation<T> => {
@@ -149,13 +153,14 @@ const identify = <T extends ResourceIdentityRecord>(
   const sourcePageUrl = normalizeUrl(resource.evidence.sourceUrl);
   const itemUrl = resource.url ? normalizeUrl(resource.url) : null;
   const verifiedItemUrl =
-    itemUrl && (itemUrl !== sourcePageUrl || !!itemIdFromUrl(itemUrl))
-      ? itemUrl
-      : null;
+    itemUrl && isVerifiedItemUrl(itemUrl, sourcePageUrl) ? itemUrl : null;
   const verifiedSourceId = sourceIdIsVerified(resource)
     ? resource.sourceId
     : null;
-  const urlSourceId = verifiedItemUrl ? itemIdFromUrl(verifiedItemUrl) : null;
+  const observedUrlId = verifiedItemUrl ? itemIdFromUrl(verifiedItemUrl) : null;
+  const identityConflict =
+    !!verifiedSourceId && !!observedUrlId && verifiedSourceId !== observedUrlId;
+  const urlSourceId = identityConflict ? null : observedUrlId;
   const strongAliases = [
     ...(verifiedSourceId ? [`id:${verifiedSourceId}`] : []),
     ...(urlSourceId ? [`id:${urlSourceId}`] : []),
@@ -184,6 +189,7 @@ const identify = <T extends ResourceIdentityRecord>(
     verifiedUrlId: urlSourceId,
     verifiedItemUrl,
     fallbackAlias,
+    identityConflict,
     state,
     stableKey,
   };
@@ -331,10 +337,7 @@ export const mergeResourceIdentityCandidate = <
     resources.find((resource) => {
       const itemUrl = resource.url ? normalizeUrl(resource.url) : null;
       const sourceUrl = normalizeUrl(resource.evidence.sourceUrl);
-      return (
-        !!itemUrl &&
-        (itemUrl !== sourceUrl || resource.evidence.targetIds?.length === 0)
-      );
+      return !!itemUrl && isVerifiedItemUrl(itemUrl, sourceUrl);
     })?.url ?? null;
   const sameSourcePage = resources.every(
     (resource) =>
@@ -388,6 +391,20 @@ export const reconcileResourceIdentities = <T extends ResourceIdentityRecord>(
     return parents[index]!;
   };
   const ambiguities = new Map<string, ResourceIdentityAmbiguity<T>>();
+  for (const item of identified)
+    if (item.identityConflict) {
+      const resource = item.observation.resource;
+      const key = JSON.stringify([
+        item.scopeKey,
+        'conflicting-source-ids',
+        [resourceKey(resource)],
+      ]);
+      ambiguities.set(key, {
+        scope: item.observation.scope,
+        reason: 'conflicting-source-ids',
+        resources: [resource],
+      });
+    }
   const addAmbiguity = (
     left: IdentifiedObservation<T>,
     right: IdentifiedObservation<T>,

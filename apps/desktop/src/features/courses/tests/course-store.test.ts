@@ -330,6 +330,83 @@ describe('saving a course refresh', () => {
     expect(getCourseDetail(student, savedId)!.name).toBe('Biology 101 (Fall)');
   });
 
+  it('keeps a learned course source key through a thin checkpoint and moved URL', () => {
+    const save = (course: ObservedCourse) =>
+      applyCourseRefresh(student, [
+        sourceScan({ outcome: 'partial', courses: [course] }),
+      ]);
+    save(observedCourse({ externalId: 'stable-course' }));
+    const savedId = onlyCourse().id;
+    const originalSourceKey = db
+      .select({ sourceKey: CourseTable.sourceKey })
+      .from(CourseTable)
+      .get()?.sourceKey;
+
+    save(
+      observedCourse({
+        externalId: null,
+        overview: 'pending',
+        announcements: pending,
+        assignments: pending,
+      }),
+    );
+    save(
+      observedCourse({
+        externalId: 'stable-course',
+        url: `${biologyUrl}/home`,
+      }),
+    );
+
+    expect(savedCourses()).toHaveLength(1);
+    expect(onlyCourse().id).toBe(savedId);
+    expect(
+      db.select({ sourceKey: CourseTable.sourceKey }).from(CourseTable).get()
+        ?.sourceKey,
+    ).toBe(originalSourceKey);
+  });
+
+  it('keeps repeated same-name courses with distinct IDs and sections separate', () => {
+    const course = (
+      externalId: string,
+      section: string,
+      term: string,
+    ): ObservedCourse =>
+      observedCourse({
+        externalId,
+        term,
+        content: {
+          name: 'Biology 101',
+          code: 'BIO 101',
+          section,
+          term,
+          description: null,
+          instructors: [],
+          sourceId: externalId,
+          url: biologyUrl,
+          evidence: {
+            sourceUrl: biologyUrl,
+            excerpts: [`Biology 101 ${externalId}`],
+            targetIds: [],
+          },
+        },
+      });
+    const first = course('course-a', 'A', 'Fall 2026');
+    const second = course('course-b', 'B', 'Spring 2027');
+
+    applyCourseRefresh(student, [
+      sourceScan({ courses: [first, second, first, second] }),
+    ]);
+    const ids = new Map(savedCourses().map((item) => [item.id, item.term]));
+    applyCourseRefresh(student, [
+      sourceScan({ courses: [second, first, second, first] }),
+    ]);
+
+    expect(savedCourses()).toHaveLength(2);
+    expect(new Map(savedCourses().map((item) => [item.id, item.term]))).toEqual(
+      ids,
+    );
+  });
+
   it('treats a url differing only by a credential parameter as one course', () => {
     applyCourseRefresh(student, [sourceScan()]);
     applyCourseRefresh(student, [
@@ -523,6 +600,26 @@ describe('announcements and assignments stay independent', () => {
 });
 
 describe('refusing a course the source did not really show', () => {
+  it('downgrades a complete claim rejected by the store without advancing success', () => {
+    applyCourseRefresh(student, [sourceScan()], { now: first });
+    applyCourseRefresh(
+      student,
+      [
+        sourceScan({
+          courses: [
+            observedCourse({ url: 'https://outside.example/course/1' }),
+          ],
+        }),
+      ],
+      { now: second },
+    );
+
+    expect(savedSources()).toMatchObject([
+      { outcome: 'partial', lastSuccessfulAt: first },
+    ]);
+    expect(onlyCourse().active).toBe(true);
+  });
+
   it('drops an observed course whose url is outside the marked connection', () => {
     applyCourseRefresh(student, [
       sourceScan({
@@ -1156,6 +1253,108 @@ it('connects a verified source ID to its later detail URL without changing the l
   expect(db.select().from(CourseAssignmentTable).all()).toHaveLength(1);
 });
 
+it('persists same-page detail identity even when evidence has supporting targets', () => {
+  const detailUrl = `${assignmentsUrl}/123`;
+  const item = (title: string): CourseChildItem =>
+    child(title, {
+      url: detailUrl,
+      content: {
+        title,
+        description: null,
+        kind: 'assignment',
+        state: 'active-unsubmitted',
+        due: null,
+        availableFrom: null,
+        availableUntil: null,
+        pointsPossible: null,
+        sourceId: null,
+        url: detailUrl,
+        resources: [],
+        evidence: {
+          sourceUrl: detailUrl,
+          excerpts: [title],
+          targetIds: ['supporting-link'],
+        },
+      },
+    });
+  const save = (assignment: CourseChildItem) =>
+    applyCourseRefresh(student, [
+      sourceScan({
+        courses: [
+          observedCourse({
+            assignments: { status: 'partial', items: [assignment] },
+          }),
+        ],
+      }),
+    ]);
+
+  save(item('Worksheet'));
+  const savedId = detailOf().assignments[0]?.id;
+  save(item('Worksheet renamed'));
+
+  expect(db.select().from(CourseAssignmentTable).all()).toHaveLength(1);
+  expect(detailOf().assignments).toMatchObject([
+    { id: savedId, title: 'Worksheet renamed' },
+  ]);
+  expect(db.select().from(CourseAssignmentTable).get()?.sourceKey).toBe(
+    'id:123',
+  );
+});
+
+it('keeps an explicit child ID from adopting a conflicting URL-derived ID', () => {
+  const sharedUrl = `${assignmentsUrl}/source-b`;
+  const item = (sourceId: string): CourseChildItem =>
+    child(`Resource ${sourceId}`, {
+      url: sharedUrl,
+      content: {
+        title: `Resource ${sourceId}`,
+        description: null,
+        kind: 'assignment',
+        state: 'active-unsubmitted',
+        due: null,
+        availableFrom: null,
+        availableUntil: null,
+        pointsPossible: null,
+        sourceId,
+        url: sharedUrl,
+        resources: [],
+        evidence: {
+          sourceUrl: assignmentsUrl,
+          excerpts: [`Resource ${sourceId}`],
+          targetIds: [],
+        },
+      },
+    });
+  const save = (assignment: CourseChildItem) =>
+    applyCourseRefresh(student, [
+      sourceScan({
+        courses: [
+          observedCourse({
+            assignments: { status: 'partial', items: [assignment] },
+          }),
+        ],
+      }),
+    ]);
+
+  save(item('source-a'));
+  const sourceAId = detailOf().assignments[0]?.id;
+  save(item('source-b'));
+
+  expect(db.select().from(CourseAssignmentTable).all()).toHaveLength(2);
+  expect(detailOf().assignments).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        id: sourceAId,
+        content: expect.objectContaining({ sourceId: 'source-a' }),
+      }),
+      expect.objectContaining({
+        content: expect.objectContaining({ sourceId: 'source-b' }),
+      }),
+    ]),
+  );
+  expect(onlyCourse().assignmentsStatus).toBe('partial');
+});
+
 it('stores each member of repeated duplicate pairs once across checkpoints', () => {
   const assignment = (sourceId: string) => {
     const url = `${assignmentsUrl}/${sourceId}`;
@@ -1206,6 +1405,136 @@ it('stores each member of repeated duplicate pairs once across checkpoints', () 
       detailOf().assignments.map((item) => [item.content?.sourceId, item.id]),
     ),
   ).toEqual(savedIds);
+});
+
+it('stores repeated source-ID pairs once for assignments and announcements', () => {
+  const makeItem = (
+    kind: 'assignments' | 'announcements',
+    sourceId: string,
+  ): CourseChildItem => {
+    const collectionUrl =
+      kind === 'assignments' ? assignmentsUrl : announcementsUrl;
+    const url = `${collectionUrl}/${sourceId}`;
+    const evidence = {
+      sourceUrl: collectionUrl,
+      excerpts: [`Resource ${sourceId}`],
+      targetIds: [],
+    };
+    const content =
+      kind === 'assignments'
+        ? {
+            title: `Resource ${sourceId}`,
+            description: null,
+            kind: 'assignment' as const,
+            state: 'active-unsubmitted' as const,
+            due: null,
+            availableFrom: null,
+            availableUntil: null,
+            pointsPossible: null,
+            sourceId,
+            url,
+            resources: [],
+            evidence,
+          }
+        : {
+            title: `Resource ${sourceId}`,
+            body: null,
+            author: null,
+            published: null,
+            updated: null,
+            sourceId,
+            url,
+            resources: [],
+            evidence,
+          };
+    return child(`Resource ${sourceId}`, { url, content });
+  };
+  const save = (
+    kind: 'assignments' | 'announcements',
+    items: CourseChildItem[],
+    status: 'complete' | 'partial',
+  ) => {
+    const collection = { status, items };
+    const observed =
+      kind === 'assignments'
+        ? observedCourse({ assignments: collection })
+        : observedCourse({ announcements: collection });
+    applyCourseRefresh(student, [sourceScan({ courses: [observed] })]);
+  };
+
+  for (const kind of ['assignments', 'announcements'] as const) {
+    const first = makeItem(kind, 'a1');
+    const second = makeItem(kind, 'a2');
+    save(kind, [first], 'partial');
+    save(kind, [first, first], 'partial');
+    const firstId = (
+      kind === 'assignments' ? detailOf().assignments : detailOf().announcements
+    )[0]?.id;
+    save(kind, [first, second, first, second], 'complete');
+    const savedIds = new Map(
+      (kind === 'assignments'
+        ? detailOf().assignments
+        : detailOf().announcements
+      ).map((item) => [item.content?.sourceId, item.id]),
+    );
+    save(kind, [second, first, second, first], 'complete');
+
+    expect(
+      kind === 'assignments'
+        ? db.select().from(CourseAssignmentTable).all()
+        : db.select().from(CourseAnnouncementTable).all(),
+    ).toHaveLength(2);
+    expect(
+      new Map(
+        (kind === 'assignments'
+          ? detailOf().assignments
+          : detailOf().announcements
+        ).map((item) => [item.content?.sourceId, item.id]),
+      ),
+    ).toEqual(savedIds);
+    expect(savedIds.get('a1')).toBe(firstId);
+  }
+});
+
+it('keeps reversed ambiguous weak records bounded without choosing a first winner', () => {
+  for (const kind of ['assignments', 'announcements'] as const) {
+    const collectionUrl =
+      kind === 'assignments' ? assignmentsUrl : announcementsUrl;
+    const first = child('Weekly reflection', {
+      body: 'Due Friday',
+      url: collectionUrl,
+    });
+    const second = child('Weekly reflection', {
+      body: 'Due Monday',
+      url: collectionUrl,
+    });
+    const save = (items: CourseChildItem[]) => {
+      const collection = { status: 'complete' as const, items };
+      const observed =
+        kind === 'assignments'
+          ? observedCourse({ assignments: collection })
+          : observedCourse({ announcements: collection });
+      applyCourseRefresh(student, [sourceScan({ courses: [observed] })]);
+    };
+    const rows = () =>
+      kind === 'assignments'
+        ? detailOf().assignments
+        : detailOf().announcements;
+
+    save([first, second]);
+    const savedIds = new Map(rows().map((item) => [item.body, item.id]));
+    save([second, first]);
+
+    expect(rows()).toHaveLength(2);
+    expect(new Map(rows().map((item) => [item.body, item.id]))).toEqual(
+      savedIds,
+    );
+    expect(
+      onlyCourse()[
+        kind === 'assignments' ? 'assignmentsStatus' : 'announcementsStatus'
+      ],
+    ).toBe('partial');
+  }
 });
 
 it('preserves conflicting source IDs sharing a URL and lowers coverage to partial', () => {
@@ -1289,7 +1618,21 @@ it('edits and deletes local records within their account and course scope', asyn
     id: saved.id,
   });
   expect(savedCourses()).toEqual([]);
-  expect(db.select().from(CourseAnnouncementTable).all()).toEqual([]);
+  const hiddenCourse = db
+    .select()
+    .from(CourseTable)
+    .where(eq(CourseTable.id, saved.id))
+    .get()!;
+  const hiddenAnnouncement = db
+    .select()
+    .from(CourseAnnouncementTable)
+    .where(eq(CourseAnnouncementTable.id, saved.announcements[0]!.id))
+    .get();
+  expect(hiddenAnnouncement).toMatchObject({
+    id: saved.announcements[0]!.id,
+    suppressionId: hiddenCourse.suppressionId,
+    suppressedAt: expect.any(String),
+  });
 });
 
 it('keeps an explicitly deleted source assignment suppressed on later scans', async () => {
@@ -1561,19 +1904,287 @@ it('updates normalized course and announcement content without losing their sour
     announcements: [
       {
         title: 'Updated welcome',
+        body: 'Read this',
+        dateValue: '2026-11-01',
         content: {
-          body: 'Read this',
+          title: 'Welcome',
+          body: null,
           author: 'Teacher',
           sourceId: 'welcome',
-          published: { kind: 'date', date: '2026-11-01' },
+          published: null,
         },
+        local: {
+          overriddenFields: ['title', 'body', 'dateValue', 'dateText'],
+          source: {
+            title: 'Welcome',
+            body: null,
+            dateValue: null,
+            dateText: null,
+          },
+          effective: {
+            title: 'Updated welcome',
+            body: 'Read this',
+            dateValue: '2026-11-01',
+            dateText: '2026-11-01',
+          },
+        },
+      },
+    ],
+  });
+  expect(db.select().from(CourseTable).get()).toMatchObject({
+    name: 'Biology 101',
+    content: { name: 'Biology', section: 'A', sourceId: 'course-1' },
+  });
+  expect(db.select().from(CourseAnnouncementTable).get()).toMatchObject({
+    title: 'Welcome',
+    body: null,
+    content: { title: 'Welcome', body: null, published: null },
+  });
+});
+
+it('keeps source facts separate from local display edits across refresh and reset', async () => {
+  const { resetCourseRecordOverrides, updateCourseRecord } =
+    await import('../services/store');
+  const sourceCourse = observedCourse({
+    externalId: 'course-1',
+    name: 'Biology from source',
+    term: 'Fall 2026',
+    content: {
+      name: 'Biology from source',
+      code: 'BIO 101',
+      section: 'A',
+      term: 'Fall 2026',
+      description: 'Source course description',
+      instructors: ['Dr. Source'],
+      sourceId: 'course-1',
+      url: biologyUrl,
+      evidence: {
+        sourceUrl: biologyUrl,
+        excerpts: ['Biology from source'],
+        targetIds: [],
+      },
+    },
+    assignments: {
+      status: 'complete',
+      items: [
+        child('Essay from source', {
+          body: 'Source assignment description',
+          dateValue: '2026-12-15',
+          dateText: 'December 15, 2026',
+          url: `${assignmentsUrl}/essay-1`,
+          content: {
+            title: 'Essay from source',
+            description: 'Source assignment description',
+            kind: 'assignment',
+            state: 'active-unsubmitted',
+            due: {
+              kind: 'date',
+              date: '2026-12-15',
+              original: 'December 15, 2026',
+            },
+            availableFrom: null,
+            availableUntil: null,
+            pointsPossible: null,
+            sourceId: 'essay-1',
+            url: `${assignmentsUrl}/essay-1`,
+            resources: [],
+            evidence: {
+              sourceUrl: assignmentsUrl,
+              excerpts: ['Essay from source essay-1'],
+              targetIds: [],
+            },
+          },
+        }),
+      ],
+    },
+  });
+  applyCourseRefresh(student, [sourceScan({ courses: [sourceCourse] })], {
+    now: first,
+  });
+  const savedCourse = onlyCourse();
+  const savedAssignment = detailOf().assignments[0]!;
+  updateCourseRecord(student, {
+    kind: 'courses',
+    courseId: savedCourse.id,
+    id: savedCourse.id,
+    values: {
+      name: 'My Biology',
+      code: 'BIO 101',
+      term: 'My term',
+      instructor: 'Dr. Source',
+      description: 'Source course description',
+    },
+  });
+  updateCourseRecord(student, {
+    kind: 'assignments',
+    courseId: savedCourse.id,
+    id: savedAssignment.id,
+    values: {
+      title: 'My essay title',
+      body: 'My assignment notes',
+      date: '2026-12-02',
+    },
+  });
+  applyCourseRefresh(
+    student,
+    [
+      sourceScan({
+        courses: [
+          observedCourse({
+            ...sourceCourse,
+            name: 'Biology refreshed',
+            term: 'Spring 2027',
+            content: {
+              ...sourceCourse.content!,
+              name: 'Biology refreshed',
+              term: 'Spring 2027',
+              description: 'Updated source course description',
+            },
+            assignments: {
+              status: 'complete',
+              items: [
+                child('Essay refreshed', {
+                  body: 'Updated source assignment description',
+                  dateValue: '2026-12-20',
+                  dateText: 'December 20, 2026',
+                  url: `${assignmentsUrl}/essay-1`,
+                  content: {
+                    ...sourceCourse.assignments.items[0]!.content!,
+                    title: 'Essay refreshed',
+                    description: 'Updated source assignment description',
+                    due: {
+                      kind: 'date',
+                      date: '2026-12-20',
+                      original: 'December 20, 2026',
+                    },
+                  },
+                }),
+              ],
+            },
+          }),
+        ],
+      }),
+    ],
+    { now: second },
+  );
+
+  expect(getCourseDetail(student, savedCourse.id)).toMatchObject({
+    id: savedCourse.id,
+    name: 'My Biology',
+    term: 'My term',
+    local: {
+      source: { name: 'Biology refreshed', term: 'Spring 2027' },
+      effective: { name: 'My Biology', term: 'My term' },
+      overriddenFields: ['name', 'term'],
+    },
+    assignments: [
+      {
+        id: savedAssignment.id,
+        title: 'My essay title',
+        body: 'My assignment notes',
+        dateValue: '2026-12-02',
+        local: {
+          source: {
+            title: 'Essay refreshed',
+            body: 'Updated source assignment description',
+            dateValue: '2026-12-20',
+          },
+          overriddenFields: ['title', 'body', 'dateValue', 'dateText'],
+        },
+      },
+    ],
+  });
+  expect(db.select().from(CourseTable).get()?.name).toBe('Biology refreshed');
+  expect(db.select().from(CourseTable).get()?.content?.name).toBe(
+    'Biology refreshed',
+  );
+  expect(db.select().from(CourseAssignmentTable).get()?.content?.title).toBe(
+    'Essay refreshed',
+  );
+
+  resetCourseRecordOverrides(student, {
+    kind: 'courses',
+    courseId: savedCourse.id,
+    id: savedCourse.id,
+    fields: ['name'],
+  });
+  resetCourseRecordOverrides(student, {
+    kind: 'assignments',
+    courseId: savedCourse.id,
+    id: savedAssignment.id,
+    fields: ['title', 'body', 'dateValue', 'dateText'],
+  });
+
+  expect(getCourseDetail(student, savedCourse.id)).toMatchObject({
+    name: 'Biology refreshed',
+    term: 'My term',
+    assignments: [
+      {
+        title: 'Essay refreshed',
+        body: 'Updated source assignment description',
+        dateValue: '2026-12-20',
+        local: { overriddenFields: [] },
       },
     ],
   });
 });
 
+it('keeps unknown legacy edit provenance uncertain until a source observation confirms it', async () => {
+  const { updateCourseRecord } = await import('../services/store');
+  saveBoth();
+  const course = onlyCourse();
+  db.update(CourseTable)
+    .set({
+      name: 'Possibly overwritten legacy name',
+      localOverrides: null,
+      localEditedAt: null,
+      contentChangedAt: second,
+      lastSeenAt: first,
+    })
+    .where(eq(CourseTable.id, course.id))
+    .run();
+
+  expect(getCourseDetail(student, course.id)?.local).toMatchObject({
+    source: { name: 'Possibly overwritten legacy name' },
+    sourceUncertain: true,
+  });
+  updateCourseRecord(student, {
+    kind: 'courses',
+    courseId: course.id,
+    id: course.id,
+    values: {
+      name: 'My legacy override',
+      code: '',
+      term: '',
+      instructor: '',
+      description: '',
+    },
+  });
+  expect(getCourseDetail(student, course.id)?.local).toMatchObject({
+    source: { name: 'Possibly overwritten legacy name' },
+    effective: { name: 'My legacy override' },
+    sourceUncertain: true,
+  });
+
+  applyCourseRefresh(
+    student,
+    [
+      sourceScan({
+        courses: [observedCourse({ name: 'Biology from source' })],
+      }),
+    ],
+    { now: second },
+  );
+  expect(getCourseDetail(student, course.id)?.local).toMatchObject({
+    source: { name: 'Biology from source' },
+    effective: { name: 'My legacy override' },
+    sourceUncertain: false,
+  });
+});
+
 it('creates owned manual records without a connection', async () => {
-  const { createCourseRecord } = await import('../services/store');
+  const { createCourseRecord, updateCourseRecord } =
+    await import('../services/store');
   const courseId = createCourseRecord(student, {
     kind: 'courses',
     values: {
@@ -1593,11 +2204,50 @@ it('creates owned manual records without a connection', async () => {
       date: '2026-11-02',
     },
   });
-  expect(getCourseDetail(student, courseId)?.assignments).toEqual(
-    expect.arrayContaining([
-      expect.objectContaining({ id, title: 'Read chapter one' }),
-    ]),
-  );
+  updateCourseRecord(student, {
+    kind: 'courses',
+    courseId,
+    id: courseId,
+    values: {
+      name: 'My manual biology',
+      code: 'BIO',
+      term: 'Winter',
+      instructor: 'Dr. Local',
+      description: 'Manual course note',
+    },
+  });
+  updateCourseRecord(student, {
+    kind: 'assignments',
+    courseId,
+    id,
+    values: {
+      title: 'Read chapter one revised',
+      body: 'My notes',
+      date: '2026-11-03',
+    },
+  });
+  expect(getCourseDetail(student, courseId)).toMatchObject({
+    name: 'My manual biology',
+    local: { origin: 'manual', overriddenFields: [] },
+    assignments: [
+      {
+        id,
+        title: 'Read chapter one revised',
+        body: 'My notes',
+        dateValue: '2026-11-03',
+        local: { origin: 'manual', overriddenFields: [] },
+      },
+    ],
+  });
+  expect(db.select().from(CourseTable).get()).toMatchObject({
+    name: 'My manual biology',
+    localOverrides: null,
+  });
+  expect(db.select().from(CourseAssignmentTable).get()).toMatchObject({
+    title: 'Read chapter one revised',
+    body: 'My notes',
+    localOverrides: null,
+  });
   expect(getCourseDetail(other, courseId)).toBeNull();
   expect(() =>
     createCourseRecord(other, {

@@ -135,6 +135,33 @@ it('preserves conflicting verified IDs sharing a URL and downgrades coverage', (
   expect(result.coverage).toBe('partial');
   expect(result.assignments).toHaveLength(2);
 });
+
+it('keeps an explicit ID separate from a conflicting URL ID and lowers coverage', () => {
+  const detailUrl = 'https://school.example/assignments/456';
+  const detailInput: AgentRequestSchema = {
+    ...input,
+    pages: [{ ...input.pages[0]!, text: 'Lab report source-123.' }],
+    targets: [{ id: '456', label: 'Lab report', url: detailUrl }],
+  };
+  const item = assignment({
+    sourceId: 'source-123',
+    url: detailUrl,
+    due: null,
+    evidence: {
+      sourceUrl: url,
+      excerpts: ['Lab report source-123'],
+      targetIds: ['456'],
+    },
+  });
+
+  const result = validateResourceExtraction(detailInput, 'assignments', {
+    assignments: [item],
+    coverage: 'complete',
+  });
+
+  expect(result.coverage).toBe('partial');
+  expect(result.assignments).toEqual([item]);
+});
 it.each([
   { due: { kind: 'date', date: '2026-02-30', original: 'February 30' } },
   {
