@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
+import { AcademicTaskDeferredError } from '../services/academic-tasks';
 import { createBackgroundSyncController } from '../services/background-sync';
 import type { BackgroundSyncState } from '../types';
 
-type SyncRun = { failure: string | null };
+type SyncRun = { failure: string | null; partial?: boolean };
 
 const setup = () => {
   const timers: Array<{ callback: () => void; delayMs: number }> = [];
@@ -22,6 +23,7 @@ const setup = () => {
   const controller = createBackgroundSyncController<SyncRun>({
     runDiscovery,
     syncFailure: (result) => result.failure,
+    isPartial: (result) => result.partial === true,
     schedule: (callback, delayMs) => {
       timers.push({ callback, delayMs });
       return timers.length;
@@ -378,7 +380,7 @@ describe('temporary browser work', () => {
   });
 });
 
-it('waits for explicit resume after authentication expires instead of scheduling another sign-in attempt', async () => {
+it('waits for verified reconnection after authentication expires', async () => {
   const harness = setup();
   enable(harness.controller);
   harness.timers[0].callback();
@@ -390,6 +392,8 @@ it('waits for explicit resume after authentication expires instead of scheduling
   enable(harness.controller);
   expect(harness.timers).toHaveLength(1);
   harness.controller.resume();
+  expect(harness.timers).toHaveLength(1);
+  harness.controller.connectionRestored('student-a');
   expect(harness.timers).toHaveLength(2);
 });
 
@@ -404,6 +408,117 @@ it('backs off transient failures and stops after three failed scheduled attempts
     );
   }
   expect(harness.timers.map((timer) => timer.delayMs)).toEqual([
-    5000, 60000, 120000,
+    5000, 60000, 300000,
   ]);
+});
+
+it('defers busy work without spending the transient failure budget', async () => {
+  const harness = setup();
+  harness.runDiscovery.mockRejectedValueOnce(
+    new AcademicTaskDeferredError('Another academic task is running.'),
+  );
+  enable(harness.controller);
+  harness.timers[0]!.callback();
+
+  await vi.waitFor(() =>
+    expect(harness.controller.getState()).toMatchObject({
+      status: 'waiting',
+      message: 'Background sync is waiting for other academic work.',
+      lastSyncedAt: null,
+    }),
+  );
+  expect(harness.timers.map((timer) => timer.delayMs)).toEqual([5000, 60000]);
+
+  harness.runDiscovery.mockRejectedValueOnce(
+    new Error('The resource is unavailable.'),
+  );
+  harness.timers.at(-1)!.callback();
+  await vi.waitFor(() =>
+    expect(harness.controller.getState().status).toBe('blocked'),
+  );
+  expect(harness.timers.map((timer) => timer.delayMs)).toEqual([
+    5000, 60000, 60000,
+  ]);
+});
+
+it('does not advance the successful timestamp for partial source coverage', async () => {
+  const harness = setup();
+  enable(harness.controller);
+  harness.timers[0]!.callback();
+  harness.finishRun({ failure: null, partial: true });
+
+  await vi.waitFor(() =>
+    expect(harness.controller.getState()).toMatchObject({
+      status: 'waiting',
+      message: 'The last background sync had incomplete source coverage.',
+      lastSyncedAt: null,
+    }),
+  );
+});
+
+it('recognizes a partial settlement from the internal refresh result', async () => {
+  const timers: Array<{ callback: () => void; delayMs: number }> = [];
+  let finishRun!: (result: { status: 'partial' }) => void;
+  const controller = createBackgroundSyncController<{
+    status: 'partial';
+  }>({
+    runDiscovery: () =>
+      new Promise((resolve) => {
+        finishRun = resolve;
+      }),
+    schedule: (callback, delayMs) => {
+      timers.push({ callback, delayMs });
+      return timers.length;
+    },
+    cancelSchedule: vi.fn(),
+    now: () => '2026-10-28T12:00:00.000Z',
+  });
+  enable(controller);
+  timers[0]!.callback();
+  await vi.waitFor(() => expect(controller.getState().status).toBe('syncing'));
+
+  finishRun({ status: 'partial' });
+
+  await vi.waitFor(() =>
+    expect(controller.getState()).toMatchObject({
+      status: 'waiting',
+      message: 'The last background sync had incomplete source coverage.',
+      lastSyncedAt: null,
+    }),
+  );
+});
+
+it('waits for explicit reconnection after a sign-in-required result', async () => {
+  const timers: Array<{ callback: () => void; delayMs: number }> = [];
+  let finishRun!: (result: { status: 'sign-in-required' }) => void;
+  const controller = createBackgroundSyncController<{
+    status: 'sign-in-required';
+  }>({
+    runDiscovery: () =>
+      new Promise((resolve) => {
+        finishRun = resolve;
+      }),
+    schedule: (callback, delayMs) => {
+      timers.push({ callback, delayMs });
+      return timers.length;
+    },
+    cancelSchedule: vi.fn(),
+  });
+  enable(controller);
+  timers[0]!.callback();
+  await vi.waitFor(() => expect(controller.getState().status).toBe('syncing'));
+
+  finishRun({ status: 'sign-in-required' });
+
+  await vi.waitFor(() =>
+    expect(controller.getState()).toMatchObject({
+      status: 'blocked',
+      message: 'Sign in in your study browser, then resume background sync.',
+    }),
+  );
+  expect(timers).toHaveLength(1);
+  expect(controller.resume().status).toBe('blocked');
+  expect(timers).toHaveLength(1);
+  controller.connectionRestored('student-a');
+  expect(timers).toHaveLength(2);
 });

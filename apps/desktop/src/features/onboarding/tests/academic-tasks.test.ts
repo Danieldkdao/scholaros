@@ -246,3 +246,118 @@ it('records content-free measurements on the matching academic run', async () =>
   expect(activity?.metrics?.firstFindingMs).toBeGreaterThanOrEqual(0);
   expect(JSON.stringify(activity?.metrics)).not.toMatch(/Biology|assignment/i);
 });
+
+it('keeps partial settlement distinct from complete task execution', async () => {
+  const runner = createAcademicTaskRunner();
+  await runner.run(
+    'student',
+    async () => ({ coverage: 'partial' as const }),
+    undefined,
+    'course-1',
+    {
+      classifyOutcome: (result) => result.coverage,
+    },
+  );
+
+  expect(runner.getActivity('student')[0]?.status).toBe('partial');
+});
+
+it('captures execution revisions once when a coalesced task actually starts', async () => {
+  const runner = createAcademicTaskRunner();
+  let revision = 'older';
+  const capture = vi.fn(() => ({
+    sessionEpoch: 7,
+    coveredRevisions: { target: revision },
+  }));
+  let execution: unknown;
+  const action = async (_signal: AbortSignal, value: unknown) => {
+    execution = value;
+  };
+  const first = runner.run('student', action, undefined, 'course-1', {
+    captureExecutionScope: capture,
+  });
+  revision = 'current';
+  const joinerCapture = vi.fn(() => ({
+    sessionEpoch: 8,
+    coveredRevisions: { target: 'joiner' },
+  }));
+  const joined = runner.run('student', action, undefined, 'course-1', {
+    captureExecutionScope: joinerCapture,
+  });
+
+  expect(joined).toBe(first);
+  await first;
+
+  expect(capture).toHaveBeenCalledOnce();
+  expect(joinerCapture).not.toHaveBeenCalled();
+  expect(execution).toMatchObject({
+    runId: expect.any(String),
+    sessionEpoch: 7,
+    coveredRevisions: { target: 'current' },
+  });
+});
+
+it('reports admission contention as typed deferral without cancelling joined manual work', async () => {
+  const runner = createAcademicTaskRunner();
+  let finish!: () => void;
+  let runningSignal: AbortSignal | undefined;
+  const action = vi.fn(
+    (signal: AbortSignal) =>
+      new Promise<void>((resolve) => {
+        runningSignal = signal;
+        finish = resolve;
+      }),
+  );
+  const manual = runner.run('student', action, undefined, 'courses');
+  await Promise.resolve();
+
+  const consumer = new AbortController();
+  const joined = runner.run('student', action, consumer.signal, 'courses');
+  consumer.abort();
+  await expect(
+    runner.run('student', action, undefined, 'course-b'),
+  ).rejects.toMatchObject({ status: 'deferred', reason: 'busy' });
+
+  expect(joined).toBe(manual);
+  expect(runningSignal?.aborted).toBe(false);
+  finish();
+  await manual;
+});
+
+it('aborts sibling browser jobs after a capability change', async () => {
+  const runner = createAcademicTaskRunner();
+  let siblingSignal: AbortSignal | undefined;
+  let finishSibling!: () => void;
+  const sibling = runner.run(
+    'student',
+    (signal) =>
+      new Promise<void>((resolve) => {
+        siblingSignal = signal;
+        finishSibling = resolve;
+      }),
+    undefined,
+    'course-a',
+  );
+  await Promise.resolve();
+  const capabilityChanged = runner.run(
+    'student',
+    async () => {
+      throw Object.assign(new Error('Capability changed.'), {
+        name: 'BrowserCapabilityChangedError',
+      });
+    },
+    undefined,
+    'course-b',
+  );
+
+  await expect(capabilityChanged).rejects.toMatchObject({
+    name: 'BrowserCapabilityChangedError',
+  });
+
+  expect(siblingSignal?.aborted).toBe(true);
+  finishSibling();
+  await sibling;
+  expect(
+    runner.getActivity('student').find((run) => run.key === 'course-a')?.status,
+  ).toBe('cancelled');
+});
