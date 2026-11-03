@@ -254,6 +254,49 @@ const inflateEntry = (archive: Buffer, entry: DocxArchiveEntry) => {
   return content;
 };
 
+// Normalize XML references before scanning security-sensitive attributes.
+const decodeXmlReferences = (xml: string): string | null => {
+  if (/&(?!(?:#x[0-9a-f]+|#[0-9]+|amp|apos|gt|lt|quot);)/i.test(xml))
+    return null;
+  let invalidReference = false;
+  const normalizedXml = xml.replace(
+    /&(#x[0-9a-f]+|#[0-9]+|amp|apos|gt|lt|quot);/gi,
+    (_reference, entity: string) => {
+      switch (entity.toLowerCase()) {
+        case 'amp':
+          return '&';
+        case 'apos':
+          return "'";
+        case 'gt':
+          return '>';
+        case 'lt':
+          return '<';
+        case 'quot':
+          return '"';
+      }
+      const codePoint = entity.toLowerCase().startsWith('#x')
+        ? Number.parseInt(entity.slice(2), 16)
+        : Number.parseInt(entity.slice(1), 10);
+      if (
+        !Number.isSafeInteger(codePoint) ||
+        !(
+          codePoint === 0x09 ||
+          codePoint === 0x0a ||
+          codePoint === 0x0d ||
+          (codePoint >= 0x20 && codePoint <= 0xd7ff) ||
+          (codePoint >= 0xe000 && codePoint <= 0xfffd) ||
+          (codePoint >= 0x10000 && codePoint <= 0x10ffff)
+        )
+      ) {
+        invalidReference = true;
+        return '';
+      }
+      return String.fromCodePoint(codePoint);
+    },
+  );
+  return invalidReference ? null : normalizedXml;
+};
+
 export const inspectDocxArchive = (
   input: Uint8Array,
 ): DocxArchiveInspection => {
@@ -412,11 +455,13 @@ export const inspectDocxArchive = (
       const xml = new TextDecoder('utf-8', { fatal: true }).decode(
         inflateEntry(archive, entry),
       );
-      if (entry.name === '[Content_Types].xml') contentTypesXml = xml;
-      if (entry.name === '_rels/.rels') rootRelationshipsXml = xml;
+      const normalizedXml = decodeXmlReferences(xml);
+      if (normalizedXml === null) return unsupportedZip('unsafe-archive');
+      if (entry.name === '[Content_Types].xml') contentTypesXml = normalizedXml;
+      if (entry.name === '_rels/.rels') rootRelationshipsXml = normalizedXml;
       if (
-        /macroEnabled|vbaProject|oleObject|TargetMode\s*=\s*["']External["']|<!DOCTYPE|<!ENTITY|<\s*(?:[\w.-]+:)?(?:altChunk|object|OLEObject)\b/i.test(
-          xml,
+        /macroEnabled|vbaProject|oleObject|TargetMode\s*=\s*["']\s*External\s*["']|<!DOCTYPE|<!ENTITY|<\s*(?:[\w.-]+:)?(?:altChunk|object|OLEObject)\b/i.test(
+          normalizedXml,
         )
       )
         return unsupportedZip('unsafe-archive');

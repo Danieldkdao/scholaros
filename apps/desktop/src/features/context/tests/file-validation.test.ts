@@ -18,16 +18,15 @@ const crc32 = (bytes: Buffer) => {
   return (crc ^ 0xffffffff) >>> 0;
 };
 
-const docxBytes = () => {
+const docxBytes = (
+  rootRelationshipsXml = '<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
+) => {
   const files = [
     [
       '[Content_Types].xml',
       '<Types><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
     ],
-    [
-      '_rels/.rels',
-      '<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
-    ],
+    ['_rels/.rels', rootRelationshipsXml],
     ['word/document.xml', '<w:document/>'],
   ] as const;
   const localRecords: Buffer[] = [];
@@ -159,6 +158,22 @@ describe('validateContextFile', () => {
       expect(result.status).toBe('valid');
       if (result.status !== 'valid') throw new Error('Expected a valid file.');
       expect(result.kind).toBe(kind);
+    },
+  );
+
+  it.each(['Exter&#x6e;al', 'Exter&#110;al'])(
+    'rejects an external DOCX relationship hidden by a character reference',
+    (targetMode) => {
+      const rootRelationshipsXml = `<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.invalid/" TargetMode="${targetMode}"/></Relationships>`;
+
+      expect(
+        validateContextFile({
+          fileName: 'reading.docx',
+          contentType:
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          bytes: docxBytes(rootRelationshipsXml),
+        }),
+      ).toMatchObject({ status: 'unsupported', reason: 'unsafe-archive' });
     },
   );
 
