@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { scanCourseCollection } from '../lib/course-content-scan';
 import type { AgentRequestSchema } from '@scholaros/services/ai/schemas';
 import type { ObservedPage } from '../../onboarding/lib/academic-discovery';
+import type { BrowserNavigationAdapter } from '../../onboarding/services/browser-navigation';
 
 const root = 'https://school.edu/courses/1';
 const page = (
@@ -36,6 +37,19 @@ const run = (
   request: (body: AgentRequestSchema) => Promise<unknown>,
   pages: Map<string, ObservedPage>,
   controller = new AbortController(),
+  options: {
+    knownNavigationLocations?: Array<{
+      purpose: 'assignments' | 'announcements';
+      destinationUrl: string;
+      status: 'tentative' | 'verified' | 'stale';
+      destinationKind: 'summary' | 'collection' | 'detail';
+    }>;
+    onNavigationVerified?: (location: unknown) => void;
+    onModelCall?: () => void;
+    onError?: (message: string) => void;
+    navigation?: BrowserNavigationAdapter;
+    readCurrent?: () => Promise<ObservedPage>;
+  } = {},
 ) => {
   const openFrom = vi.fn(async (from: ObservedPage, url: string) => {
     expect(from.links.some((link) => link.url === url)).toBe(true);
@@ -52,15 +66,212 @@ const run = (
       courseName: 'Biology',
       excludedUrls: [],
       notes: '',
-      context: { openFrom, assertReadable: () => undefined },
+      context: {
+        openFrom,
+        assertReadable: () => undefined,
+        ...(options.readCurrent ? { readCurrent: options.readCurrent } : {}),
+        ...(options.navigation ? { navigation: options.navigation } : {}),
+      },
       request,
       signal: controller.signal,
       isCurrent: () => true,
+      ...options,
     }),
   };
 };
 
 describe('deep course content scanning', () => {
+  it('reports an extraction failure while preserving a blocked scan result', async () => {
+    const onError = vi.fn();
+    const { result } = run(
+      async () => {
+        throw new Error('The browser response schema is unsupported.');
+      },
+      new Map([[root, page(root)]]),
+      new AbortController(),
+      { onError },
+    );
+    expect(await result).toMatchObject({ status: 'blocked', items: [] });
+    expect(onError).toHaveBeenCalledWith(
+      'The browser response schema is unsupported.',
+    );
+  });
+  it('uses a remembered verified collection link before asking the model to navigate', async () => {
+    const rememberedUrl = `${root}/modules/work`;
+    const assignmentUrl = `${rememberedUrl}/123`;
+    const onNavigationVerified = vi.fn();
+    const request = vi.fn(async (body: AgentRequestSchema) => {
+      if (body.kind === 'choose') return { operation: 'DONE', target: null };
+      if (body.pages[0].url === rememberedUrl) {
+        const target = body.targets?.find((item) => item.url === assignmentUrl);
+        return {
+          coverage: 'complete',
+          assignments: [
+            {
+              ...card('Worksheet 1', rememberedUrl),
+              url: assignmentUrl,
+              evidence: {
+                sourceUrl: rememberedUrl,
+                excerpts: ['Worksheet 1'],
+                targetIds: target ? [target.id] : [],
+              },
+            },
+          ],
+        };
+      }
+      return { coverage: 'partial', assignments: [] };
+    });
+    const { result, openFrom } = run(
+      request,
+      new Map([
+        [root, page(root, [{ label: 'Work folder', url: rememberedUrl }])],
+        [
+          rememberedUrl,
+          page(
+            rememberedUrl,
+            [{ label: 'Worksheet 1', url: assignmentUrl }],
+            'Worksheet 1',
+          ),
+        ],
+      ]),
+      new AbortController(),
+      {
+        knownNavigationLocations: [
+          {
+            purpose: 'assignments',
+            destinationUrl: rememberedUrl,
+            status: 'verified',
+            destinationKind: 'collection',
+          },
+        ],
+        onNavigationVerified,
+      },
+    );
+
+    await result;
+    expect(openFrom).toHaveBeenCalledWith(expect.anything(), rememberedUrl);
+    expect(
+      request.mock.calls.some(
+        ([body]) =>
+          body.kind === 'choose' &&
+          body.targets?.some((target) => target.url === rememberedUrl),
+      ),
+    ).toBe(false);
+    expect(onNavigationVerified).toHaveBeenCalledWith(
+      expect.objectContaining({
+        purpose: 'assignments',
+        destinationUrl: rememberedUrl,
+        destinationKind: 'collection',
+      }),
+    );
+    expect((await result).metrics).toMatchObject({
+      knownDestinationsReused: 1,
+      candidatesExtracted: 1,
+      duplicatesReconciled: 0,
+    });
+  });
+
+  it('counts a newly verified destination as a navigation repair when saved knowledge moved', async () => {
+    const oldUrl = `${root}/modules/old-work`;
+    const newUrl = `${root}/modules/current-work`;
+    const request = vi.fn(async (body: AgentRequestSchema) =>
+      body.kind === 'choose'
+        ? {
+            operation: 'NAVIGATE',
+            target: body.targets?.find((target) => target.url === newUrl)?.id,
+          }
+        : { assignments: [], coverage: 'complete' },
+    );
+    const { result } = run(
+      request,
+      new Map([
+        [root, page(root, [{ label: 'Current work', url: newUrl }])],
+        [newUrl, page(newUrl, [], 'Current assignments')],
+      ]),
+      new AbortController(),
+      {
+        knownNavigationLocations: [
+          {
+            purpose: 'assignments',
+            destinationUrl: oldUrl,
+            status: 'verified',
+            destinationKind: 'collection',
+          },
+        ],
+        onNavigationVerified: vi.fn(),
+      },
+    );
+
+    expect(await result).toMatchObject({
+      status: 'complete',
+      metrics: {
+        navigationRepairs: 1,
+        knownDestinationsReused: 0,
+      },
+    });
+  });
+
+  it('reports validated candidates without retaining their source content in metrics', async () => {
+    const record = card('Worksheet 1', root);
+    const { result } = run(
+      vi.fn(async () => ({
+        assignments: [record, record],
+        coverage: 'complete',
+      })),
+      new Map([[root, page(root, [], 'Worksheet 1')]]),
+    );
+
+    const scanned = await result;
+    expect(scanned.items).toHaveLength(1);
+    expect(scanned.metrics).toMatchObject({
+      candidatesExtracted: 1,
+      duplicatesReconciled: 0,
+      ambiguousIdentityConflicts: 0,
+    });
+    expect(JSON.stringify(scanned.metrics)).not.toContain('Worksheet 1');
+  });
+
+  it('uses the inout action already completed on the protected course page', async () => {
+    const folderUrl = `${root}/modules/week-one`;
+    const pages = new Map([
+      [root, page(root, [{ label: 'Week one', url: folderUrl }], 'Week one')],
+      [folderUrl, page(folderUrl, [], 'Worksheet 1')],
+    ]);
+    let currentUrl = root;
+    const request = vi.fn(async (body: AgentRequestSchema) =>
+      body.kind === 'assignments' && body.pages[0].url === folderUrl
+        ? {
+            assignments: [card('Worksheet 1', folderUrl)],
+            coverage: 'complete',
+          }
+        : { assignments: [], coverage: 'partial' },
+    );
+    const navigation = {
+      discoverCourses: vi.fn(),
+      choose: vi.fn(async ({ targets }) => {
+        currentUrl = folderUrl;
+        return {
+          operation: 'NAVIGATE' as const,
+          target: targets[0]!.id,
+          navigationHandled: true,
+        };
+      }),
+      extract: vi.fn(async (body: AgentRequestSchema) => request(body)),
+    } as unknown as BrowserNavigationAdapter;
+    const onModelCall = vi.fn();
+    const { result, openFrom } = run(request, pages, new AbortController(), {
+      navigation,
+      readCurrent: async () => pages.get(currentUrl)!,
+      onModelCall,
+    });
+
+    const scanned = await result;
+    expect(scanned.items.map((item) => item.title)).toContain('Worksheet 1');
+    expect(navigation.choose).toHaveBeenCalledOnce();
+    expect(onModelCall).toHaveBeenCalledTimes(3);
+    expect(openFrom).not.toHaveBeenCalled();
+  });
+
   it('follows nested modules and pagination beyond the old call budget without revisiting cycles', async () => {
     const pages = new Map(
       Array.from({ length: 16 }, (_, index) => {
@@ -198,7 +409,7 @@ describe('deep course content scanning', () => {
       request,
       new Map([[root, page(root, links)]]),
     );
-    expect(await result).toEqual({ status: 'partial', items: [] });
+    expect(await result).toMatchObject({ status: 'partial', items: [] });
     expect(
       request.mock.calls.filter(([body]) => body.kind === 'choose'),
     ).toHaveLength(2);
@@ -302,6 +513,76 @@ describe('deep course content scanning', () => {
     });
   });
 
+  it('reconciles source-ID and individual-URL observations across collection pages', async () => {
+    const assignmentsUrl = `${root}/assignments`;
+    const assignmentUrl = `${assignmentsUrl}/a-1`;
+    const request = vi.fn(async (body: AgentRequestSchema) => {
+      if (body.kind === 'choose') return { operation: 'DONE', target: null };
+      if (body.pages[0]?.url === root)
+        return {
+          coverage: 'partial',
+          assignments: [
+            {
+              ...card('Upcoming quiz', root),
+              sourceId: 'a-1',
+              evidence: {
+                sourceUrl: root,
+                excerpts: ['Upcoming quiz a-1'],
+                targetIds: [],
+              },
+            },
+          ],
+        };
+      const target = body.targets?.find((item) => item.url === assignmentUrl);
+      return {
+        coverage: 'complete',
+        assignments: [
+          {
+            ...card('Upcoming quiz', assignmentsUrl),
+            url: assignmentUrl,
+            evidence: {
+              sourceUrl: assignmentsUrl,
+              excerpts: ['Upcoming quiz'],
+              targetIds: target ? [target.id] : [],
+            },
+          },
+        ],
+      };
+    });
+    const { result } = run(
+      request,
+      new Map([
+        [
+          root,
+          page(
+            root,
+            [{ label: 'Assignments', url: assignmentsUrl }],
+            'Upcoming quiz a-1',
+          ),
+        ],
+        [
+          assignmentsUrl,
+          page(
+            assignmentsUrl,
+            [{ label: 'Upcoming quiz', url: assignmentUrl }],
+            'Upcoming quiz',
+          ),
+        ],
+      ]),
+    );
+
+    expect(await result).toMatchObject({
+      status: 'complete',
+      items: [expect.objectContaining({ title: 'Upcoming quiz' })],
+    });
+    expect((await result).items).toHaveLength(1);
+    expect((await result).metrics).toMatchObject({
+      candidatesExtracted: 2,
+      duplicatesReconciled: 1,
+      ambiguousIdentityConflicts: 0,
+    });
+  });
+
   it('clears an unknown assignment gap only after its detail page resolves the same item', async () => {
     const assignmentUrl = `${root}/assignments/123`;
     const request = vi.fn(async (body: AgentRequestSchema) => {
@@ -387,7 +668,7 @@ describe('deep course content scanning', () => {
       new Map([[root, page(root, [{ label: 'Next', url: next }])]]),
     );
 
-    expect(await result).toEqual({ status: 'partial', items: [] });
+    expect(await result).toMatchObject({ status: 'partial', items: [] });
   });
 
   it('keeps a truncated page incomplete when extraction reports complete', async () => {
@@ -401,7 +682,7 @@ describe('deep course content scanning', () => {
       new Map([[root, page(root, [], 'a'.repeat(15_000))]]),
     );
 
-    expect(await result).toEqual({ status: 'partial', items: [] });
+    expect(await result).toMatchObject({ status: 'partial', items: [] });
     expect(
       request.mock.calls.some(
         ([body]) => body.kind === 'assignments' && body.context?.truncated,

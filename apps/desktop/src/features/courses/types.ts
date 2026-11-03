@@ -34,6 +34,15 @@ export type CourseChildScan = {
   status: CourseScanStatus;
   items: CourseChildItem[];
   inactiveItems?: CourseChildItem[];
+  metrics?: CourseChildScanMetrics;
+};
+
+export type CourseChildScanMetrics = {
+  candidatesExtracted: number;
+  duplicatesReconciled: number;
+  ambiguousIdentityConflicts: number;
+  knownDestinationsReused: number;
+  navigationRepairs: number;
 };
 
 export type ObservedCourse = {
@@ -116,6 +125,27 @@ export type CoursesSnapshot = {
 export type CourseRefreshActivity = {
   id: string;
   key: string;
-  status: 'running' | 'complete' | 'partial' | 'cancelled' | 'failed';
+  status: 'running' | 'complete' | 'sign-in-required' | 'cancelled' | 'failed';
   events: string[];
+  metrics?: CourseRefreshMetrics;
 };
+
+export type CourseRefreshMetrics = {
+  pagesOpened: number;
+  modelCalls: number;
+  knownDestinationsReused: number;
+  navigationRepairs: number;
+  candidatesExtracted: number;
+  duplicatesReconciled: number;
+  ambiguousIdentityConflicts: number;
+  recordsCreated: number;
+  recordsUpdated: number;
+  recordsRetired: number;
+  firstFindingMs: number | null;
+  durationMs: number | null;
+};
+
+export type CourseRefreshMetricName = Exclude<
+  keyof CourseRefreshMetrics,
+  'durationMs' | 'firstFindingMs'
+>;

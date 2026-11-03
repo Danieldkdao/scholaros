@@ -33,7 +33,7 @@ it('shows live actions, collapses, and toasts each terminal transition once', as
   for (const status of [
     'complete',
     'cancelled',
-    'partial',
+    'sign-in-required',
     'failed',
   ] as const) {
     await act(async () =>
@@ -44,12 +44,29 @@ it('shows live actions, collapses, and toasts each terminal transition once', as
       ),
     );
   }
-  expect(toast.success).toHaveBeenCalledWith(
+  expect(toast.success).toHaveBeenNthCalledWith(
+    1,
+    'Refresh complete',
+    expect.anything(),
+  );
+  expect(toast.success).toHaveBeenNthCalledWith(
+    2,
     'Refresh stopped',
     expect.anything(),
   );
-  expect(toast.warning).toHaveBeenCalledOnce();
-  expect(toast.error).toHaveBeenCalledOnce();
+  expect(toast.success).toHaveBeenCalledTimes(2);
+  expect(toast.error).toHaveBeenNthCalledWith(
+    1,
+    'Sign in to your academic source to refresh it.',
+    expect.anything(),
+  );
+  expect(toast.error).toHaveBeenNthCalledWith(
+    2,
+    'Opening course page',
+    expect.anything(),
+  );
+  expect(toast.error).toHaveBeenCalledTimes(2);
+  expect(toast.warning).not.toHaveBeenCalled();
   await act(async () =>
     root.render(
       createElement(CourseRefreshActivity, {
@@ -57,7 +74,7 @@ it('shows live actions, collapses, and toasts each terminal transition once', as
       }),
     ),
   );
-  expect(toast.error).toHaveBeenCalledOnce();
+  expect(toast.error).toHaveBeenCalledTimes(2);
   await act(async () => root.unmount());
   node.remove();
 });

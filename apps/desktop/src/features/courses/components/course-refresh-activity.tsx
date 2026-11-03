@@ -29,8 +29,10 @@ export const CourseRefreshActivity = ({
           toast.error(run.events.at(-1) ?? label, {
             id: `course-refresh-${run.key}`,
           });
-        else if (run.status === 'partial')
-          toast.warning(label, { id: `course-refresh-${run.key}` });
+        else if (run.status === 'sign-in-required')
+          toast.error('Sign in to your academic source to refresh it.', {
+            id: `course-refresh-${run.key}`,
+          });
         else toast.success(label, { id: `course-refresh-${run.key}` });
       }
       observed.current.set(run.id, run.status);

@@ -1,45 +1,46 @@
-import { CourseCreateDialog } from "../../../features/courses/components/course-create-dialog";
+import { CourseCreateDialog } from '../../../features/courses/components/course-create-dialog';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-} from "@scholaros/ui/components/dropdown-menu";
-import { CourseRecordActions } from "../../../features/courses/components/course-record-actions";
-import { CourseRefreshActivity } from "../../../features/courses/components/course-refresh-activity";
-import { LoadingSwap } from "@scholaros/ui/components/loading-swap";
-import { useState } from "react";
-import { useDebouncedValue } from "@tanstack/react-pacer";
-import { createFileRoute, Link } from "@tanstack/react-router";
+} from '@scholaros/ui/components/dropdown-menu';
+import { CourseRecordActions } from '../../../features/courses/components/course-record-actions';
+import { CourseRefreshActivity } from '../../../features/courses/components/course-refresh-activity';
+import { LoadingSwap } from '@scholaros/ui/components/loading-swap';
+import { useState } from 'react';
+import { useDebouncedValue } from '@tanstack/react-pacer';
+import { createFileRoute, Link } from '@tanstack/react-router';
 import {
   Clock,
   ClipboardList,
   Megaphone,
   ExternalLink,
+  Eye,
   KeyRound,
   Loader2,
   RefreshCw,
   Plus,
   Pencil,
   SquareIcon,
-} from "lucide-react";
-import { Alert, AlertDescription } from "@scholaros/ui/components/alert";
-import { Button } from "@scholaros/ui/components/button";
-import { Card, CardContent } from "@scholaros/ui/components/card";
-import { Input } from "@scholaros/ui/components/input";
-import { Separator } from "@scholaros/ui/components/separator";
-import { TooltipWrapper } from "@scholaros/ui/components/tooltip-wrapper";
-import { PageHeading } from "../../../features/dashboard/page-heading";
-import { defaultConnectionSearch } from "../../../features/dashboard/lib/connection-filters";
-import { useCourses } from "../../../features/courses/hooks/use-courses";
+} from 'lucide-react';
+import { Alert, AlertDescription } from '@scholaros/ui/components/alert';
+import { Button } from '@scholaros/ui/components/button';
+import { Card, CardContent } from '@scholaros/ui/components/card';
+import { Input } from '@scholaros/ui/components/input';
+import { Separator } from '@scholaros/ui/components/separator';
+import { TooltipWrapper } from '@scholaros/ui/components/tooltip-wrapper';
+import { PageHeading } from '../../../features/dashboard/page-heading';
+import { defaultConnectionSearch } from '../../../features/dashboard/lib/connection-filters';
+import { useCourses } from '../../../features/courses/hooks/use-courses';
 import {
   formatCoursesEmpty,
   formatCourseScanStatus,
   formatCourseSourceState,
-} from "../../../features/courses/lib/formatters";
-import { useOnboardingState } from "../../../features/onboarding/hooks/use-onboarding-state";
-import { formatObservedAt } from "../../../features/onboarding/lib/formatters";
-import { useBridgeAction } from "../../../hooks/use-bridge-action";
+} from '../../../features/courses/lib/formatters';
+import { useOnboardingState } from '../../../features/onboarding/hooks/use-onboarding-state';
+import { formatObservedAt } from '../../../features/onboarding/lib/formatters';
+import { useBridgeAction } from '../../../hooks/use-bridge-action';
 
 const CoursesPage = () => {
   const { state } = useOnboardingState();
@@ -47,7 +48,7 @@ const CoursesPage = () => {
     useCourses(state?.accountId ?? null);
   const [creating, setCreating] = useState(false);
   const [showInactive, setShowInactive] = useState(false);
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState('');
   const [debouncedQuery] = useDebouncedValue(query, { wait: 250 });
   const search = debouncedQuery.trim().toLowerCase();
   const { busy, error, run } = useBridgeAction();
@@ -55,7 +56,7 @@ const CoursesPage = () => {
     state?.connections.filter((connection) => connection.isCourseResource) ??
     [];
   const signedOut = marked.filter(
-    (connection) => connection.status === "needs-sign-in",
+    (connection) => connection.status === 'needs-sign-in',
   );
   const courses = snapshot?.courses ?? [];
   const inactive = courses.filter((course) => !course.active);
@@ -70,13 +71,13 @@ const CoursesPage = () => {
           course.sourceName,
           course.sourceHost,
         ]
-          .join(" ")
+          .join(' ')
           .toLowerCase()
           .includes(search),
     )
     .sort((left, right) =>
       left.name.localeCompare(right.name, undefined, {
-        sensitivity: "base",
+        sensitivity: 'base',
         numeric: true,
       }),
     );
@@ -85,6 +86,19 @@ const CoursesPage = () => {
     <div className="flex flex-col gap-6 text-base">
       <PageHeading page="courses">
         <div className="flex flex-wrap items-center gap-3">
+          <TooltipWrapper content="Watch settings">
+            <Button
+              variant="ghost"
+              size="icon"
+              nativeButton={false}
+              aria-label="Watch settings"
+              render={
+                <Link to="/dashboard/settings" search={{ section: 'watch' }} />
+              }
+            >
+              <Eye />
+            </Button>
+          </TooltipWrapper>
           {snapshot?.lastSuccessfulAt && (
             <p className="text-base flex items-center gap-2 text-muted-foreground">
               <Clock className="size-4 shrink-0" />
@@ -106,8 +120,8 @@ const CoursesPage = () => {
                 <TooltipWrapper
                   content={
                     canRefresh
-                      ? "Sync courses from your learning resources"
-                      : "Select a course resource in Connections to enable syncing."
+                      ? 'Sync courses from your learning resources'
+                      : 'Select a course resource in Connections to enable syncing.'
                   }
                 >
                   <span className="block" tabIndex={canRefresh ? undefined : 0}>
@@ -214,9 +228,9 @@ const CoursesPage = () => {
       {snapshot?.sources
         .filter(
           (source) =>
-            source.outcome !== "complete" &&
-            source.outcome !== "partial" &&
-            source.outcome !== "cancelled",
+            source.outcome !== 'complete' &&
+            source.outcome !== 'partial' &&
+            source.outcome !== 'cancelled',
         )
         .map((source) => {
           const connection = marked.find(
@@ -278,7 +292,7 @@ const CoursesPage = () => {
       <div className="flex flex-col gap-3">
         {visible.map((course) => {
           const source =
-            course.sourceState === "connected"
+            course.sourceState === 'connected'
               ? null
               : formatCourseSourceState(course.sourceState);
           return (
@@ -343,20 +357,20 @@ const CoursesPage = () => {
                 <div className="flex flex-wrap items-center gap-4 text-muted-foreground">
                   <span className="flex items-center gap-2">
                     <Megaphone aria-hidden="true" className="size-4 shrink-0" />
-                    {course.announcementCount}{" "}
+                    {course.announcementCount}{' '}
                     {course.announcementCount === 1
-                      ? "announcement"
-                      : "announcements"}
+                      ? 'announcement'
+                      : 'announcements'}
                   </span>
                   <span className="flex items-center gap-2">
                     <ClipboardList
                       aria-hidden="true"
                       className="size-4 shrink-0"
                     />
-                    {course.assignmentCount}{" "}
+                    {course.assignmentCount}{' '}
                     {course.assignmentCount === 1
-                      ? "assignment"
-                      : "assignments"}
+                      ? 'assignment'
+                      : 'assignments'}
                   </span>
                 </div>
               </CardContent>
@@ -372,9 +386,9 @@ const CoursesPage = () => {
           onClick={() => setShowInactive((shown) => !shown)}
         >
           {showInactive
-            ? "Hide inactive courses"
+            ? 'Hide inactive courses'
             : `Show ${inactive.length} inactive course${
-                inactive.length === 1 ? "" : "s"
+                inactive.length === 1 ? '' : 's'
               }`}
         </Button>
       )}
@@ -382,6 +396,6 @@ const CoursesPage = () => {
   );
 };
 
-export const Route = createFileRoute("/dashboard/courses/")({
+export const Route = createFileRoute('/dashboard/courses/')({
   component: CoursesPage,
 });
