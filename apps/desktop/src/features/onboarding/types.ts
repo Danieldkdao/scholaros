@@ -3,6 +3,31 @@ import type {
   CreateCourseRecordSchema,
   UpdateCourseRecordSchema,
 } from '../courses/schemas';
+import type {
+  InputOf,
+  LearningPublicMethod,
+  ProductEventV1,
+  ResultOf,
+  SafeErrorCode,
+} from '@scholaros/services/learning/product-contracts';
+import type {
+  DictationAudioChunk,
+  DictationEvent,
+  DictationStartInput,
+} from '@scholaros/services/learning/speech-contracts';
+import type {
+  AcademicReconnect,
+  AuthMode,
+  CloseActivityInput,
+  ContextFileSelectionInput,
+  ContextFileSelectionResult,
+  DeleteLocalAcademicDataInput,
+  MountActivityInput,
+  UpdateActivityBoundsInput,
+  WorkspaceReplacementCancelInput,
+  WorkspaceReplacementCommitInput,
+  WorkspaceReplacementInput,
+} from '../../services/academic/contracts';
 import type { ConnectRunState } from './services/connect-run';
 import type { ConnectionCandidateSchema } from '@scholaros/services/ai/schemas';
 import type { CourseDetail, CoursesSnapshot } from '../courses/types';
@@ -19,6 +44,7 @@ export type CurrentUser = {
   email: string;
   image: string | null;
   hasCompletedOnboarding: boolean;
+  authMode?: AuthMode;
 };
 export type BrowserId = 'chrome' | 'edge' | 'brave';
 export type BrowserInstallation = {
@@ -190,7 +216,34 @@ export type ConnectionProposal = {
   id: string;
   candidates: ConnectionCandidateSchema[];
 };
-export type ScholarBridge = {
+
+export type DeviceReplacementDTO = {
+  operationId: string;
+  state:
+    | 'staged'
+    | 'verifying'
+    | 'ready'
+    | 'committed'
+    | 'cancelled'
+    | 'failed'
+    | 'needs-sign-in';
+  browserId: string;
+  errorCode: SafeErrorCode | null;
+  revision: number;
+};
+
+type LearningBridge = {
+  [Method in LearningPublicMethod]: (
+    input: InputOf<Method>,
+  ) => Promise<ResultOf<Method>>;
+};
+
+export type ScholarBridge = LearningBridge & {
+  onProductEvent: (listener: (event: ProductEventV1) => void) => () => void;
+  onAcademicReconnect: (
+    listener: (change: AcademicReconnect) => void,
+  ) => () => void;
+  onDictationEvent: (listener: (event: DictationEvent) => void) => () => void;
   onCoursesChange: (
     listener: (change: { accountId: string; courseId: string | null }) => void,
   ) => () => void;
@@ -256,6 +309,38 @@ export type ScholarBridge = {
   completeOnboarding: () => Promise<void>;
   signOut: () => Promise<void>;
   openSource: (url: string) => Promise<void>;
+  stageWorkspaceReplacement: (
+    input: WorkspaceReplacementInput,
+  ) => Promise<DeviceReplacementDTO>;
+  commitWorkspaceReplacement: (
+    input: WorkspaceReplacementCommitInput,
+  ) => Promise<DeviceReplacementDTO>;
+  cancelWorkspaceReplacement: (
+    input: WorkspaceReplacementCancelInput,
+  ) => Promise<DeviceReplacementDTO>;
+  deleteLocalAcademicData: (
+    input: DeleteLocalAcademicDataInput,
+  ) => Promise<void>;
+  chooseContextFiles: (
+    input: ContextFileSelectionInput,
+  ) => Promise<ContextFileSelectionResult>;
+  mountActivity: (input: MountActivityInput) => Promise<{ runId: string }>;
+  updateActivityBounds: (input: UpdateActivityBoundsInput) => Promise<void>;
+  closeActivity: (input: CloseActivityInput) => Promise<void>;
+  startDictation: (
+    input: DictationStartInput,
+  ) => Promise<{ operationId: string }>;
+  appendDictationAudio: (
+    input: DictationAudioChunk,
+  ) => Promise<{ acceptedSequence: number }>;
+  stopDictation: (input: { operationId: string }) => Promise<void>;
+  cancelDictation: (input: { operationId: string }) => Promise<void>;
+  requestMicrophonePermission: (input: { sessionId: string }) => Promise<{
+    state: 'granted' | 'denied' | 'unsupported';
+  }>;
+  requestNotificationPermission: (input: Record<string, never>) => Promise<{
+    state: 'granted' | 'denied' | 'unsupported' | 'unknown';
+  }>;
 };
 
 declare global {

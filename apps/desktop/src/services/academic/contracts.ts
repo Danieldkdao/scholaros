@@ -1,8 +1,81 @@
+import type { ActivityPresentation } from '@scholaros/services/learning/activity-contracts';
+import type { IngestionStatus } from '@scholaros/services/learning/context-contracts';
+import type {
+  AuthorizedRegistrar,
+  Id,
+  LearningPublicMethod,
+  RequestId,
+  Revision,
+} from '@scholaros/services/learning/product-contracts';
 import { z } from 'zod';
 
-export const academicMethods = [
+export const learningMethods = [
+  'listContextItems',
+  'getContextItem',
+  'createContextNote',
+  'updateContextItem',
+  'linkContextItem',
+  'removeContextItem',
+  'retryContextIngestion',
+  'cancelContextIngestion',
+  'readContextPreview',
+  'getGradeSettings',
+  'saveGradeSettings',
+  'verifyCoursework',
+  'getVerifiedCourseworkEvidence',
+  'createStudySession',
+  'listStudySessions',
+  'getStudySession',
+  'renameStudySession',
+  'saveStudyDraft',
+  'deleteStudySession',
+  'reconcileStudyDeadline',
+  'finishStudySession',
+  'extendStudySession',
+  'continueStudyUntimed',
+  'sendStudyTurn',
+  'retryStudyTurn',
+  'cancelStudyTurn',
+  'getArtifactVersion',
+  'getArtifactState',
+  'resetArtifactAttempt',
+  'saveArtifactToContext',
+  'getPracticeAttempt',
+  'savePracticeAnswer',
+  'submitPracticeAttempt',
+  'switchPracticeToGuided',
+  'retryPracticeAttempt',
+  'listMemories',
+  'upsertExplicitPreference',
+  'correctMemory',
+  'deleteMemory',
+  'getLearningProgress',
+  'getTodayOverview',
+  'getStudyRecommendations',
+  'getNotificationSettings',
+  'saveNotificationSettings',
+] as const satisfies readonly LearningPublicMethod[];
+
+type AssertNever<Value extends never> = Value;
+export type LearningMethodContractCoverage = AssertNever<
+  Exclude<LearningPublicMethod, (typeof learningMethods)[number]>
+>;
+export type LearningMethod = (typeof learningMethods)[number];
+
+export const serviceControlMethods = [
   'health',
   'subscribe',
+  'shutdown',
+] as const;
+export const internalAcademicMethods = [
+  'registerSelectedContextFiles',
+  'authorizeActivityRun',
+  'checkpointArtifactState',
+  'claimDueNotifications',
+  'purgeGradeDerivedStudyContent',
+] as const;
+
+export const legacyRendererMethods = [
   'getCurrentUser',
   'signOut',
   'getState',
@@ -44,10 +117,53 @@ export const academicMethods = [
   'cancelPreview',
   'openSource',
   'completeOnboarding',
-  'shutdown',
+] as const;
+
+export const rendererProductMethods = [
+  'stageWorkspaceReplacement',
+  'commitWorkspaceReplacement',
+  'cancelWorkspaceReplacement',
+  'deleteLocalAcademicData',
+] as const;
+
+export const rendererAcademicMethods = [
+  ...legacyRendererMethods,
+  ...learningMethods,
+  ...rendererProductMethods,
+] as const;
+export type RendererAcademicMethod = (typeof rendererAcademicMethods)[number];
+export type InternalAcademicMethod = (typeof internalAcademicMethods)[number];
+export const academicMethods = [
+  ...serviceControlMethods,
+  ...rendererAcademicMethods,
+  ...internalAcademicMethods,
 ] as const;
 export type AcademicMethod = (typeof academicMethods)[number];
-export const academicRequestSchema = z.object({
+export const offlineReadMethods = [
+  'getCurrentUser',
+  'getState',
+  'getWatchSettings',
+  'getWatchRuntimeState',
+  'getConnectRun',
+  'getCourses',
+  'getCourse',
+  'listContextItems',
+  'getContextItem',
+  'readContextPreview',
+  'getGradeSettings',
+  'listStudySessions',
+  'getStudySession',
+  'getArtifactVersion',
+  'getArtifactState',
+  'getPracticeAttempt',
+  'listMemories',
+  'getLearningProgress',
+  'getTodayOverview',
+  'getStudyRecommendations',
+  'getNotificationSettings',
+] as const satisfies readonly RendererAcademicMethod[];
+export type OfflineReadMethod = (typeof offlineReadMethods)[number];
+export const academicRequestSchema = z.strictObject({
   version: z.literal(1),
   id: z.string().min(1).max(100),
   token: z.string().min(1).max(200),
@@ -55,7 +171,7 @@ export const academicRequestSchema = z.object({
   input: z.unknown().optional(),
 });
 export type AcademicRequestSchema = z.infer<typeof academicRequestSchema>;
-export const academicEndpointSchema = z.object({
+export const academicEndpointSchema = z.strictObject({
   version: z.literal(1),
   address: z.string().min(1).max(300),
   token: z.string().length(64),
@@ -67,16 +183,17 @@ export const academicEventChannels = [
   'scholar:previewChange',
   'scholar:coursesChange',
   'scholar:watchChange',
+  'scholar:productEvent',
 ] as const;
 export type AcademicEventChannel = (typeof academicEventChannels)[number];
 export const academicMessageSchema = z.discriminatedUnion('kind', [
-  z.object({
+  z.strictObject({
     kind: z.literal('result'),
     id: z.string(),
     value: z.unknown().optional(),
     error: z.string().optional(),
   }),
-  z.object({
+  z.strictObject({
     kind: z.literal('event'),
     channel: z.enum(academicEventChannels),
     value: z.unknown().optional(),
@@ -84,3 +201,51 @@ export const academicMessageSchema = z.discriminatedUnion('kind', [
 ]);
 export type AcademicMessageSchema = z.infer<typeof academicMessageSchema>;
 export type AcademicAction = (input: unknown) => unknown;
+export type LearningActionRegistrar = AuthorizedRegistrar;
+export const academicReconnectSchema = z.strictObject({
+  accountId: z.string().min(1).max(300).nullable(),
+});
+export type AcademicReconnect = z.infer<typeof academicReconnectSchema>;
+export type AuthMode = 'online' | 'offline-local';
+export type WorkspaceReplacementInput = {
+  requestId: RequestId;
+  browserId: Id;
+};
+export type WorkspaceReplacementCommitInput = {
+  operationId: Id;
+  expectedRevision: Revision;
+};
+export type WorkspaceReplacementCancelInput = { operationId: Id };
+export type DeleteLocalAcademicDataInput = {
+  requestId: RequestId;
+  scope: 'account-local';
+};
+export type ContextFileSelectionInput = {
+  sessionId?: Id;
+  courseId?: Id;
+  saveToLibrary: boolean;
+};
+export type ContextFileSelectionResult = {
+  items: { itemId: Id; operationId: Id; status: IngestionStatus }[];
+  cancelled: boolean;
+};
+export type ActivityBounds = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+export type MountActivityInput = {
+  sessionId: Id;
+  artifactId: Id;
+  versionId: Id;
+  attemptId: Id;
+  presentation: ActivityPresentation;
+  bounds: ActivityBounds;
+};
+export type UpdateActivityBoundsInput = {
+  runId: Id;
+  bounds: ActivityBounds;
+  visible: boolean;
+};
+export type CloseActivityInput = { runId: Id };

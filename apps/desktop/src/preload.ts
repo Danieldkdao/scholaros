@@ -1,6 +1,9 @@
 import type { ConnectRunState } from './features/onboarding/services/connect-run';
+import { dictationEventSchema } from '@scholaros/services/learning/speech-contracts';
+import { productEventV1Schema } from '@scholaros/services/learning/product-contracts';
 import { setupRenderer } from '@better-auth/electron/preload';
 import { contextBridge, ipcRenderer } from 'electron';
+import { academicReconnectSchema } from './services/academic/contracts';
 import type {
   BackgroundSyncChange,
   PreviewState,
@@ -10,6 +13,116 @@ import type {
 
 setupRenderer();
 const bridge: ScholarBridge = {
+  onProductEvent: (listener) => {
+    const handler = (_event: unknown, value: unknown) => {
+      const parsed = productEventV1Schema.safeParse(value);
+      if (parsed.success) listener(parsed.data);
+    };
+    ipcRenderer.on('scholar:productEvent', handler);
+    return () => ipcRenderer.removeListener('scholar:productEvent', handler);
+  },
+  onAcademicReconnect: (listener) => {
+    const handler = (_event: unknown, value: unknown) => {
+      const parsed = academicReconnectSchema.safeParse(value);
+      if (parsed.success) listener(parsed.data);
+    };
+    ipcRenderer.on('scholar:academicReconnect', handler);
+    return () =>
+      ipcRenderer.removeListener('scholar:academicReconnect', handler);
+  },
+  onDictationEvent: (listener) => {
+    const handler = (_event: unknown, value: unknown) => {
+      const parsed = dictationEventSchema.safeParse(value);
+      if (parsed.success) listener(parsed.data);
+    };
+    ipcRenderer.on('scholar:native:dictationEvent', handler);
+    return () =>
+      ipcRenderer.removeListener('scholar:native:dictationEvent', handler);
+  },
+  listContextItems: (input) =>
+    ipcRenderer.invoke('scholar:listContextItems', input),
+  getContextItem: (input) =>
+    ipcRenderer.invoke('scholar:getContextItem', input),
+  createContextNote: (input) =>
+    ipcRenderer.invoke('scholar:createContextNote', input),
+  updateContextItem: (input) =>
+    ipcRenderer.invoke('scholar:updateContextItem', input),
+  linkContextItem: (input) =>
+    ipcRenderer.invoke('scholar:linkContextItem', input),
+  removeContextItem: (input) =>
+    ipcRenderer.invoke('scholar:removeContextItem', input),
+  retryContextIngestion: (input) =>
+    ipcRenderer.invoke('scholar:retryContextIngestion', input),
+  cancelContextIngestion: (input) =>
+    ipcRenderer.invoke('scholar:cancelContextIngestion', input),
+  readContextPreview: (input) =>
+    ipcRenderer.invoke('scholar:readContextPreview', input),
+  getGradeSettings: () => ipcRenderer.invoke('scholar:getGradeSettings', {}),
+  saveGradeSettings: (input) =>
+    ipcRenderer.invoke('scholar:saveGradeSettings', input),
+  verifyCoursework: (input) =>
+    ipcRenderer.invoke('scholar:verifyCoursework', input),
+  getVerifiedCourseworkEvidence: (input) =>
+    ipcRenderer.invoke('scholar:getVerifiedCourseworkEvidence', input),
+  createStudySession: (input) =>
+    ipcRenderer.invoke('scholar:createStudySession', input),
+  listStudySessions: (input) =>
+    ipcRenderer.invoke('scholar:listStudySessions', input),
+  getStudySession: (input) =>
+    ipcRenderer.invoke('scholar:getStudySession', input),
+  renameStudySession: (input) =>
+    ipcRenderer.invoke('scholar:renameStudySession', input),
+  saveStudyDraft: (input) =>
+    ipcRenderer.invoke('scholar:saveStudyDraft', input),
+  deleteStudySession: (input) =>
+    ipcRenderer.invoke('scholar:deleteStudySession', input),
+  reconcileStudyDeadline: (input) =>
+    ipcRenderer.invoke('scholar:reconcileStudyDeadline', input),
+  finishStudySession: (input) =>
+    ipcRenderer.invoke('scholar:finishStudySession', input),
+  extendStudySession: (input) =>
+    ipcRenderer.invoke('scholar:extendStudySession', input),
+  continueStudyUntimed: (input) =>
+    ipcRenderer.invoke('scholar:continueStudyUntimed', input),
+  sendStudyTurn: (input) => ipcRenderer.invoke('scholar:sendStudyTurn', input),
+  retryStudyTurn: (input) =>
+    ipcRenderer.invoke('scholar:retryStudyTurn', input),
+  cancelStudyTurn: (input) =>
+    ipcRenderer.invoke('scholar:cancelStudyTurn', input),
+  getArtifactVersion: (input) =>
+    ipcRenderer.invoke('scholar:getArtifactVersion', input),
+  getArtifactState: (input) =>
+    ipcRenderer.invoke('scholar:getArtifactState', input),
+  resetArtifactAttempt: (input) =>
+    ipcRenderer.invoke('scholar:resetArtifactAttempt', input),
+  saveArtifactToContext: (input) =>
+    ipcRenderer.invoke('scholar:saveArtifactToContext', input),
+  getPracticeAttempt: (input) =>
+    ipcRenderer.invoke('scholar:getPracticeAttempt', input),
+  savePracticeAnswer: (input) =>
+    ipcRenderer.invoke('scholar:savePracticeAnswer', input),
+  submitPracticeAttempt: (input) =>
+    ipcRenderer.invoke('scholar:submitPracticeAttempt', input),
+  switchPracticeToGuided: (input) =>
+    ipcRenderer.invoke('scholar:switchPracticeToGuided', input),
+  retryPracticeAttempt: (input) =>
+    ipcRenderer.invoke('scholar:retryPracticeAttempt', input),
+  listMemories: (input) => ipcRenderer.invoke('scholar:listMemories', input),
+  upsertExplicitPreference: (input) =>
+    ipcRenderer.invoke('scholar:upsertExplicitPreference', input),
+  correctMemory: (input) => ipcRenderer.invoke('scholar:correctMemory', input),
+  deleteMemory: (input) => ipcRenderer.invoke('scholar:deleteMemory', input),
+  getLearningProgress: (input) =>
+    ipcRenderer.invoke('scholar:getLearningProgress', input),
+  getTodayOverview: (input) =>
+    ipcRenderer.invoke('scholar:getTodayOverview', input),
+  getStudyRecommendations: (input) =>
+    ipcRenderer.invoke('scholar:getStudyRecommendations', input),
+  getNotificationSettings: () =>
+    ipcRenderer.invoke('scholar:getNotificationSettings', {}),
+  saveNotificationSettings: (input) =>
+    ipcRenderer.invoke('scholar:saveNotificationSettings', input),
+  getCurrentUser: () => ipcRenderer.invoke('scholar:getCurrentUser'),
   onCoursesChange: (listener) => {
     const handler = (
       _event: unknown,
@@ -20,7 +133,6 @@ const bridge: ScholarBridge = {
       ipcRenderer.removeListener('scholar:coursesChange', handler);
     };
   },
-  getCurrentUser: () => ipcRenderer.invoke('scholar:getCurrentUser'),
   resolveConnections: (prompt) =>
     ipcRenderer.invoke('scholar:resolveConnections', prompt),
   reviseConnectionProposal: (proposal) =>
@@ -104,5 +216,33 @@ const bridge: ScholarBridge = {
   completeOnboarding: () => ipcRenderer.invoke('scholar:completeOnboarding'),
   signOut: () => ipcRenderer.invoke('scholar:signOut'),
   openSource: (url) => ipcRenderer.invoke('scholar:openSource', url),
+  stageWorkspaceReplacement: (input) =>
+    ipcRenderer.invoke('scholar:stageWorkspaceReplacement', input),
+  commitWorkspaceReplacement: (input) =>
+    ipcRenderer.invoke('scholar:commitWorkspaceReplacement', input),
+  cancelWorkspaceReplacement: (input) =>
+    ipcRenderer.invoke('scholar:cancelWorkspaceReplacement', input),
+  deleteLocalAcademicData: (input) =>
+    ipcRenderer.invoke('scholar:deleteLocalAcademicData', input),
+  chooseContextFiles: (input) =>
+    ipcRenderer.invoke('scholar:native:chooseContextFiles', input),
+  mountActivity: (input) =>
+    ipcRenderer.invoke('scholar:native:mountActivity', input),
+  updateActivityBounds: (input) =>
+    ipcRenderer.invoke('scholar:native:updateActivityBounds', input),
+  closeActivity: (input) =>
+    ipcRenderer.invoke('scholar:native:closeActivity', input),
+  startDictation: (input) =>
+    ipcRenderer.invoke('scholar:native:startDictation', input),
+  appendDictationAudio: (input) =>
+    ipcRenderer.invoke('scholar:native:appendDictationAudio', input),
+  stopDictation: (input) =>
+    ipcRenderer.invoke('scholar:native:stopDictation', input),
+  cancelDictation: (input) =>
+    ipcRenderer.invoke('scholar:native:cancelDictation', input),
+  requestMicrophonePermission: (input) =>
+    ipcRenderer.invoke('scholar:native:requestMicrophonePermission', input),
+  requestNotificationPermission: (input) =>
+    ipcRenderer.invoke('scholar:native:requestNotificationPermission', input),
 };
 contextBridge.exposeInMainWorld('scholar', bridge);

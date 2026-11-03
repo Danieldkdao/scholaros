@@ -1,19 +1,27 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, ipcMain } from 'electron';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
+import { productEventV1Schema } from '@scholaros/services/learning/product-contracts';
 import {
   academicEndpointSchema,
-  academicMethods,
+  rendererAcademicMethods,
   type AcademicEndpointSchema,
+  type AcademicEventChannel,
+  type AcademicMethod,
 } from './contracts';
+import {
+  getTrustedWindows,
+  requireTrustedSender,
+} from '../../lib/trusted-windows';
 import { academicRequest, subscribeAcademic } from './transport';
 
 let starting: Promise<AcademicEndpointSchema> | null = null;
 let stopSubscription: (() => void) | null = null;
 let stopping = false;
 let connected: AcademicEndpointSchema | null = null;
+let authIdentity: string | null | undefined;
 const directory = () => path.join(app.getPath('userData'), 'academic-service');
 const findService = async () => {
   const endpoint = academicEndpointSchema.parse(
@@ -24,9 +32,54 @@ const findService = async () => {
     throw new Error('The academic service is starting.');
   return endpoint;
 };
-const publish = (channel: string, value: unknown) => {
-  for (const window of BrowserWindow.getAllWindows())
+const broadcastToTrustedWindows = (channel: string, value: unknown) => {
+  for (const window of getTrustedWindows()) {
     if (!window.isDestroyed()) window.webContents.send(channel, value);
+  }
+};
+const getAuthIdentity = (user: unknown) => {
+  if (!user || typeof user !== 'object' || !('id' in user)) return null;
+  const candidate = user as {
+    id?: unknown;
+    hasCompletedOnboarding?: unknown;
+    authMode?: unknown;
+  };
+  if (typeof candidate.id !== 'string') return null;
+  return [
+    candidate.id,
+    candidate.hasCompletedOnboarding === true,
+    candidate.authMode === 'offline-local',
+  ].join(':');
+};
+const publishAuthIdentity = (user: unknown) => {
+  const nextIdentity = getAuthIdentity(user);
+  if (nextIdentity === authIdentity) return;
+  authIdentity = nextIdentity;
+  broadcastToTrustedWindows('better-auth:user-updated', null);
+};
+const publish = (channel: AcademicEventChannel, value: unknown) => {
+  if (
+    channel === 'scholar:productEvent' &&
+    !productEventV1Schema.safeParse(value).success
+  )
+    return;
+
+  broadcastToTrustedWindows(channel, value);
+};
+const publishReconnect = (user: unknown) => {
+  publishAuthIdentity(user);
+  const accountId =
+    user &&
+    typeof user === 'object' &&
+    'id' in user &&
+    typeof user.id === 'string'
+      ? user.id
+      : null;
+  broadcastToTrustedWindows('scholar:coursesChange', {
+    accountId,
+    courseId: null,
+  });
+  broadcastToTrustedWindows('scholar:academicReconnect', { accountId });
 };
 const ensureService = (): Promise<AcademicEndpointSchema> =>
   connected
@@ -63,11 +116,7 @@ const ensureService = (): Promise<AcademicEndpointSchema> =>
             void ensureService()
               .then(async (endpoint) => {
                 const user = await academicRequest(endpoint, 'getCurrentUser');
-                if (user && typeof user === 'object' && 'id' in user)
-                  publish('scholar:coursesChange', {
-                    accountId: user.id,
-                    courseId: null,
-                  });
+                publishReconnect(user);
               })
               .catch(() => undefined);
         });
@@ -77,17 +126,20 @@ const ensureService = (): Promise<AcademicEndpointSchema> =>
         starting = null;
       }));
 
-export const requestAcademicService = async (method: string, input?: unknown) =>
-  academicRequest(await ensureService(), method, input);
+export const requestAcademicService = async (
+  method: AcademicMethod,
+  input?: unknown,
+) => {
+  const result = await academicRequest(await ensureService(), method, input);
+  if (method === 'getCurrentUser') publishAuthIdentity(result);
+  if (method === 'signOut') publishAuthIdentity(null);
+  return result;
+};
 
 export const registerAcademicClient = async () => {
-  for (const method of academicMethods) {
-    if (method === 'shutdown' || method === 'health' || method === 'subscribe')
-      continue;
+  for (const method of rendererAcademicMethods) {
     ipcMain.handle(`scholar:${method}`, (event, input: unknown) => {
-      const window = BrowserWindow.fromWebContents(event.sender);
-      if (!window || event.senderFrame !== event.sender.mainFrame)
-        throw new Error('Untrusted application frame.');
+      requireTrustedSender(event);
       return requestAcademicService(method, input);
     });
   }

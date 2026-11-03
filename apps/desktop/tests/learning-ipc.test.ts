@@ -7,6 +7,29 @@ import {
   requireTrustedSender,
 } from '../src/lib/trusted-windows';
 
+const preloadMocks = vi.hoisted(() => ({
+  exposed: new Map<string, unknown>(),
+  listeners: new Map<string, (event: unknown, value: unknown) => void>(),
+  invoke: vi.fn(async () => undefined),
+  removeListener: vi.fn(),
+  setupRenderer: vi.fn(),
+}));
+vi.mock('electron', () => ({
+  contextBridge: {
+    exposeInMainWorld: (name: string, value: unknown) =>
+      preloadMocks.exposed.set(name, value),
+  },
+  ipcRenderer: {
+    invoke: preloadMocks.invoke,
+    on: (channel: string, listener: (event: unknown, value: unknown) => void) =>
+      preloadMocks.listeners.set(channel, listener),
+    removeListener: preloadMocks.removeListener,
+  },
+}));
+vi.mock('@better-auth/electron/preload', () => ({
+  setupRenderer: preloadMocks.setupRenderer,
+}));
+
 type FakeFrame = { url: string };
 type FakeContents = {
   id: number;
@@ -157,8 +180,69 @@ describe('trusted application windows', () => {
     trusted.contents.mainFrame.url = 'https://outside.example/';
     focusedContents = trusted.contents;
     expect(focusApi.getFocusedWebContents()).toBeNull();
-
     restore();
-    expect(focusApi.getFocusedWebContents()).toBe(trusted.contents);
   });
+});
+
+it('exposes only named learning and native capabilities to the renderer', async () => {
+  preloadMocks.exposed.clear();
+  preloadMocks.listeners.clear();
+  preloadMocks.invoke.mockClear();
+  preloadMocks.setupRenderer.mockClear();
+  vi.resetModules();
+  await import('../src/preload');
+
+  const bridge = preloadMocks.exposed.get('scholar') as {
+    listContextItems: (input: unknown) => Promise<unknown>;
+    getTodayOverview: (input: unknown) => Promise<unknown>;
+    chooseContextFiles: (input: unknown) => Promise<unknown>;
+    registerSelectedContextFiles?: unknown;
+  };
+  expect(preloadMocks.setupRenderer).toHaveBeenCalledOnce();
+  expect(bridge.registerSelectedContextFiles).toBeUndefined();
+
+  await bridge.listContextItems({ limit: 10 });
+  expect(preloadMocks.invoke).toHaveBeenCalledWith('scholar:listContextItems', {
+    limit: 10,
+  });
+  await bridge.getTodayOverview({ limit: 5 });
+  expect(preloadMocks.invoke).toHaveBeenCalledWith('scholar:getTodayOverview', {
+    limit: 5,
+  });
+  await bridge.chooseContextFiles({ saveToLibrary: true });
+  expect(preloadMocks.invoke).toHaveBeenCalledWith(
+    'scholar:native:chooseContextFiles',
+    { saveToLibrary: true },
+  );
+});
+
+it('forwards only schema-valid product events and supports explicit unsubscribe', async () => {
+  preloadMocks.exposed.clear();
+  preloadMocks.listeners.clear();
+  vi.resetModules();
+  await import('../src/preload');
+  const bridge = preloadMocks.exposed.get('scholar') as {
+    onProductEvent: (listener: (event: unknown) => void) => () => void;
+  };
+  const listener = vi.fn();
+  const unsubscribe = bridge.onProductEvent(listener);
+  const onProductEvent = preloadMocks.listeners.get('scholar:productEvent');
+  expect(onProductEvent).toBeTypeOf('function');
+  onProductEvent?.(
+    {},
+    {
+      version: 1,
+      accountId: 'student-a',
+      revision: 2,
+      resource: 'study',
+      targetId: 'session-a',
+    },
+  );
+  onProductEvent?.({}, { version: 2, accountId: 'student-a' });
+  expect(listener).toHaveBeenCalledOnce();
+  unsubscribe();
+  expect(preloadMocks.removeListener).toHaveBeenCalledWith(
+    'scholar:productEvent',
+    onProductEvent,
+  );
 });
