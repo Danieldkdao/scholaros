@@ -1,4 +1,5 @@
 import type { ExtractedAssignmentSchema } from '@scholaros/services/ai/resources/assignment';
+import type { ResourceIdentityConflict } from '@scholaros/services/ai/resources/validation';
 import {
   index,
   integer,
@@ -33,6 +34,10 @@ export const CourseAssignmentTable = sqliteTable(
     content: text('content', {
       mode: 'json',
     }).$type<ExtractedAssignmentSchema>(),
+    identityConflicts: text('identity_conflicts', { mode: 'json' })
+      .$type<Extract<ResourceIdentityConflict, { kind: 'assignments' }>[]>()
+      .notNull()
+      .default([]),
     localOverrides: text('local_overrides', {
       mode: 'json',
     }).$type<CourseAssignmentLocalOverrides>(),

@@ -6,10 +6,10 @@ import {
   uniqueIndex,
 } from 'drizzle-orm/sqlite-core';
 import type {
-  CourseMaterialExtractionStatus,
   CourseMaterialSourceType,
-  CourseMaterialSummaryEvidence,
-} from '../../features/context/types';
+  CourseMaterialExtractionStatus,
+} from '../shared';
+import type { CourseMaterialSummaryEvidence } from '../../features/context/types';
 
 export const CourseMaterialTable = sqliteTable(
   'course_materials',
@@ -36,6 +36,7 @@ export const CourseMaterialTable = sqliteTable(
     retrievedAt: text('retrieved_at'),
     verifiedAt: text('verified_at'),
     contentChangedAt: text('content_changed_at'),
+    lastAttemptAt: text('last_attempt_at'),
     active: integer('active', { mode: 'boolean' }).notNull().default(true),
     suppressionId: text('suppression_id'),
     suppressedAt: text('suppressed_at'),

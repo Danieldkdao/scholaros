@@ -1,12 +1,5 @@
 import { index, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
-
-export const courseRecordTombstoneKinds = [
-  'courses',
-  'assignments',
-  'announcements',
-] as const;
-export type CourseRecordTombstoneKind =
-  (typeof courseRecordTombstoneKinds)[number];
+import type { CourseRecordTombstoneKind } from '../shared';
 
 export const CourseRecordTombstoneTable = sqliteTable(
   'course_record_tombstones',

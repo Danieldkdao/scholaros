@@ -6,7 +6,7 @@ import {
   text,
   uniqueIndex,
 } from 'drizzle-orm/sqlite-core';
-import type { CourseScanStatus } from '../../features/courses/types';
+import type { CourseScanStatus } from '../shared';
 
 export type CourseLocalOverrides = Partial<{
   name: string;

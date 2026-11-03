@@ -6,10 +6,10 @@ import {
   text,
 } from 'drizzle-orm/sqlite-core';
 import type {
-  CourseMaterialExtractionStatus,
   CourseMaterialSourceType,
-  CourseMaterialSummaryEvidence,
-} from '../../features/context/types';
+  CourseMaterialExtractionStatus,
+} from '../shared';
+import type { CourseMaterialSummaryEvidence } from '../../features/context/types';
 
 export const CourseMaterialVersionTable = sqliteTable(
   'course_material_versions',

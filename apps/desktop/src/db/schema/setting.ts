@@ -1,5 +1,37 @@
 import { sqliteTable, text, integer, real } from 'drizzle-orm/sqlite-core';
+import type { ProductPreferences } from '@scholaros/services/learning/product-contracts';
 import type { OnboardingStep } from '../../features/onboarding/types';
+
+const defaultProductPreferences: ProductPreferences = {
+  grades: { enabled: false, notes: '', revision: 0 },
+  notifications: {
+    enabled: false,
+    categories: {
+      'connection-attention': false,
+      'sync-completed': false,
+      'sync-failed': false,
+      'context-completed': false,
+      'context-failed': false,
+      'tutor-ready': false,
+      'activity-ready': false,
+      'timer-expired': false,
+      'deadline-reminder': false,
+    },
+    quietHours: {
+      enabled: false,
+      startMinute: 1320,
+      endMinute: 480,
+      timeZone: 'UTC',
+    },
+    revision: 0,
+  },
+  learning: {
+    educationLevel: null,
+    appearance: 'system',
+    accessibility: { reduceMotion: false, highContrast: false },
+    revision: 0,
+  },
+};
 
 export const SettingTable = sqliteTable('settings', {
   userId: text('user_id').primaryKey(),
@@ -11,6 +43,10 @@ export const SettingTable = sqliteTable('settings', {
   backgroundSync: integer('background_sync', { mode: 'boolean' })
     .notNull()
     .default(false),
+  productPreferences: text('product_preferences', { mode: 'json' })
+    .$type<ProductPreferences>()
+    .notNull()
+    .default(defaultProductPreferences),
   watchEnabled: integer('watch_enabled', { mode: 'boolean' })
     .notNull()
     .default(false),

@@ -1,4 +1,5 @@
 import type { ExtractedAnnouncementSchema } from '@scholaros/services/ai/resources/announcement';
+import type { ResourceIdentityConflict } from '@scholaros/services/ai/resources/validation';
 import {
   index,
   integer,
@@ -33,6 +34,10 @@ export const CourseAnnouncementTable = sqliteTable(
     content: text('content', {
       mode: 'json',
     }).$type<ExtractedAnnouncementSchema>(),
+    identityConflicts: text('identity_conflicts', { mode: 'json' })
+      .$type<Extract<ResourceIdentityConflict, { kind: 'announcements' }>[]>()
+      .notNull()
+      .default([]),
     localOverrides: text('local_overrides', {
       mode: 'json',
     }).$type<CourseAnnouncementLocalOverrides>(),

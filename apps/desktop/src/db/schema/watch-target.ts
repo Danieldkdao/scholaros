@@ -5,18 +5,7 @@ import {
   text,
   uniqueIndex,
 } from 'drizzle-orm/sqlite-core';
-import type { WatchTargetStatus } from '../../features/watch/types';
-
-export const watchTargetFailureCategories = [
-  'needs-sign-in',
-  'rate-limited',
-  'network',
-  'navigation',
-  'scope-changed',
-  'unknown',
-] as const;
-export type WatchTargetFailureCategory =
-  (typeof watchTargetFailureCategories)[number];
+import type { WatchTargetFailureCategory, WatchTargetStatus } from '../shared';
 
 export const WatchTargetTable = sqliteTable(
   'watch_targets',

@@ -4,7 +4,7 @@ import {
   maxWatchUrls,
   watchTargetStatuses,
 } from './constants';
-import { watchTargetFailureCategories } from '../../db/schema/watch-target';
+import { watchTargetFailureCategories } from '../../db/shared';
 import { watchRuntimeStatuses } from './types';
 
 export const watchUrlInputSchema = z
