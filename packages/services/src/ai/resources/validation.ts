@@ -16,15 +16,39 @@ import {
   type ResourceLinkSchema,
 } from './shared';
 import { reconcileResourceIdentities } from './identity';
+import type { ResourceIdentityAmbiguity } from './identity';
 import type { ExtractedAssignmentSchema } from './assignment';
 import type { ExtractedAnnouncementSchema } from './announcement';
-import type { AgentRequestSchema } from '../schemas';
+import type { AgentRequestSchema, ModelContentCoverage } from '../schemas';
+
+export type ResourceIdentityConflictReason = ResourceIdentityAmbiguity<
+  ExtractedAssignmentSchema | ExtractedAnnouncementSchema
+>['reason'];
+
+export type ResourceIdentityConflict = {
+  kind: 'assignments' | 'announcements';
+  reason: ResourceIdentityConflictReason;
+  observationFingerprint: string;
+};
+
+type ModelReportedCoverage<T extends { coverage: unknown }> = Omit<
+  T,
+  'coverage'
+> & { coverage: ModelContentCoverage };
 
 type ResourceResults = {
-  courses: ExtractedCoursesSchema & { detailRecord?: true };
-  assignments: ExtractedAssignmentsSchema & { detailRecord?: true };
-  announcements: ExtractedAnnouncementsSchema & { detailRecord?: true };
+  courses: ModelReportedCoverage<
+    ExtractedCoursesSchema & { detailRecord?: true }
+  >;
+  assignments: ModelReportedCoverage<
+    ExtractedAssignmentsSchema & { detailRecord?: true }
+  >;
+  announcements: ModelReportedCoverage<
+    ExtractedAnnouncementsSchema & { detailRecord?: true }
+  >;
 };
+export type ResourceExtractionValidationResult<TKind extends ResourceKind> =
+  ResourceResults[TKind];
 type DateRole =
   | 'due'
   | 'availableFrom'

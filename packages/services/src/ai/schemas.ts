@@ -68,6 +68,38 @@ export const agentRequestSchema = z.object({
 });
 export type AgentRequestSchema = z.infer<typeof agentRequestSchema>;
 
+export const agentOperationSources = ['browser', 'synthetic-material'] as const;
+export type AgentOperationSource = (typeof agentOperationSources)[number];
+
+export const browserAgentRequestSchema = agentRequestSchema.extend({
+  browserNavigationMode: browserNavigationModeSchema,
+});
+export type BrowserAgentRequestSchema = z.infer<
+  typeof browserAgentRequestSchema
+>;
+
+const syntheticMaterialAgentRequestSchema = z.strictObject({
+  ...agentRequestSchema.shape,
+  kind: z.literal('materials'),
+  browserNavigationMode: z.never().optional(),
+  targets: z.never().optional(),
+});
+
+// Internal host envelope; never parse renderer or model payloads as this type.
+export const internalAgentOperationSchema = z.discriminatedUnion('source', [
+  z.strictObject({
+    source: z.literal(agentOperationSources[0]),
+    request: browserAgentRequestSchema,
+  }),
+  z.strictObject({
+    source: z.literal(agentOperationSources[1]),
+    request: syntheticMaterialAgentRequestSchema,
+  }),
+]);
+export type InternalAgentOperationSchema = z.infer<
+  typeof internalAgentOperationSchema
+>;
+
 export const navigationOperations = ['NAVIGATE', 'DONE', 'BLOCKED'] as const;
 export type NavigationOperation = (typeof navigationOperations)[number];
 export const navigationDecisionSchema = z.object({
@@ -77,7 +109,11 @@ export const navigationDecisionSchema = z.object({
 export type NavigationDecisionSchema = z.infer<typeof navigationDecisionSchema>;
 
 export { assignmentStates, contentCoverageValues } from './resources/shared';
-export type { AssignmentState, ContentCoverage } from './resources/shared';
+export type {
+  AssignmentState,
+  ContentCoverage,
+  ContentCoverage as ModelContentCoverage,
+} from './resources/shared';
 
 export const courseDiscoverySchema = z.object({
   courseTargetIds: z.array(z.string().min(1).max(20)).max(30),

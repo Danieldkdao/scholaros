@@ -67,6 +67,29 @@ export const courseMaterialExtractionStatuses = [
 export type CourseMaterialExtractionStatus =
   (typeof courseMaterialExtractionStatuses)[number];
 
+export const courseMaterialUsableStatuses = ['complete', 'partial'] as const;
+export type CourseMaterialUsableStatus =
+  (typeof courseMaterialUsableStatuses)[number];
+
+export type CourseMaterialAttempt = {
+  status: CourseMaterialExtractionStatus;
+  attemptedAt: string | null;
+};
+
+export type CourseMaterialCurrentVersion = {
+  contentHash: string;
+  status: CourseMaterialUsableStatus;
+  sourceUrl: string;
+  retrievedAt: string | null;
+  verifiedAt: string | null;
+  contentChangedAt: string | null;
+};
+
+export type CourseMaterialState = {
+  latestAttempt: CourseMaterialAttempt | null;
+  currentVersion: CourseMaterialCurrentVersion | null;
+};
+
 export type CourseMaterialSummaryEvidence = {
   sourceUrl: string;
   excerpts: string[];

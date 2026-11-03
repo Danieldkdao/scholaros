@@ -1,6 +1,15 @@
 import type { watchSettingsSchema, watchUrlInputSchema } from './schemas';
-import type { WatchTargetStatusSchema } from './schemas';
+import type {
+  WatchHealthSummarySchema,
+  WatchTargetFailureSchema,
+  WatchTargetStatusSchema,
+} from './schemas';
 import type { z } from 'zod';
+import type {
+  CourseCollectionInterruption,
+  CourseCollectionKind,
+  CourseScanStatus,
+} from '../courses/types';
 
 export type WatchUrlInput = z.infer<typeof watchUrlInputSchema>;
 export type WatchSettings = z.infer<typeof watchSettingsSchema>;
@@ -15,15 +24,19 @@ export type ParsedWatchUrl = {
   connectionId: string;
 };
 export type WatchTargetStatus = WatchTargetStatusSchema;
-export type WatchRuntimeStatus =
-  | 'off'
-  | 'starting'
-  | 'watching'
-  | 'checking'
-  | 'updating'
-  | 'paused'
-  | 'needs-sign-in'
-  | 'blocked';
+export const watchRuntimeStatuses = [
+  'off',
+  'starting',
+  'watching',
+  'checking',
+  'updating',
+  'paused',
+  'needs-sign-in',
+  'blocked',
+] as const;
+export type WatchRuntimeStatus = (typeof watchRuntimeStatuses)[number];
+
+export type WatchHealthSummary = WatchHealthSummarySchema;
 export type WatchRuntimeMetrics = {
   changesDetected: number;
   changesProcessed: number;
@@ -80,3 +93,30 @@ export type WatchFailureRecord = {
   blocked: boolean;
 };
 export type WatchRefreshResult = boolean | 'busy';
+
+export type AcademicTaskOutcome<T = void> =
+  | {
+      outcome: 'settled';
+      status: Exclude<CourseScanStatus, 'pending'> | 'failed';
+      value: T;
+      interruption?: CourseCollectionInterruption | null;
+    }
+  | { outcome: 'deferred'; reason: 'busy' };
+
+export type InternalWatchCoveredRevision = {
+  targetId: string;
+  fingerprint: string;
+};
+
+export type InternalWatchExecutionCoverageReceipt = {
+  runId: string;
+  sessionEpoch: number;
+  coveredRevisions: InternalWatchCoveredRevision[];
+  collectionCoverage: Array<{
+    courseId: string;
+    collectionKind: CourseCollectionKind;
+    status: CourseScanStatus;
+  }>;
+};
+
+export type WatchTargetFailure = WatchTargetFailureSchema;

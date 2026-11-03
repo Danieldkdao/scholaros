@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { materialSourceTypes } from '@scholaros/services/ai/resources/material';
 import {
   courseMaterialExtractionStatuses,
+  courseMaterialUsableStatuses,
   navigationDestinationKinds,
   navigationFailureClasses,
   navigationLocationStatuses,
@@ -41,6 +42,34 @@ export const courseMaterialExtractionStatusSchema = z.enum(
 );
 export type CourseMaterialExtractionStatusSchema = z.infer<
   typeof courseMaterialExtractionStatusSchema
+>;
+
+export const courseMaterialAttemptSchema = z.strictObject({
+  status: courseMaterialExtractionStatusSchema,
+  attemptedAt: z.iso.datetime({ offset: true }).nullable(),
+});
+export type CourseMaterialAttemptSchema = z.infer<
+  typeof courseMaterialAttemptSchema
+>;
+
+export const courseMaterialCurrentVersionSchema = z.strictObject({
+  contentHash: z.string().regex(/^[a-f0-9]{64}$/),
+  status: z.enum(courseMaterialUsableStatuses),
+  sourceUrl: z.string().url().max(2048),
+  retrievedAt: z.iso.datetime({ offset: true }).nullable(),
+  verifiedAt: z.iso.datetime({ offset: true }).nullable(),
+  contentChangedAt: z.iso.datetime({ offset: true }).nullable(),
+});
+export type CourseMaterialCurrentVersionSchema = z.infer<
+  typeof courseMaterialCurrentVersionSchema
+>;
+
+export const courseMaterialStateSchema = z.strictObject({
+  latestAttempt: courseMaterialAttemptSchema.nullable(),
+  currentVersion: courseMaterialCurrentVersionSchema.nullable(),
+});
+export type CourseMaterialStateSchema = z.infer<
+  typeof courseMaterialStateSchema
 >;
 
 export const courseMaterialSummaryEvidenceSchema = z.strictObject({
