@@ -50,7 +50,7 @@ type ActivityIntegrationReport = {
   diagnostics?: Array<{
     activityProcessId?: number;
     trustedProcessIds?: number[];
-    guardCounters?: Record<string, number>;
+    guardCounters?: Record<string, number | boolean>;
     contentDigest?: string;
   }>;
   closures?: Array<{ reason?: string; closedAt?: number }>;
@@ -396,6 +396,9 @@ describe.skipIf(!enabled)('actual Electron activity isolation', () => {
           ),
         }),
       ).toBeGreaterThan(0);
+      expect(
+        report.diagnostics?.[0].guardCounters?.connectionPolicyHeaderVerified,
+      ).toBe(true);
       expect(
         report.positiveControls?.udp,
         JSON.stringify({
