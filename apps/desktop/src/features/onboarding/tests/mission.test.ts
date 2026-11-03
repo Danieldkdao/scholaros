@@ -269,6 +269,57 @@ describe('read-only mission', () => {
     expect(harness.choose).not.toHaveBeenCalled();
   });
 
+  it('accepts model DONE only after host-verified collection exhaustion', async () => {
+    const destination = 'https://canvas.school.edu/courses/1';
+    const states = {
+      'https://canvas.school.edu/courses': {
+        title: 'Courses',
+        text: 'Biology 101',
+        links: [{ label: 'Biology', url: destination }],
+      },
+      [destination]: { title: 'Biology', text: 'Assignments', links: [] },
+    };
+    const unverifiedHarness = createHarness(states, {});
+    const unverifiedCheck = vi.fn(() => false);
+    const unverifiedResult = await runReadOnlyMission({
+      connection,
+      hosts,
+      page: unverifiedHarness.page,
+      read: unverifiedHarness.read,
+      waitForReady: unverifiedHarness.waitForReady,
+      choose: unverifiedHarness.choose,
+      addActivity: unverifiedHarness.addActivity,
+      signal: new AbortController().signal,
+      isHostVerifiedCollectionExhausted: unverifiedCheck,
+    });
+
+    expect(unverifiedResult.outcome).toBe('blocked');
+    expect(unverifiedCheck).toHaveBeenCalledWith(
+      expect.objectContaining({
+        snapshot: expect.objectContaining({ url: connection.url }),
+        targets: [expect.objectContaining({ url: destination })],
+        evidence: expect.arrayContaining([
+          expect.objectContaining({ url: connection.url }),
+        ]),
+      }),
+    );
+
+    const verifiedHarness = createHarness(states, {});
+    const verifiedResult = await runReadOnlyMission({
+      connection,
+      hosts,
+      page: verifiedHarness.page,
+      read: verifiedHarness.read,
+      waitForReady: verifiedHarness.waitForReady,
+      choose: verifiedHarness.choose,
+      addActivity: verifiedHarness.addActivity,
+      signal: new AbortController().signal,
+      isHostVerifiedCollectionExhausted: () => true,
+    });
+
+    expect(verifiedResult.outcome).toBe('done');
+  });
+
   it('rejects a browser error page before using its content', async () => {
     const harness = createHarness(
       {

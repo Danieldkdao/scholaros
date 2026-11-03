@@ -8,6 +8,7 @@ import {
   accountRequest,
   isAccountSessionCurrent,
 } from '../../../lib/auth/main';
+import { toBrowserCapabilityError } from './browser-mode';
 
 type BrowserModelOptions = {
   signal: AbortSignal;
@@ -41,11 +42,12 @@ export const createBrowserModel =
           .join(', ')
           .slice(0, 200)}.`,
       );
-    const result = await accountRequest(
-      '/api/agent',
-      parsedRequest.data,
-      signal,
-    );
+    let result: unknown;
+    try {
+      result = await accountRequest('/api/agent', parsedRequest.data, signal);
+    } catch (error) {
+      throw toBrowserCapabilityError(error);
+    }
     signal.throwIfAborted();
     if (!isCurrent() || !isAccountSessionCurrent(cookie))
       throw new Error(

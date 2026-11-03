@@ -8,6 +8,9 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../../../lib/auth/main', () => ({
   accountRequest: mocks.accountRequest,
 }));
+vi.mock('../services/browser-mode', () => ({
+  toBrowserCapabilityError: (error: unknown) => error,
+}));
 vi.mock('../services/mission-traffic', () => ({
   missionTraffic: {
     waitForTurn: mocks.waitForTurn,
@@ -36,6 +39,10 @@ const pageEvidence = {
   title: 'Biology',
   text: 'Assignments',
 };
+const courseScope = {
+  courseUrl: pageEvidence.url,
+  observedResourceRelationships: [],
+};
 const memory = {
   navigation: 'Assignments live under Weekly Work',
   resources: [],
@@ -50,11 +57,7 @@ const action = {
 };
 
 const createPage = () => ({
-  url: vi
-    .fn()
-    .mockResolvedValueOnce(pageEvidence.url)
-    .mockResolvedValueOnce(pageEvidence.url)
-    .mockResolvedValueOnce(target.url),
+  url: vi.fn(async () => pageEvidence.url),
   evaluate: vi.fn(async () => ({
     url: target.url,
   })),
@@ -86,7 +89,11 @@ describe('shared browser navigation adapters', () => {
       ) as never;
       const stagehand = {
         observe: vi.fn(async () => ({ data: [{ ...action, selector }] })),
-        act: vi.fn(async () => ({ data: { success: true } })),
+        act: vi.fn(async (_action: unknown, options: unknown) => {
+          page.url.mockResolvedValue(target.url);
+          expect(options).toEqual({ page });
+          return { data: { success: true } };
+        }),
       };
       const adapter = createBrowserNavigationAdapter('inout', {
         page: page as never,
@@ -95,17 +102,17 @@ describe('shared browser navigation adapters', () => {
         signal: new AbortController().signal,
         isCurrent: () => true,
         assertReadable: () => undefined,
+        courseScope,
       });
       try {
-        await expect(
-          adapter.choose({
-            goal: 'Find assignments',
-            notes: '',
-            pages: [pageEvidence],
-            targets: [target],
-            memory,
-          }),
-        ).resolves.toMatchObject({
+        const choice = await adapter.choose({
+          goal: 'Find assignments',
+          notes: '',
+          memory,
+          pages: [pageEvidence],
+          targets: [target],
+        });
+        expect(choice).toMatchObject({
           operation: 'NAVIGATE',
           target: '1',
           navigationHandled: true,
@@ -129,6 +136,7 @@ describe('shared browser navigation adapters', () => {
       isCurrent: () => true,
       hosts: ['canvas.school.edu'],
       assertReadable: () => undefined,
+      courseScope,
     });
     mocks.accountRequest.mockResolvedValueOnce({
       operation: 'NAVIGATE',
@@ -174,8 +182,15 @@ describe('shared browser navigation adapters', () => {
 
   it('classifies only offered course targets in decision mode', async () => {
     mocks.accountRequest.mockResolvedValueOnce({ courseTargetIds: ['1'] });
+    const courseListPage = {
+      ...pageEvidence,
+      url: 'https://canvas.school.edu/courses',
+      title: 'Courses',
+    };
+    const page = createPage();
+    page.url.mockResolvedValue(courseListPage.url);
     const adapter = createBrowserNavigationAdapter('decision', {
-      page: createPage() as never,
+      page: page as never,
       signal: new AbortController().signal,
       isCurrent: () => true,
       hosts: ['canvas.school.edu'],
@@ -186,7 +201,7 @@ describe('shared browser navigation adapters', () => {
       adapter.discoverCourses({
         goal: 'Find enrolled courses',
         notes: '',
-        pages: [pageEvidence],
+        pages: [courseListPage],
         targets: [target],
       }),
     ).resolves.toEqual(['1']);
@@ -199,6 +214,39 @@ describe('shared browser navigation adapters', () => {
       }),
       expect.any(AbortSignal),
     );
+  });
+
+  it('filters non-read targets before course discovery inference', async () => {
+    const courseListPage = {
+      ...pageEvidence,
+      url: 'https://canvas.school.edu/courses',
+      title: 'Courses',
+    };
+    const page = createPage();
+    page.url.mockResolvedValue(courseListPage.url);
+    const adapter = createBrowserNavigationAdapter('decision', {
+      page: page as never,
+      signal: new AbortController().signal,
+      isCurrent: () => true,
+      hosts: ['canvas.school.edu'],
+      assertReadable: () => undefined,
+    });
+
+    await expect(
+      adapter.discoverCourses({
+        goal: 'Find enrolled courses',
+        notes: '',
+        pages: [courseListPage],
+        targets: [
+          {
+            id: 'unsafe',
+            label: 'Course action',
+            url: 'https://canvas.school.edu/courses/101/delete',
+          },
+        ],
+      }),
+    ).resolves.toEqual([]);
+    expect(mocks.accountRequest).not.toHaveBeenCalled();
   });
 
   it('inspects and paces one safe Stagehand link click on the explicit page', async () => {
@@ -214,6 +262,7 @@ describe('shared browser navigation adapters', () => {
         return { data: [action] };
       }),
       act: vi.fn(async (_action: unknown, options: unknown) => {
+        page.url.mockResolvedValue(target.url);
         expect(options).toEqual({ page });
         return { data: { success: true } };
       }),
@@ -226,6 +275,7 @@ describe('shared browser navigation adapters', () => {
       isCurrent: () => true,
       hosts: ['canvas.school.edu'],
       assertReadable: () => undefined,
+      courseScope,
     });
 
     const choice = await adapter.choose({
@@ -266,6 +316,7 @@ describe('shared browser navigation adapters', () => {
       isCurrent: () => true,
       hosts: ['canvas.school.edu'],
       assertReadable: () => undefined,
+      courseScope,
     });
 
     await expect(
@@ -296,6 +347,7 @@ describe('shared browser navigation adapters', () => {
       isCurrent: () => true,
       hosts: ['canvas.school.edu'],
       assertReadable: () => undefined,
+      courseScope,
     });
 
     await expect(
@@ -330,6 +382,7 @@ describe('shared browser navigation adapters', () => {
       isCurrent: () => true,
       hosts: ['canvas.school.edu'],
       assertReadable: () => undefined,
+      courseScope,
     });
 
     await expect(
@@ -370,6 +423,7 @@ describe('shared browser navigation adapters', () => {
       isCurrent: () => true,
       hosts: ['canvas.school.edu'],
       assertReadable: () => undefined,
+      courseScope,
     });
 
     await expect(
@@ -379,12 +433,18 @@ describe('shared browser navigation adapters', () => {
         notes: '',
         pages: [pageEvidence],
       }),
-    ).rejects.toThrow('The page changed before inout extraction.');
+    ).rejects.toThrow('The current page changed before browser inference.');
     expect(stagehand.extract).not.toHaveBeenCalled();
   });
 
   it('classifies offered course targets from the explicit Stagehand page', async () => {
     const page = createPage();
+    const courseListPage = {
+      ...pageEvidence,
+      url: 'https://canvas.school.edu/courses',
+      title: 'Courses',
+    };
+    page.url.mockResolvedValue(courseListPage.url);
     const stagehand = {
       observe: vi.fn(),
       act: vi.fn(),
@@ -408,7 +468,7 @@ describe('shared browser navigation adapters', () => {
       adapter.discoverCourses({
         goal: 'Find enrolled courses',
         notes: '',
-        pages: [pageEvidence],
+        pages: [courseListPage],
         targets: [target],
       }),
     ).resolves.toEqual(['1']);
@@ -417,6 +477,152 @@ describe('shared browser navigation adapters', () => {
       expect.stringContaining('1 | Assignments'),
       expect.any(Object),
       { page },
+    );
+  });
+
+  it('filters same-host sibling-course targets before decision or inout inference', async () => {
+    const siblingTarget = {
+      id: 'sibling',
+      label: 'Assignments',
+      url: 'https://canvas.school.edu/courses/202/assignments',
+    };
+    const courseScope = {
+      courseUrl: 'https://canvas.school.edu/courses/101',
+      observedResourceRelationships: [],
+    };
+    const page = {
+      url: vi.fn(async () => courseScope.courseUrl),
+      evaluate: vi.fn(),
+      waitForLoadState: vi.fn(),
+    };
+    const decision = createBrowserNavigationAdapter('decision', {
+      page: page as never,
+      signal: new AbortController().signal,
+      isCurrent: () => true,
+      hosts: ['canvas.school.edu'],
+      assertReadable: () => undefined,
+      courseScope,
+    });
+    const inoutStagehand = {
+      observe: vi.fn(),
+      act: vi.fn(),
+      extract: vi.fn(),
+    };
+    const inout = createBrowserNavigationAdapter('inout', {
+      page: page as never,
+      stagehand: inoutStagehand as never,
+      signal: new AbortController().signal,
+      isCurrent: () => true,
+      hosts: ['canvas.school.edu'],
+      assertReadable: () => undefined,
+      courseScope,
+    });
+
+    await expect(
+      decision.choose({
+        goal: 'Find assignments',
+        notes: '',
+        pages: [{ ...pageEvidence, url: courseScope.courseUrl }],
+        targets: [siblingTarget],
+      }),
+    ).resolves.toEqual({ operation: 'BLOCKED', target: null });
+    await expect(
+      inout.choose({
+        goal: 'Find assignments',
+        notes: '',
+        pages: [{ ...pageEvidence, url: courseScope.courseUrl }],
+        targets: [siblingTarget],
+      }),
+    ).resolves.toEqual({ operation: 'BLOCKED', target: null });
+    expect(mocks.accountRequest).not.toHaveBeenCalled();
+    expect(inoutStagehand.observe).not.toHaveBeenCalled();
+  });
+
+  it('blocks resource extraction before inference when course proof is absent', async () => {
+    const courseUrl = 'https://canvas.school.edu/courses/101';
+    const page = {
+      url: vi.fn(async () => courseUrl),
+      evaluate: vi.fn(),
+      waitForLoadState: vi.fn(),
+    };
+    const adapter = createBrowserNavigationAdapter('decision', {
+      page: page as never,
+      signal: new AbortController().signal,
+      isCurrent: () => true,
+      hosts: ['canvas.school.edu'],
+      assertReadable: () => undefined,
+    });
+
+    await expect(
+      adapter.choose({
+        goal: 'Find assignments',
+        notes: '',
+        pages: [{ ...pageEvidence, url: courseUrl }],
+        targets: [
+          {
+            id: 'sibling',
+            label: 'Assignments',
+            url: 'https://canvas.school.edu/courses/202/assignments',
+          },
+        ],
+      }),
+    ).resolves.toEqual({ operation: 'BLOCKED', target: null });
+    await expect(
+      adapter.extract({
+        kind: 'assignments',
+        goal: 'Extract assignments',
+        notes: '',
+        pages: [{ ...pageEvidence, url: courseUrl }],
+        context: {
+          retrievedAt: new Date().toISOString(),
+          observedTimezone: null,
+          locale: null,
+          courseUrl,
+          courseName: 'Biology 101',
+          truncated: false,
+        },
+      }),
+    ).rejects.toThrow(/course/i);
+    expect(mocks.accountRequest).not.toHaveBeenCalled();
+  });
+
+  it('allows an observed external resource relationship in course-scoped navigation', async () => {
+    const courseUrl = 'https://canvas.school.edu/courses/101';
+    const externalTarget = {
+      id: '1',
+      label: 'Lab guide',
+      url: 'https://docs.example.edu/biology/lab-guide',
+    };
+    mocks.accountRequest.mockResolvedValueOnce({
+      operation: 'NAVIGATE',
+      target: '1',
+    });
+    const adapter = createBrowserNavigationAdapter('decision', {
+      page: { url: vi.fn(async () => courseUrl) } as never,
+      signal: new AbortController().signal,
+      isCurrent: () => true,
+      hosts: ['canvas.school.edu', 'docs.example.edu'],
+      assertReadable: () => undefined,
+      courseScope: {
+        courseUrl,
+        observedResourceRelationships: [
+          { parentUrl: courseUrl, targetUrl: externalTarget.url },
+        ],
+      },
+    });
+
+    await expect(
+      adapter.choose({
+        goal: 'Find course materials',
+        notes: '',
+        pages: [{ ...pageEvidence, url: courseUrl }],
+        targets: [externalTarget],
+      }),
+    ).resolves.toEqual({ operation: 'NAVIGATE', target: '1' });
+    expect(mocks.accountRequest).toHaveBeenCalledWith(
+      '/api/agent',
+      expect.objectContaining({ targets: [externalTarget] }),
+      expect.any(AbortSignal),
     );
   });
 });

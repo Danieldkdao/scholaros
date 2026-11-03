@@ -63,7 +63,11 @@ const setup = async (
       ]),
     ),
   );
-  const page = { pageId: 'page', close: vi.fn(async () => undefined) };
+  const page = {
+    pageId: 'page',
+    addInitScript: vi.fn(async () => undefined),
+    close: vi.fn(async () => undefined),
+  };
   const blocked = vi.fn();
   const release = await protectMissionPage(
     page as unknown as Parameters<typeof protectMissionPage>[0],
@@ -138,6 +142,7 @@ it('protects cross-origin frame requests before resuming the frame', async () =>
       (command) => command.sessionId === 'slides-session',
     );
     expect(commands.map((command) => command.method)).toEqual([
+      'Page.addScriptToEvaluateOnNewDocument',
       'Network.enable',
       'Network.setBypassServiceWorker',
       'Fetch.enable',
@@ -170,6 +175,47 @@ it('protects cross-origin frame requests before resuming the frame', async () =>
         }),
       ),
     );
+    expect(page.close).not.toHaveBeenCalled();
+  } finally {
+    await release();
+  }
+});
+
+it('protects a mission popup before resuming its new page', async () => {
+  const { page, release, socket } = await setup();
+  try {
+    socket.dispatchEvent(
+      new MessageEvent('message', {
+        data: JSON.stringify({
+          method: 'Target.attachedToTarget',
+          params: {
+            sessionId: 'popup-session',
+            targetInfo: { type: 'page', targetId: 'popup' },
+            waitingForDebugger: true,
+          },
+        }),
+      }),
+    );
+    await vi.waitFor(() =>
+      expect(socket.commands).toContainEqual(
+        expect.objectContaining({
+          method: 'Runtime.runIfWaitingForDebugger',
+          sessionId: 'popup-session',
+        }),
+      ),
+    );
+    expect(
+      socket.commands
+        .filter((command) => command.sessionId === 'popup-session')
+        .map((command) => command.method),
+    ).toEqual([
+      'Page.addScriptToEvaluateOnNewDocument',
+      'Network.enable',
+      'Network.setBypassServiceWorker',
+      'Fetch.enable',
+      'Target.setAutoAttach',
+      'Runtime.runIfWaitingForDebugger',
+    ]);
     expect(page.close).not.toHaveBeenCalled();
   } finally {
     await release();

@@ -97,12 +97,18 @@ describe.skipIf(!enabled)('protected Chromium browsing', () => {
       const assetReads = new Set<string>();
       let bannerReads = 0;
       let blockedFrameWrites = 0;
+      let popupPageRequests = 0;
+      let popupPostEffects = 0;
       const assignmentReads = new Set<string>();
       let pdfReads = 0;
       const pdfRequestCookies: string[] = [];
       const pdfUrl = `${origin}/course/1/handout.pdf`;
       const pdfBytes = '%PDF-1.4\nprotected fixture';
-      const fixture = (url: string, headers: Record<string, string>) => {
+      const fixture = (
+        url: string,
+        headers: Record<string, string>,
+        method: string,
+      ) => {
         const parsed = new URL(url);
         const cookie =
           Object.entries(headers).find(
@@ -131,7 +137,7 @@ describe.skipIf(!enabled)('protected Chromium browsing', () => {
               body: '',
             };
           return {
-            body: `<html><head><title>School home</title><link rel="stylesheet" href="https://assets.example.test/site.css?Signature=fixture&Key-Pair-Id=fixture"><script src="https://assets.example.test/s_grade_item_add_form.js?token=fixture" defer></script><script>addEventListener('message', event => { if (event.origin === 'https://docs.google.com' && event.data === 'banner-ready') document.body.dataset.banner = 'ready'; });</script></head><body><header><a href="#courses" ${forcePicker ? '' : 'role="button" aria-expanded="false"'}>Courses</a><a id="open-popup" href="https://popup.invalid/popup" target="_blank" onclick="document.body.dataset.popupClick = event.isTrusted ? 'trusted' : 'synthetic'">Open resource</a></header><a href="${origin}/home">Course dashboard</a><main>Welcome to your academic dashboard and current learning resources.</main><aside><div class="upcoming-events">Art live class 2:20 pm</div><div id="upcoming"></div><div id="overdue"></div></aside><iframe src="https://docs.google.com/presentation/d/e/fixture-deck/pubembed?start=false&loop=false"></iframe><div id="courses" hidden></div></body></html>`,
+            body: `<html><head><title>School home</title><link rel="stylesheet" href="https://assets.example.test/site.css?Signature=fixture&Key-Pair-Id=fixture"><script src="https://assets.example.test/s_grade_item_add_form.js?token=fixture" defer></script><script>addEventListener('message', event => { if (event.origin === 'https://docs.google.com' && event.data === 'banner-ready') document.body.dataset.banner = 'ready'; });</script></head><body><header><a href="#courses" ${forcePicker ? '' : 'role="button" aria-expanded="false"'}>Courses</a><a id="open-popup" href="${origin}/popup" target="_blank" onclick="document.body.dataset.popupClick = event.isTrusted ? 'trusted' : 'synthetic'; window.open('${origin}/popup?via=script')">Open resource</a></header><form id="popup-form" action="${origin}/popup" method="GET"><button type="submit" formtarget="_blank">Open form resource</button></form><script>document.querySelector('#popup-form').requestSubmit(document.querySelector('#popup-form button'));</script><a href="${origin}/home">Course dashboard</a><main>Welcome to your academic dashboard and current learning resources.</main><aside><div class="upcoming-events">Art live class 2:20 pm</div><div id="upcoming"></div><div id="overdue"></div></aside><iframe src="https://docs.google.com/presentation/d/e/fixture-deck/pubembed?start=false&loop=false"></iframe><div id="courses" hidden></div></body></html>`,
           };
         }
         if (
@@ -238,6 +244,20 @@ describe.skipIf(!enabled)('protected Chromium browsing', () => {
           return {
             body: `<html><head><title>Biology 101</title></head><body><main>Biology 101 course materials<a href="${pdfUrl}">Course handout PDF</a></main></body></html>`,
           };
+        if (parsed.hostname === host && parsed.pathname === '/popup') {
+          popupPageRequests += 1;
+          return {
+            body: `<html><body><script>fetch('${origin}/popup-mutation', { method: 'POST' });</script></body></html>`,
+          };
+        }
+        if (
+          parsed.hostname === host &&
+          parsed.pathname === '/popup-mutation' &&
+          method === 'POST'
+        ) {
+          popupPostEffects += 1;
+          return { type: 'text/plain', body: 'mutated' };
+        }
         if (
           parsed.hostname === host &&
           parsed.pathname === '/course/1/handout.pdf'
@@ -283,7 +303,7 @@ describe.skipIf(!enabled)('protected Chromium browsing', () => {
               JSON.stringify([command.sessionId, command.params.requestId]),
             );
             const response = request
-              ? fixture(request.url, request.headers)
+              ? fixture(request.url, request.headers, request.method)
               : null;
             if (response) {
               super.send(
@@ -384,9 +404,15 @@ describe.skipIf(!enabled)('protected Chromium browsing', () => {
               expect(
                 await browser.context
                   .pages()
-                  .then((pages) =>
+                  .then(async (pages) =>
                     pages.at(-1)!.evaluate(() => document.body.dataset.banner),
                   ),
+                JSON.stringify({
+                  assetReads: [...assetReads],
+                  bannerReads,
+                  blockedFrameWrites,
+                  popupPageRequests,
+                }),
               ).toBe('ready');
               expect(
                 await browser.context
@@ -422,6 +448,8 @@ describe.skipIf(!enabled)('protected Chromium browsing', () => {
                 (page) => page.pageId,
               );
               await parentPage.waitForTimeout(500);
+              expect(popupPageRequests).toBe(0);
+              expect(popupPostEffects).toBe(0);
               expect(
                 (await browser.context.pages()).map((page) => page.pageId),
               ).toEqual(pageIds);

@@ -5,6 +5,7 @@ import {
   isAcademicUrl,
   isReadNavigation,
   isReadOnlyEmbed,
+  safeAcademicUrlPath,
 } from '../lib/browser-policy';
 import { isSignInPage } from '../lib/connection-policy';
 import type { AccountContinuation } from './account-continuation';
@@ -18,6 +19,7 @@ type SendCommand = (
   params: Record<string, unknown>,
   sessionId?: string,
 ) => Promise<unknown>;
+
 type PausedRequest = {
   requestId: string;
   resourceType: string;
@@ -27,12 +29,56 @@ type PausedRequest = {
 export type BlockedRequest = {
   host: string;
   resourceType: string;
+  method?: string;
+  urlPath?: string;
   signInWall: boolean;
   mainFrame?: boolean;
 };
 
 const passiveResourceTypes = ['Script', 'Stylesheet', 'Image', 'Font', 'Media'];
 const readMethods = ['GET', 'HEAD', 'OPTIONS'];
+const missionPopupGuardScript = `(() => {
+  const guardKey = Symbol.for('scholaros.mission-popup-guard');
+  if (window[guardKey]) return;
+  Object.defineProperty(window, guardKey, { value: true });
+  const hasExternalTarget = (target) =>
+    target.trim() !== '' && target.trim().toLowerCase() !== '_self';
+  const targetFor = (element) =>
+    element.getAttribute('target')?.trim() ||
+    document.querySelector('base[target]')?.getAttribute('target') ||
+    '';
+  const preventTargetedNavigation = (event) => {
+    if (!(event.target instanceof Element)) return;
+    const link = event.target.closest('a, area');
+    if (link && hasExternalTarget(targetFor(link))) event.preventDefault();
+  };
+  document.addEventListener('click', preventTargetedNavigation, true);
+  document.addEventListener('auxclick', preventTargetedNavigation, true);
+  document.addEventListener('submit', (event) => {
+    const form = event.target;
+    if (!(form instanceof HTMLFormElement)) return;
+    const submitterTarget =
+      event.submitter instanceof Element
+        ? event.submitter.getAttribute('formtarget')
+        : null;
+    const target = submitterTarget ?? targetFor(form);
+    if (hasExternalTarget(target)) event.preventDefault();
+  }, true);
+  const submit = HTMLFormElement.prototype.submit;
+  Object.defineProperty(HTMLFormElement.prototype, 'submit', {
+    configurable: false,
+    writable: false,
+    value: function () {
+      if (hasExternalTarget(targetFor(this))) return;
+      submit.call(this);
+    },
+  });
+  Object.defineProperty(window, 'open', {
+    configurable: false,
+    writable: false,
+    value: () => null,
+  });
+})();`;
 
 export const handleMissionRequest = async (
   send: SendCommand,
@@ -78,9 +124,12 @@ export const handleMissionRequest = async (
     allowed = continuation?.allowRequest(event, !!event.mainFrame) ?? false;
   if (!allowed) {
     const parsed = new URL(url);
+    const urlPath = safeAcademicUrlPath(url);
     onBlocked?.({
       host: parsed.hostname,
       resourceType: event.resourceType,
+      method,
+      ...(urlPath ? { urlPath } : {}),
       // A wall the student can clear is different from a page we refuse to read.
       signInWall: isSignInPage(parsed.hostname, parsed.pathname),
     });
@@ -109,6 +158,8 @@ export const protectMissionPage = async (
     signal: AbortSignal.timeout(4000),
     redirect: 'error',
   });
+  if (!response.ok)
+    throw new Error('The mission browser connection is unavailable.');
   const targets = (await response.json()) as Array<{
     id: string;
     webSocketDebuggerUrl: string;
@@ -139,16 +190,18 @@ export const protectMissionPage = async (
     }
   >();
   const fail = () => {
-    if (!disposing)
+    if (!disposing && !protectionFailure) {
       protectionFailure ??= new Error(
         'The study page connection closed; try again.',
       );
+      socket.close();
+      void closeProtectedPage();
+    }
     for (const entry of pending.values()) {
       clearTimeout(entry.timer);
       entry.reject(new Error('The protected browser connection closed.'));
     }
     pending.clear();
-    if (!disposing) void closeProtectedPage();
   };
   const send: SendCommand = (method, params, sessionId) =>
     new Promise((resolve, reject) => {
@@ -173,27 +226,48 @@ export const protectMissionPage = async (
         reject(new Error('The browser protection connection is unavailable.'));
       }
     });
-  const enableProtection = async (sessionId?: string) => {
-    await send('Network.enable', {}, sessionId);
-    await send('Network.setBypassServiceWorker', { bypass: true }, sessionId);
-    await send(
+  const enableRequestProtection = async (
+    sendCommand: SendCommand,
+    sessionId?: string,
+  ) => {
+    if (sessionId)
+      await sendCommand(
+        'Page.addScriptToEvaluateOnNewDocument',
+        { source: missionPopupGuardScript },
+        sessionId,
+      );
+    await sendCommand('Network.enable', {}, sessionId);
+    await sendCommand(
+      'Network.setBypassServiceWorker',
+      { bypass: true },
+      sessionId,
+    );
+    await sendCommand(
       'Fetch.enable',
       {
         patterns: [{ urlPattern: '*', requestStage: 'Request' }],
       },
       sessionId,
     );
-    // Cross-origin frames have separate CDP sessions and need the same guard.
-    await send(
+  };
+  const attachFrames = async (sendCommand: SendCommand, sessionId?: string) => {
+    await sendCommand(
       'Target.setAutoAttach',
       {
         autoAttach: true,
         waitForDebuggerOnStart: true,
         flatten: true,
-        filter: [{ type: 'iframe' }, { exclude: true }],
+        filter: [{ type: 'page' }, { type: 'iframe' }, { exclude: true }],
       },
       sessionId,
     );
+  };
+  const enableProtection = async (
+    sendCommand: SendCommand,
+    sessionId?: string,
+  ) => {
+    await enableRequestProtection(sendCommand, sessionId);
+    await attachFrames(sendCommand, sessionId);
   };
   socket.addEventListener('message', (event) => {
     try {
@@ -210,7 +284,7 @@ export const protectMissionPage = async (
         else entry.resolve(message.result);
       } else if (message.method === 'Target.attachedToTarget') {
         const { sessionId } = message.params;
-        void enableProtection(sessionId)
+        void enableProtection(send, sessionId)
           .then(() => send('Runtime.runIfWaitingForDebugger', {}, sessionId))
           .catch(() => {
             socket.close();
@@ -322,7 +396,8 @@ export const protectMissionPage = async (
     mainFrameId = frameTree.frameTree?.frame?.id ?? null;
     if (!mainFrameId)
       throw new Error('The mission page frame could not be identified.');
-    await enableProtection();
+    await page.addInitScript(missionPopupGuardScript);
+    await enableProtection(send);
   } catch (error) {
     disposing = true;
     socket.close();

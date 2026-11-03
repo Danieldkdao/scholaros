@@ -23,7 +23,63 @@ const bridgeMocks = vi.hoisted(() => ({
 }));
 vi.mock('../../../lib/auth/main', () => ({
   accountRequest: bridgeMocks.accountRequest,
+  isAccountSessionCurrent: () => true,
 }));
+vi.mock('../../../lib/auth/client', () => ({
+  authClient: { getCookie: () => 'fixture-session=ready' },
+}));
+// The local HTTP fixture bypasses host eligibility; production policy tests it separately.
+vi.mock('../lib/browser-policy', async (importOriginal) => {
+  const policy = await importOriginal<typeof import('../lib/browser-policy')>();
+  const isLocalFixtureUrl = (value: string, hosts: string[]) => {
+    try {
+      const url = new URL(value);
+      return (
+        url.protocol === 'http:' &&
+        url.hostname === '127.0.0.1' &&
+        hosts.includes(url.hostname)
+      );
+    } catch {
+      return false;
+    }
+  };
+  return {
+    ...policy,
+    academicPageIdentity: (value: string) =>
+      isLocalFixtureUrl(value, ['127.0.0.1'])
+        ? new URL(value).href
+        : policy.academicPageIdentity(value),
+    isAcademicUrl: (value: string) =>
+      isLocalFixtureUrl(value, ['127.0.0.1']) || policy.isAcademicUrl(value),
+    isCourseNavigationTarget: (
+      value: string,
+      scope: {
+        courseUrl: string;
+        observedResourceRelationships: readonly {
+          parentUrl: string;
+          targetUrl: string;
+        }[];
+      },
+      hosts: string[],
+    ) => {
+      if (
+        !isLocalFixtureUrl(value, hosts) ||
+        !isLocalFixtureUrl(scope.courseUrl, hosts)
+      )
+        return policy.isCourseNavigationTarget(value, scope, hosts);
+      const target = new URL(value);
+      const course = new URL(scope.courseUrl);
+      const coursePath = course.pathname.replace(/\/+$/, '') || '/';
+      return (
+        target.origin === course.origin &&
+        (target.pathname === coursePath ||
+          (coursePath !== '/' && target.pathname.startsWith(`${coursePath}/`)))
+      );
+    },
+    isReadNavigation: (value: string, hosts: string[]) =>
+      isLocalFixtureUrl(value, hosts) || policy.isReadNavigation(value, hosts),
+  };
+});
 
 import { createBrowserNavigationAdapter } from '../services/browser-navigation';
 
@@ -267,6 +323,11 @@ describe.skipIf(!enabled)('Stagehand browser compatibility', () => {
       bridgeMocks.accountRequest.mockResolvedValueOnce(
         assignmentResult as never,
       );
+      const courseScope = {
+        courseUrl: assignmentPage.url,
+        observedResourceRelationships: [],
+      };
+      const scanErrors: string[] = [];
       const scanWith = (navigation: typeof decisionAdapter) =>
         scanCourseCollection({
           from: assignmentPage,
@@ -287,6 +348,7 @@ describe.skipIf(!enabled)('Stagehand browser compatibility', () => {
             assertReadable: () => undefined,
             navigation,
           },
+          onError: (error) => scanErrors.push(error),
           request: async (request: AgentRequestSchema) => {
             throw new Error(`Unexpected ${request.kind} fallback request.`);
           },
@@ -296,16 +358,23 @@ describe.skipIf(!enabled)('Stagehand browser compatibility', () => {
       const decisionCourseAdapter = createBrowserNavigationAdapter('decision', {
         ...adapterDependencies,
         page: coursePage,
+        courseScope,
       });
       const inoutCourseAdapter = createBrowserNavigationAdapter('inout', {
         ...adapterDependencies,
         page: coursePage,
         stagehand,
+        courseScope,
       });
       const decisionScan = await scanWith(decisionCourseAdapter);
       const inoutScan = await scanWith(inoutCourseAdapter);
-      expect(decisionScan.status).toBe('complete');
-      expect(inoutScan.status).toBe('complete');
+      expect(
+        decisionScan.status,
+        JSON.stringify({ decisionScan, scanErrors }),
+      ).toBe('complete');
+      expect(inoutScan.status, JSON.stringify({ inoutScan, scanErrors })).toBe(
+        'complete',
+      );
       expect(
         decisionScan.items.map((item) => item.content?.sourceId).sort(),
       ).toEqual(['lab-1', 'midterm-1']);
