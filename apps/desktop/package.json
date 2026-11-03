@@ -60,6 +60,7 @@
     "@better-auth/electron": "1.7.14",
     "@browserbasehq/stagehand": "4.3.0",
     "@hookform/resolvers": "^6.0.1",
+    "@napi-rs/canvas": "1.1.0",
     "@scholaros/assets": "workspace:*",
     "@scholaros/auth": "workspace:*",
     "@scholaros/env": "workspace:*",
