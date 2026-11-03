@@ -123,7 +123,6 @@ const candidateDigest = (candidate: JsonValue) =>
   createHash('sha256').update(JSON.stringify(candidate)).digest('hex');
 // Integrity decisions use only the planned non-Contributor Meta model.
 const isIntegrityModelSelected = () =>
-  serverEnv.INFERENCE_PROVIDER === 'meta' &&
   serverEnv.META_MODEL === 'muse-spark-1.3';
 
 const getReasonCode = (
