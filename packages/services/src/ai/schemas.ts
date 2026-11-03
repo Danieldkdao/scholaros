@@ -71,19 +71,48 @@ export type AgentRequestSchema = z.infer<typeof agentRequestSchema>;
 export const agentOperationSources = ['browser', 'synthetic-material'] as const;
 export type AgentOperationSource = (typeof agentOperationSources)[number];
 
-export const browserAgentRequestSchema = agentRequestSchema.extend({
-  browserNavigationMode: browserNavigationModeSchema,
-});
+export const configurationRevisionSchema = z
+  .string()
+  .regex(/^v1-[a-f0-9]{24}$/);
+export type ConfigurationRevisionSchema = z.infer<
+  typeof configurationRevisionSchema
+>;
+
+export const browserAgentRequestSchema = agentRequestSchema
+  .extend({
+    browserNavigationMode: browserNavigationModeSchema,
+    configurationRevision: configurationRevisionSchema.optional(),
+  })
+  .strict();
 export type BrowserAgentRequestSchema = z.infer<
   typeof browserAgentRequestSchema
 >;
 
-const syntheticMaterialAgentRequestSchema = z.strictObject({
-  ...agentRequestSchema.shape,
-  kind: z.literal('materials'),
-  browserNavigationMode: z.never().optional(),
-  targets: z.never().optional(),
-});
+const syntheticMaterialMaxPages = 4;
+const syntheticMaterialMaxCharacters = 24_000;
+const syntheticMaterialAgentRequestSchema = z
+  .strictObject({
+    ...agentRequestSchema.shape,
+    kind: z.literal('materials'),
+    browserNavigationMode: z.never().optional(),
+    targets: z.never().optional(),
+  })
+  .superRefine((request, context) => {
+    if (request.pages.length > syntheticMaterialMaxPages)
+      context.addIssue({
+        code: 'custom',
+        message: 'Synthetic material exceeds the page limit.',
+      });
+    const characters = request.pages.reduce(
+      (total, page) => total + page.title.length + page.text.length,
+      0,
+    );
+    if (characters > syntheticMaterialMaxCharacters)
+      context.addIssue({
+        code: 'custom',
+        message: 'Synthetic material exceeds the content limit.',
+      });
+  });
 
 // Internal host envelope; never parse renderer or model payloads as this type.
 export const internalAgentOperationSchema = z.discriminatedUnion('source', [
@@ -136,7 +165,7 @@ export const connectionSuggestionsSchema = z.object({
 export type ConnectionSuggestionsSchema = z.infer<
   typeof connectionSuggestionsSchema
 >;
-export const connectionResolveRequestSchema = z.object({
+export const connectionResolveRequestSchema = z.strictObject({
   kind: z.literal('resolve'),
   prompt: z.string().trim().min(1).max(500),
 });
