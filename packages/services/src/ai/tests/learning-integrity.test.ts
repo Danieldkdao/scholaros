@@ -66,7 +66,8 @@ describe('server learning integrity assessment', () => {
       expect.objectContaining({
         model: 'server-selected-meta-model',
         maxRetries: 0,
-        maxOutputTokens: expect.any(Number),
+        maxOutputTokens: 256,
+        reasoning: 'minimal',
         telemetry: { isEnabled: false },
         abortSignal: expect.any(AbortSignal),
         instructions: expect.stringMatching(/untrusted|active|unknown/i),
