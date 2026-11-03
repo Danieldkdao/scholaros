@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  internalAcademicMethods,
+  rendererAcademicMethods,
+} from '../src/services/academic/contracts';
+import {
   getTrustedWindow,
   installTrustedFocusedWebContentsGuard,
   isTrustedWebContents,
@@ -199,9 +203,26 @@ it('exposes only named learning and native capabilities to the renderer', async 
     listCourseRecordSuppressions: (input: unknown) => Promise<unknown>;
     restoreCourseRecordSuppression: (input: unknown) => Promise<unknown>;
     registerSelectedContextFiles?: unknown;
+    [method: string]: unknown;
   };
   expect(preloadMocks.setupRenderer).toHaveBeenCalledOnce();
   expect(bridge.registerSelectedContextFiles).toBeUndefined();
+  expect(
+    rendererAcademicMethods.every(
+      (method) => typeof bridge[method] === 'function',
+    ),
+  ).toBe(true);
+  for (const method of internalAcademicMethods)
+    expect(bridge).not.toHaveProperty(method);
+  for (const method of [
+    'registerSelectedContextFiles',
+    'authorizeActivityRun',
+    'checkpointArtifactState',
+    'claimDueNotifications',
+    'purgeGradeDerivedStudyContent',
+    'createNotificationDelivery',
+  ])
+    expect(bridge).not.toHaveProperty(method);
 
   await bridge.listContextItems({ limit: 10 });
   expect(preloadMocks.invoke).toHaveBeenCalledWith('scholar:listContextItems', {

@@ -66,6 +66,7 @@ export const serviceControlMethods = [
   'shutdown',
 ] as const;
 export const internalAcademicMethods = [
+  'getOfflineDeviceReadiness',
   'registerSelectedContextFiles',
   'authorizeActivityRun',
   'checkpointArtifactState',
@@ -133,6 +134,9 @@ export const rendererAcademicMethods = [
 ] as const;
 export type RendererAcademicMethod = (typeof rendererAcademicMethods)[number];
 export type InternalAcademicMethod = (typeof internalAcademicMethods)[number];
+export const internalOfflineReadMethods = [
+  'getOfflineDeviceReadiness',
+] as const satisfies readonly InternalAcademicMethod[];
 export const academicMethods = [
   ...serviceControlMethods,
   ...rendererAcademicMethods,
@@ -178,6 +182,12 @@ export const academicEndpointSchema = z.strictObject({
   token: z.string().length(64),
 });
 export type AcademicEndpointSchema = z.infer<typeof academicEndpointSchema>;
+export const academicEndpointFileSchema = academicEndpointSchema.extend({
+  instanceId: z.uuid(),
+});
+export type AcademicEndpointFileSchema = z.infer<
+  typeof academicEndpointFileSchema
+>;
 export const academicEventChannels = [
   'scholar:backgroundSyncChange',
   'scholar:connectChange',
@@ -208,6 +218,12 @@ export const academicReconnectSchema = z.strictObject({
 });
 export type AcademicReconnect = z.infer<typeof academicReconnectSchema>;
 export type AuthMode = 'online' | 'offline-local';
+export const offlineDeviceReadinessSchema = z.strictObject({
+  configured: z.boolean(),
+});
+export type OfflineDeviceReadiness = z.infer<
+  typeof offlineDeviceReadinessSchema
+>;
 export const workspaceReplacementInputSchema = z.strictObject({
   requestId: z.uuid(),
   browserId: z.string().min(1).max(300),

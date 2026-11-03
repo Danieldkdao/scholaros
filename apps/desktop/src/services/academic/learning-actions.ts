@@ -9,27 +9,86 @@ export type LearningActionModule = (
 ) => ActionCleanup | void;
 export type LearningLifecycleRuntime = LearningLifecycle & {
   cancelOperations: (key?: string) => void;
+  cancelOperationsAndWait: () => Promise<void>;
   invalidate: () => Promise<void>;
+  trackOperation: <TResult>(
+    operationId: string,
+    operation: () => Promise<TResult>,
+  ) => Promise<TResult>;
+};
+
+type RegisteredLearningOperation = {
+  controller: AbortController;
+  settled: Promise<void>;
+  settle: () => void;
 };
 
 export const createLearningLifecycle = (): LearningLifecycleRuntime => {
   let epoch = 0;
   let controller = new AbortController();
   let invalidating: Promise<void> | null = null;
-  const operations = new Map<string, Map<string, AbortController>>();
+  let cancellationCount = 0;
+  const operations = new Map<
+    string,
+    Map<string, RegisteredLearningOperation>
+  >();
+  const pendingOperations = new Map<string, Promise<unknown>>();
   const teardownCallbacks = new Set<() => void | Promise<void>>();
 
   const removeOperation = (key: string, operationId: string) => {
     const scopedOperations = operations.get(key);
-    scopedOperations?.delete(operationId);
+    const operation = scopedOperations?.get(operationId);
+    if (operation) {
+      scopedOperations?.delete(operationId);
+      operation.settle();
+    }
     if (scopedOperations?.size === 0) operations.delete(key);
   };
 
   const cancelOperations = (key?: string) => {
     for (const [operationKey, scopedOperations] of operations) {
       if (key !== undefined && operationKey !== key) continue;
-      for (const operation of scopedOperations.values()) operation.abort();
-      operations.delete(operationKey);
+      for (const operation of scopedOperations.values())
+        operation.controller.abort();
+    }
+  };
+
+  const waitForOperations = async () => {
+    while (true) {
+      const requests = [...pendingOperations.values()];
+      const registered = [...operations.values()].flatMap((scopedOperations) =>
+        [...scopedOperations.values()].map((operation) => operation.settled),
+      );
+      const pending = [...requests, ...registered];
+      if (pending.length === 0) return;
+      await Promise.allSettled(pending);
+    }
+  };
+
+  const waitForRegisteredOperations = async () => {
+    let emptyPass = false;
+    while (true) {
+      const pending = [...operations.values()].flatMap((scopedOperations) =>
+        [...scopedOperations.values()].map((operation) => operation.settled),
+      );
+      if (pending.length === 0) {
+        if (emptyPass) return;
+        emptyPass = true;
+        await Promise.resolve();
+        continue;
+      }
+      emptyPass = false;
+      await Promise.allSettled(pending);
+    }
+  };
+
+  const cancelOperationsAndWait = async () => {
+    cancellationCount += 1;
+    try {
+      cancelOperations();
+      await waitForRegisteredOperations();
+    } finally {
+      cancellationCount -= 1;
     }
   };
 
@@ -55,18 +114,22 @@ export const createLearningLifecycle = (): LearningLifecycleRuntime => {
       }
     });
     teardownCallbacks.clear();
-    void Promise.allSettled(teardowns).then((results) => {
-      controller = new AbortController();
-      if (invalidating === currentInvalidation) invalidating = null;
-      const failures = results.flatMap((result) =>
-        result.status === 'rejected' ? [result.reason] : [],
-      );
-      if (failures.length > 0)
-        rejectInvalidation(
-          new AggregateError(failures, 'Learning teardown failed.'),
+    void Promise.all([waitForOperations(), Promise.allSettled(teardowns)]).then(
+      ([, results]) => {
+        const failures = results.flatMap((result) =>
+          result.status === 'rejected' ? [result.reason] : [],
         );
-      else resolveInvalidation();
-    });
+        if (invalidating === currentInvalidation) invalidating = null;
+        if (failures.length > 0)
+          rejectInvalidation(
+            new AggregateError(failures, 'Learning teardown failed.'),
+          );
+        else {
+          controller = new AbortController();
+          resolveInvalidation();
+        }
+      },
+    );
     return currentInvalidation;
   };
 
@@ -88,16 +151,50 @@ export const createLearningLifecycle = (): LearningLifecycleRuntime => {
       const scopedOperations = operations.get(key) ?? new Map();
       if (scopedOperations.has(operationId))
         throw new Error('This learning operation is already registered.');
-      scopedOperations.set(operationId, operation);
+      let settle!: () => void;
+      const settled = new Promise<void>((resolve) => {
+        settle = resolve;
+      });
+      scopedOperations.set(operationId, {
+        controller: operation,
+        settled,
+        settle,
+      });
       operations.set(key, scopedOperations);
+      if (cancellationCount > 0) operation.abort();
       return () => removeOperation(key, operationId);
     },
     onTeardown: (cleanup) => {
       teardownCallbacks.add(cleanup);
     },
     cancelOperations,
+    cancelOperationsAndWait,
     invalidate,
+    trackOperation: (operationId, operation) => {
+      if (!operationId.trim())
+        throw new Error('Learning operations need an identifier.');
+      if (invalidating || controller.signal.aborted)
+        throw new Error('Learning work is being cancelled.');
+      if (pendingOperations.has(operationId))
+        throw new Error('This learning request is already active.');
+      const pendingOperation = Promise.resolve().then(operation);
+      pendingOperations.set(operationId, pendingOperation);
+      const removePendingOperation = () => {
+        if (pendingOperations.get(operationId) === pendingOperation)
+          pendingOperations.delete(operationId);
+      };
+      void pendingOperation.then(
+        removePendingOperation,
+        removePendingOperation,
+      );
+      return pendingOperation;
+    },
   };
+};
+
+const once = (cleanup: ActionCleanup): ActionCleanup => {
+  let completion: Promise<void> | null = null;
+  return () => (completion ??= Promise.resolve().then(cleanup));
 };
 
 const runCleanups = async (cleanups: ActionCleanup[]) => {
@@ -111,21 +208,19 @@ const runCleanups = async (cleanups: ActionCleanup[]) => {
     throw new AggregateError(failures, 'Learning action cleanup failed.');
 };
 
-export const registerLearningActions = (
+export const registerLearningActions = async (
   registrar: AuthorizedRegistrar,
   modules: readonly LearningActionModule[],
-): ActionCleanup => {
+): Promise<ActionCleanup> => {
   const cleanups: ActionCleanup[] = [];
   try {
     for (const module of modules) {
       const cleanup = module(registrar);
-      if (cleanup) {
-        cleanups.push(cleanup);
-        registrar.lifecycle.onTeardown(cleanup);
-      }
+      if (cleanup) cleanups.push(once(cleanup));
     }
+    for (const cleanup of cleanups) registrar.lifecycle.onTeardown(cleanup);
   } catch (error) {
-    void runCleanups(cleanups).catch(() => undefined);
+    await runCleanups(cleanups).catch(() => undefined);
     throw error;
   }
 
@@ -143,6 +238,7 @@ export const loadLearningActionModules = async (): Promise<
     memoryActions,
     todayActions,
     notificationActions,
+    sessionStoreModule,
     originalStore,
     database,
   ] = await Promise.all([
@@ -153,18 +249,19 @@ export const loadLearningActionModules = async (): Promise<
     import('../../features/memory/services/memory-actions'),
     import('../../features/today/services/today-actions'),
     import('../../features/notifications/services/notification-actions'),
+    import('../../features/study/services/session-store'),
     import('../../features/context/services/original-store'),
     import('../../db'),
   ]);
 
   let sessionStore: ReturnType<
-    typeof sessionActions.createSessionStore
+    typeof sessionStoreModule.createSessionStore
   > | null = null;
 
   return [
     contextActions.registerContextActions,
     (registrar) => {
-      sessionStore = sessionActions.createSessionStore({
+      sessionStore = sessionStoreModule.createSessionStore({
         now: () => registrar.lifecycle.now(),
         publish: (event) => registrar.publish(event),
         cleanupOriginals: async (context, userId, storageKeys) => {

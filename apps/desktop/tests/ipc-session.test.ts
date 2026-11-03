@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { academicTasks } from '../src/features/onboarding/services/academic-tasks';
+import {
+  createLearningLifecycle,
+  registerLearningActions,
+  type LearningActionModule,
+} from '../src/services/academic/learning-actions';
 import type { OnboardingState } from '../src/features/onboarding/types';
 const mocks = vi.hoisted(() => ({
   handlers: new Map<
@@ -13,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   powerListeners: new Map<string, () => void>(),
   appQuit: vi.fn(),
   clearOfflineGrant: vi.fn(async () => undefined),
+  clientSignOut: vi.fn(async () => undefined),
   getCurrentUser: vi.fn(),
   getCookie: vi.fn(() => 'initial-cookie'),
   capturePage: vi.fn(async (_id, _page, check) => {
@@ -54,6 +60,17 @@ const mocks = vi.hoisted(() => ({
     mocks.watchSettings = settings;
     return settings;
   }),
+  saveOnboardingSettings: vi.fn((_userId, changes) => {
+    mocks.state = {
+      ...mocks.state,
+      settings: { ...mocks.state.settings, ...changes },
+    };
+    return mocks.state;
+  }),
+  offlineSettings: null as { localSetupCompletedAt: string | null } | null,
+  offlineWorkspace: null as { verifiedAt: string } | null,
+  offlineReadIndex: 0,
+  databaseWrite: vi.fn(),
   state: { settings: { consent: true, localSetupCompletedAt: null } },
 }));
 vi.mock('electron', () => ({
@@ -78,7 +95,7 @@ vi.mock('electron', () => ({
 }));
 vi.mock('../src/lib/auth/client', () => ({
   authClient: {
-    signOut: vi.fn(async () => undefined),
+    signOut: mocks.clientSignOut,
     getCookie: mocks.getCookie,
   },
 }));
@@ -91,11 +108,27 @@ vi.mock('../src/lib/auth/main', () => ({
 vi.mock('../src/lib/offline-account', () => ({
   clearOfflineAccountGrant: mocks.clearOfflineGrant,
 }));
-vi.mock('../src/db', () => ({ db: {} }));
+vi.mock('../src/db', () => ({
+  db: {
+    select: () => {
+      const index = mocks.offlineReadIndex++;
+      return {
+        from: () => ({
+          where: () => ({
+            get: () =>
+              index === 0 ? mocks.offlineSettings : mocks.offlineWorkspace,
+          }),
+        }),
+      };
+    },
+    insert: mocks.databaseWrite,
+    update: mocks.databaseWrite,
+  },
+}));
 vi.mock('../src/features/onboarding/services/store', () => ({
   getOnboardingState: () => mocks.state,
   removeAcademicConnection: vi.fn(() => mocks.state),
-  saveOnboardingSettings: vi.fn(() => mocks.state),
+  saveOnboardingSettings: mocks.saveOnboardingSettings,
   settleLocalSetup: (
     state: typeof mocks.state,
     options: { accountCompleted: boolean },
@@ -234,23 +267,65 @@ const refreshed = () => ({
   snapshot: { courses: [], sources: [], lastSuccessfulAt: null },
 });
 
+const registerTestAcademicActions = async (
+  learningModules: readonly LearningActionModule[] = [],
+) =>
+  registerAcademicActions({
+    register: (method, action) =>
+      mocks.handlers.set(`scholar:${method}`, async (_event, input) =>
+        action(input),
+      ),
+    publish: () => undefined,
+    learningModules,
+  });
+
 beforeEach(async () => {
   vi.clearAllMocks();
   mocks.getCookie.mockReturnValue('initial-cookie');
   mocks.watchSettings = { watchEnabled: false, watchUrls: [] };
   mocks.state = { settings: { consent: true, localSetupCompletedAt: null } };
-  if (!mocks.handlers.size)
-    registerAcademicActions({
-      register: (method, action) =>
-        mocks.handlers.set(`scholar:${method}`, async (_event, input) =>
-          action(input),
-        ),
-      publish: () => undefined,
-    });
+  mocks.offlineSettings = {
+    localSetupCompletedAt: '2026-11-01T12:00:00.000Z',
+  };
+  mocks.offlineWorkspace = { verifiedAt: '2026-11-01T12:00:00.000Z' };
+  mocks.offlineReadIndex = 0;
+  mocks.databaseWrite.mockClear();
+  if (!mocks.handlers.size) await registerTestAcademicActions();
   await invoke('signOut');
 });
 
 describe('academic service session boundaries', () => {
+  it('checks configured-device readiness without writes for an offline account', async () => {
+    mocks.getCurrentUser.mockResolvedValue({
+      id: 'student-a',
+      authMode: 'offline-local',
+    });
+
+    await expect(invoke('getOfflineDeviceReadiness')).resolves.toEqual({
+      configured: true,
+    });
+
+    expect(mocks.offlineReadIndex).toBe(2);
+    expect(mocks.databaseWrite).not.toHaveBeenCalled();
+    expect(mocks.saveOnboardingSettings).not.toHaveBeenCalled();
+    expect(mocks.watchRuntime.configure).not.toHaveBeenCalled();
+  });
+
+  it('denies offline access when local setup was never completed', async () => {
+    mocks.offlineSettings = { localSetupCompletedAt: null };
+    mocks.getCurrentUser.mockResolvedValue({
+      id: 'student-a',
+      authMode: 'offline-local',
+    });
+
+    await expect(invoke('getOfflineDeviceReadiness')).resolves.toEqual({
+      configured: false,
+    });
+
+    expect(mocks.offlineReadIndex).toBe(2);
+    expect(mocks.databaseWrite).not.toHaveBeenCalled();
+  });
+
   it('never starts an old-account preview when authentication resolves after sign-out', async () => {
     let release!: (value: unknown) => void;
     mocks.getCurrentUser.mockReturnValueOnce(
@@ -564,6 +639,57 @@ describe('foreground browser work and background sync', () => {
   });
 });
 
+it('registers legacy and learning handlers before yielding during startup', async () => {
+  const methods: string[] = [];
+  const module: LearningActionModule = (registrar) => {
+    registrar.handle('getTodayOverview', async () => ({}) as never);
+  };
+  const registration = registerAcademicActions({
+    register: (method) => {
+      methods.push(method);
+    },
+    publish: () => undefined,
+    learningModules: [module],
+  });
+
+  try {
+    expect(methods).toContain('getCurrentUser');
+    expect(methods).toContain('getTodayOverview');
+  } finally {
+    await registration;
+    await registerTestAcademicActions();
+  }
+});
+
+it('persists consent revocation before waiting for registered learning work', async () => {
+  mocks.state = readyState();
+  mocks.getCurrentUser.mockResolvedValue({ id: 'student-a' });
+  await invoke('getCurrentUser');
+  const controller = new AbortController();
+  let unregister!: () => void;
+  const module: LearningActionModule = (registrar) => {
+    unregister = registrar.lifecycle.registerOperation(
+      'student-a',
+      'active-turn',
+      controller,
+    );
+  };
+  await registerTestAcademicActions([module]);
+  mocks.saveOnboardingSettings.mockClear();
+
+  const revokeConsent = invoke('saveSettings', { consent: false });
+  try {
+    await vi.waitFor(() => expect(controller.signal.aborted).toBe(true));
+    expect(mocks.saveOnboardingSettings).toHaveBeenCalledWith('student-a', {
+      consent: false,
+    });
+  } finally {
+    unregister();
+    await revokeConsent;
+    await registerTestAcademicActions();
+  }
+});
+
 it('stops course watching before academic consent is revoked', async () => {
   mocks.state = readyState();
   mocks.getCurrentUser.mockResolvedValue({
@@ -605,6 +731,29 @@ it('releases only its system suspension token after resume and waits for watcher
   mocks.powerListeners.get('resume')?.();
   await vi.waitFor(() => expect(releaseSystemSuspend).toHaveBeenCalledOnce());
   expect(mocks.watchRuntime.resume).not.toHaveBeenCalled();
+});
+
+it('finishes quitting after learning cleanup fails', async () => {
+  const errorSpy = vi
+    .spyOn(console, 'error')
+    .mockImplementation(() => undefined);
+  await registerTestAcademicActions([
+    () => async () => {
+      throw new Error('cleanup failed');
+    },
+  ]);
+  const preventDefault = vi.fn();
+
+  mocks.appListeners.get('before-quit')!({ preventDefault });
+
+  try {
+    await vi.waitFor(() => expect(mocks.appQuit).toHaveBeenCalledOnce());
+    expect(preventDefault).toHaveBeenCalledOnce();
+    expect(mocks.watchRuntime.stop).toHaveBeenCalled();
+  } finally {
+    errorSpy.mockRestore();
+    await registerTestAcademicActions();
+  }
 });
 
 it('requires consent and an authenticated account to resolve sites', async () => {
@@ -845,7 +994,7 @@ it('can cancel academic work after cloud authentication expires', async () => {
 it('re-registers learning modules after account and session teardown', async () => {
   const cleanup = vi.fn();
   const registerModule = vi.fn(() => cleanup);
-  registerAcademicActions({
+  await registerAcademicActions({
     register: (method, action) =>
       mocks.handlers.set(`scholar:${method}`, async (_event, input) =>
         action(input),
@@ -925,6 +1074,184 @@ it('commits replacements with a scoped current-session barrier', async () => {
     expect.any(Function),
   );
   expect(mocks.watchRuntime.suspend).toHaveBeenCalledOnce();
+});
+
+it('awaits partial module cleanup before propagating registration failure', async () => {
+  const lifecycle = createLearningLifecycle();
+  let finishCleanup!: () => void;
+  const cleanup = vi.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        finishCleanup = resolve;
+      }),
+  );
+  let registrationSettled = false;
+  const registration = Promise.resolve()
+    .then(() =>
+      registerLearningActions(
+        {
+          handle: () => undefined,
+          publish: () => undefined,
+          lifecycle,
+        },
+        [
+          () => cleanup,
+          () => {
+            throw new Error('module registration failed');
+          },
+        ],
+      ),
+    )
+    .then(
+      () => (registrationSettled = true),
+      () => (registrationSettled = true),
+    );
+
+  await vi.waitFor(() => expect(cleanup).toHaveBeenCalledOnce());
+  expect(registrationSettled).toBe(false);
+  finishCleanup();
+  await registration;
+
+  expect(registrationSettled).toBe(true);
+});
+
+it('aborts scoped work and waits for operation deregistration before invalidation', async () => {
+  const lifecycle = createLearningLifecycle();
+  const controller = new AbortController();
+  const unregister = lifecycle.registerOperation(
+    'student-a',
+    'operation-a',
+    controller,
+  );
+  let invalidated = false;
+  const invalidation = lifecycle.invalidate().then(() => {
+    invalidated = true;
+  });
+
+  expect(controller.signal.aborted).toBe(true);
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  expect(invalidated).toBe(false);
+  unregister();
+  await invalidation;
+
+  expect(invalidated).toBe(true);
+});
+
+it('aborts new operation registrations while a cancellation barrier is active', async () => {
+  const lifecycle = createLearningLifecycle();
+  const activeController = new AbortController();
+  const unregisterActive = lifecycle.registerOperation(
+    'student-a',
+    'active-operation',
+    activeController,
+  );
+  const cancellation = lifecycle.cancelOperationsAndWait();
+  const nextController = new AbortController();
+  const unregisterNext = lifecycle.registerOperation(
+    'student-a',
+    'next-operation',
+    nextController,
+  );
+
+  expect(activeController.signal.aborted).toBe(true);
+  expect(nextController.signal.aborted).toBe(true);
+  unregisterNext();
+  unregisterActive();
+  await cancellation;
+});
+
+it('keeps learning fenced after teardown failure until a clean recovery invalidation', async () => {
+  const lifecycle = createLearningLifecycle();
+  lifecycle.onTeardown(async () => {
+    throw new Error('module cleanup failed');
+  });
+
+  await expect(lifecycle.invalidate()).rejects.toThrow(
+    'Learning teardown failed.',
+  );
+  await expect(
+    Promise.resolve().then(() =>
+      lifecycle.trackOperation('stale', async () => 'stale'),
+    ),
+  ).rejects.toThrow('Learning work is being cancelled.');
+  await lifecycle.invalidate();
+  await expect(
+    lifecycle.trackOperation('fresh', async () => 'fresh'),
+  ).resolves.toBe('fresh');
+});
+
+it('runs learning module cleanup once when disposal overlaps lifecycle invalidation', async () => {
+  const lifecycle = createLearningLifecycle();
+  const cleanup = vi.fn(async () => undefined);
+  const dispose = await registerLearningActions(
+    {
+      handle: () => undefined,
+      publish: () => undefined,
+      lifecycle,
+    },
+    [() => cleanup],
+  );
+
+  await dispose();
+  await lifecycle.invalidate();
+  await dispose();
+
+  expect(cleanup).toHaveBeenCalledOnce();
+});
+
+it('waits for an active learning action before rebinding the account', async () => {
+  let finishAction!: () => void;
+  let announceStart!: () => void;
+  const actionStarted = new Promise<void>((resolve) => {
+    announceStart = resolve;
+  });
+  const actionMayFinish = new Promise<void>((resolve) => {
+    finishAction = resolve;
+  });
+  const cleanup = vi.fn(async () => undefined);
+  const module: LearningActionModule = (registrar) => {
+    registrar.handle('getTodayOverview', async () => {
+      announceStart();
+      await actionMayFinish;
+      return {} as never;
+    });
+    return cleanup;
+  };
+  await registerAcademicActions({
+    register: (method, action) =>
+      mocks.handlers.set(`scholar:${method}`, async (_event, input) =>
+        action(input),
+      ),
+    publish: () => undefined,
+    learningModules: [module],
+  });
+  mocks.getCurrentUser
+    .mockResolvedValueOnce({ id: 'student-a' })
+    .mockResolvedValueOnce({ id: 'student-a' })
+    .mockResolvedValueOnce({ id: 'student-b' });
+  await invoke('getCurrentUser');
+  const activeAction = invoke('getTodayOverview', {});
+  await actionStarted;
+  cleanup.mockClear();
+  mocks.clientSignOut.mockClear();
+  const accountSwitch = invoke('getCurrentUser');
+  let switchSettled = false;
+  void accountSwitch.then(
+    () => (switchSettled = true),
+    () => (switchSettled = true),
+  );
+  try {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(switchSettled).toBe(false);
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(mocks.clientSignOut).not.toHaveBeenCalled();
+  } finally {
+    finishAction();
+  }
+  await expect(activeAction).rejects.toThrow('Your session changed');
+  await expect(accountSwitch).resolves.toMatchObject({ id: 'student-b' });
+
+  expect(cleanup).toHaveBeenCalledOnce();
 });
 
 it('cancels only the current account replacement without stopping its workspace', async () => {

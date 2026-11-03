@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { productEventV1Schema } from '@scholaros/services/learning/product-contracts';
 import {
-  academicEndpointSchema,
+  academicEndpointFileSchema,
   rendererAcademicMethods,
   type AcademicEndpointSchema,
   type AcademicEventChannel,
@@ -13,6 +13,7 @@ import {
 } from './contracts';
 import {
   getTrustedWindows,
+  isTrustedWebContents,
   requireTrustedSender,
 } from '../../lib/trusted-windows';
 import { academicRequest, subscribeAcademic } from './transport';
@@ -22,31 +23,45 @@ let stopSubscription: (() => void) | null = null;
 let stopping = false;
 let connected: AcademicEndpointSchema | null = null;
 let authIdentity: string | null | undefined;
+let currentAccountId: string | null = null;
 const directory = () => path.join(app.getPath('userData'), 'academic-service');
 const findService = async () => {
-  const endpoint = academicEndpointSchema.parse(
+  const endpointFile = academicEndpointFileSchema.parse(
     JSON.parse(await readFile(path.join(directory(), 'endpoint.json'), 'utf8')),
   );
+  const endpoint = {
+    version: endpointFile.version,
+    address: endpointFile.address,
+    token: endpointFile.token,
+  };
   const state = await academicRequest(endpoint, 'health', undefined, 1000);
   if (!(state as { ready?: boolean })?.ready)
     throw new Error('The academic service is starting.');
   return endpoint;
 };
-const broadcastToTrustedWindows = (channel: string, value: unknown) => {
+const deliverToTrustedWindows = (channel: string, value: unknown) => {
   for (const window of getTrustedWindows()) {
-    if (!window.isDestroyed()) window.webContents.send(channel, value);
+    if (
+      !window.isDestroyed() &&
+      !window.webContents.isDestroyed() &&
+      isTrustedWebContents(window.webContents)
+    )
+      window.webContents.send(channel, value);
   }
 };
-const getAuthIdentity = (user: unknown) => {
+const getUserId = (user: unknown) => {
   if (!user || typeof user !== 'object' || !('id' in user)) return null;
+  return typeof user.id === 'string' ? user.id : null;
+};
+const getAuthIdentity = (user: unknown) => {
+  const id = getUserId(user);
+  if (!user || typeof user !== 'object' || id === null) return null;
   const candidate = user as {
-    id?: unknown;
     hasCompletedOnboarding?: unknown;
     authMode?: unknown;
   };
-  if (typeof candidate.id !== 'string') return null;
   return [
-    candidate.id,
+    id,
     candidate.hasCompletedOnboarding === true,
     candidate.authMode === 'offline-local',
   ].join(':');
@@ -55,31 +70,38 @@ const publishAuthIdentity = (user: unknown) => {
   const nextIdentity = getAuthIdentity(user);
   if (nextIdentity === authIdentity) return;
   authIdentity = nextIdentity;
-  broadcastToTrustedWindows('better-auth:user-updated', null);
+  deliverToTrustedWindows('better-auth:user-updated', null);
 };
 const publish = (channel: AcademicEventChannel, value: unknown) => {
-  if (
-    channel === 'scholar:productEvent' &&
-    !productEventV1Schema.safeParse(value).success
-  )
+  if (channel === 'scholar:productEvent') {
+    const parsedEvent = productEventV1Schema.safeParse(value);
+    if (!parsedEvent.success || parsedEvent.data.accountId !== currentAccountId)
+      return;
+    deliverToTrustedWindows(channel, parsedEvent.data);
     return;
+  }
 
-  broadcastToTrustedWindows(channel, value);
+  const eventAccountId =
+    value &&
+    typeof value === 'object' &&
+    'accountId' in value &&
+    (typeof value.accountId === 'string' || value.accountId === null)
+      ? value.accountId
+      : undefined;
+  if (eventAccountId === undefined || eventAccountId !== currentAccountId)
+    return;
+  deliverToTrustedWindows(channel, value);
 };
 const publishReconnect = (user: unknown) => {
+  currentAccountId = getUserId(user);
   publishAuthIdentity(user);
-  const accountId =
-    user &&
-    typeof user === 'object' &&
-    'id' in user &&
-    typeof user.id === 'string'
-      ? user.id
-      : null;
-  broadcastToTrustedWindows('scholar:coursesChange', {
-    accountId,
+  deliverToTrustedWindows('scholar:coursesChange', {
+    accountId: currentAccountId,
     courseId: null,
   });
-  broadcastToTrustedWindows('scholar:academicReconnect', { accountId });
+  deliverToTrustedWindows('scholar:academicReconnect', {
+    accountId: currentAccountId,
+  });
 };
 const ensureService = (): Promise<AcademicEndpointSchema> =>
   connected
@@ -130,17 +152,27 @@ export const requestAcademicService = async (
   method: AcademicMethod,
   input?: unknown,
 ) => {
+  if (method === 'getCurrentUser' || method === 'signOut')
+    currentAccountId = null;
   const result = await academicRequest(await ensureService(), method, input);
-  if (method === 'getCurrentUser') publishAuthIdentity(result);
-  if (method === 'signOut') publishAuthIdentity(null);
+  if (method === 'getCurrentUser') {
+    currentAccountId = getUserId(result);
+    publishAuthIdentity(result);
+  }
+  if (method === 'signOut') {
+    currentAccountId = null;
+    publishAuthIdentity(null);
+  }
   return result;
 };
 
 export const registerAcademicClient = async () => {
   for (const method of rendererAcademicMethods) {
-    ipcMain.handle(`scholar:${method}`, (event, input: unknown) => {
+    ipcMain.handle(`scholar:${method}`, async (event, input: unknown) => {
       requireTrustedSender(event);
-      return requestAcademicService(method, input);
+      const result = await requestAcademicService(method, input);
+      requireTrustedSender(event);
+      return result;
     });
   }
   await ensureService();
@@ -148,6 +180,7 @@ export const registerAcademicClient = async () => {
 
 export const disconnectAcademicService = () => {
   stopping = true;
+  currentAccountId = null;
   stopSubscription?.();
   stopSubscription = null;
 };

@@ -22,7 +22,7 @@ export const runAcademicService = async ({
   try {
     const { registerAcademicActions } =
       await import('../../features/onboarding/services/ipc');
-    registerAcademicActions({
+    await registerAcademicActions({
       register: (method, action) => actions.set(method, action),
       publish: server.publish,
       learningModules,
