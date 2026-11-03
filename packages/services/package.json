@@ -8,8 +8,7 @@
     "./mailjet/emails/verification-emails": "./src/mailjet/emails/verification-emails.ts",
     "./ai/academic": "./src/ai/academic.ts",
     "./ai/schemas": "./src/ai/schemas.ts",
-    "./ai/models/baseten": "./src/ai/models/baseten.ts",
-    "./ai/models/typesafe": "./src/ai/models/typesafe.ts",
+    "./ai/dictation": "./src/ai/dictation.ts",
     "./ai/course-discovery": "./src/ai/course-discovery.ts",
     "./ai/connection-resolver": "./src/ai/connection-resolver.ts",
     "./ai/models/inference": "./src/ai/models/inference.ts",
@@ -23,7 +22,6 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@ai-sdk/baseten": "2.1.58",
     "@ai-sdk/openai": "^4.0.105",
     "@ai-sdk/typesafe-ai": "3.0.29",
     "@scholaros/env": "workspace:*",
