@@ -95,6 +95,7 @@ export const createWatchBrowserSession = (
 ) => {
   const pages = new Map<string, WatchPageHandle>();
   let pageQueue: Promise<unknown> = Promise.resolve();
+  let closeAllPromise: Promise<void> | null = null;
   const now = dependencies.now ?? Date.now;
   const sleep =
     dependencies.sleep ??
@@ -243,11 +244,18 @@ export const createWatchBrowserSession = (
       throw error;
     }
   };
-  const closeAll = async () => {
-    await pageQueue;
-    const handles = [...pages.values()];
-    pages.clear();
-    await Promise.all(handles.map(closeHandle));
+  const closeAll = () => {
+    if (closeAllPromise) return closeAllPromise;
+    const closing = pageQueue.then(async () => {
+      const handles = [...pages.values()];
+      pages.clear();
+      await Promise.all(handles.map(closeHandle));
+    });
+    pageQueue = closing.catch(() => undefined);
+    closeAllPromise = closing.finally(() => {
+      closeAllPromise = null;
+    });
+    return closeAllPromise;
   };
   return {
     checkTarget,

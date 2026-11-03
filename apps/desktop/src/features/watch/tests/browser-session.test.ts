@@ -276,6 +276,57 @@ describe('watch browser session', () => {
     await session.closeAll();
   });
 
+  it('makes concurrent closeAll calls await the same page-release barrier', async () => {
+    let releasePage!: () => void;
+    const release = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          releasePage = resolve;
+        }),
+    );
+    const session = createWatchBrowserSession({
+      createPage: async () => ({}) as never,
+      protectPage: async () => ({ release }),
+      navigate: async () => undefined,
+      readSnapshot: async (_page, pageTarget) =>
+        snapshot(pageTarget.requestedUrl),
+      installObserver: async () => undefined,
+      readMutationState: async () => ({
+        revision: 0,
+        url: 'https://canvas.school.edu/',
+        documentId: 'one',
+        installed: true,
+      }),
+      disconnectObserver: async () => undefined,
+      settle: async () => undefined,
+      sleep: async (_milliseconds, signal) =>
+        new Promise<void>((resolve) =>
+          signal.addEventListener('abort', () => resolve(), { once: true }),
+        ),
+    });
+    await session.checkTarget(target('1'), new AbortController().signal, {
+      reload: true,
+    });
+
+    let firstSettled = false;
+    let secondSettled = false;
+    const first = session.closeAll().then(() => {
+      firstSettled = true;
+    });
+    const second = session.closeAll().then(() => {
+      secondSettled = true;
+    });
+    await vi.waitFor(() => expect(release).toHaveBeenCalledOnce());
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(firstSettled).toBe(false);
+    expect(secondSettled).toBe(false);
+
+    releasePage();
+    await Promise.all([first, second]);
+    expect(firstSettled).toBe(true);
+    expect(secondSettled).toBe(true);
+  });
+
   it('waits for one quiet second and caps mutation settling at five seconds', async () => {
     const page = {} as never;
     let clock = 0;

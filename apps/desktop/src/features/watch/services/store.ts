@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, eq, inArray, notInArray } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne, notInArray, or } from 'drizzle-orm';
 import { db } from '../../../db';
 import {
   AcademicConnectionTable,
@@ -7,6 +7,7 @@ import {
   SettingTable,
   WatchTargetTable,
 } from '../../../db/schema';
+import { watchTargetFailureCategories } from '../../../db/shared';
 import { parseWatchUrl } from '../lib/watch-url';
 import { getEffectiveWatchTargetInputs } from '../lib/watch-url';
 import { isWithinCoursePath } from '../../courses/lib/course-content';
@@ -18,6 +19,8 @@ import type {
   WatchProcessedRevision,
   WatchSettings,
   WatchTargetUpsert,
+  WatchHealthSummary,
+  WatchRuntimeStatus,
 } from '../types';
 import type { WatchTargetSelectData } from '../../../db/schema';
 
@@ -229,7 +232,17 @@ export const recordWatchObservation = (
           ),
         )
         .get();
-      if (!existingWatchTarget) return null;
+      if (!existingWatchTarget || existingWatchTarget.status !== 'active')
+        return null;
+      const setting = tx
+        .select({
+          watchEnabled: SettingTable.watchEnabled,
+          consent: SettingTable.consent,
+        })
+        .from(SettingTable)
+        .where(eq(SettingTable.userId, input.userId))
+        .get();
+      if (!setting?.watchEnabled || !setting.consent) return null;
       const connection = tx
         .select()
         .from(AcademicConnectionTable)
@@ -241,22 +254,43 @@ export const recordWatchObservation = (
           ),
         )
         .get();
-      if (!connection) return null;
+      if (!connection || connection.status === 'needs-sign-in') return null;
       const verifiedUrl = parseWatchUrl(input.verifiedUrl, [connection]);
       if (verifiedUrl.connectionId !== existingWatchTarget.connectionId)
         return null;
+      const pendingChange =
+        existingWatchTarget.processedFingerprint !== input.fingerprint;
+      const samePendingRevision =
+        existingWatchTarget.pendingChange &&
+        existingWatchTarget.detectedFingerprint === input.fingerprint;
       tx.update(WatchTargetTable)
         .set({
           verifiedUrl: verifiedUrl.url,
           lastAttemptAt: input.checkedAt,
           lastSuccessfulCheckAt: input.checkedAt,
           detectedFingerprint: input.fingerprint,
-          pendingChange:
-            existingWatchTarget.processedFingerprint !== input.fingerprint,
+          pendingChange,
+          pendingSince: pendingChange
+            ? samePendingRevision
+              ? (existingWatchTarget.pendingSince ??
+                existingWatchTarget.updatedAt)
+              : input.checkedAt
+            : null,
+          pendingSinceEstimated: pendingChange
+            ? samePendingRevision
+              ? existingWatchTarget.pendingSinceEstimated ||
+                existingWatchTarget.pendingSince === null
+              : false
+            : false,
+          lastFailureCategory: samePendingRevision
+            ? existingWatchTarget.lastFailureCategory
+            : null,
           nextCheckAt: input.nextCheckAt,
-          status: 'active',
-          failureCount: 0,
-          retryAt: null,
+          status: samePendingRevision ? existingWatchTarget.status : 'active',
+          failureCount: samePendingRevision
+            ? existingWatchTarget.failureCount
+            : 0,
+          retryAt: samePendingRevision ? existingWatchTarget.retryAt : null,
           recipeVersion: input.recipeVersion,
           updatedAt: input.checkedAt,
         })
@@ -288,15 +322,54 @@ export const markWatchTargetProcessed = (
         ),
       )
       .get();
-    if (!existingWatchTarget) return null;
+    if (
+      !existingWatchTarget ||
+      existingWatchTarget.status !== 'active' ||
+      !existingWatchTarget.pendingChange ||
+      existingWatchTarget.detectedFingerprint !== input.fingerprint
+    )
+      return null;
+    const setting = tx
+      .select({
+        watchEnabled: SettingTable.watchEnabled,
+        consent: SettingTable.consent,
+      })
+      .from(SettingTable)
+      .where(eq(SettingTable.userId, input.userId))
+      .get();
+    if (!setting?.watchEnabled || !setting.consent) return null;
+    const connection = tx
+      .select({ status: AcademicConnectionTable.status })
+      .from(AcademicConnectionTable)
+      .where(
+        and(
+          eq(AcademicConnectionTable.userId, input.userId),
+          eq(AcademicConnectionTable.id, existingWatchTarget.connectionId),
+          eq(AcademicConnectionTable.isCourseResource, true),
+        ),
+      )
+      .get();
+    if (!connection || connection.status === 'needs-sign-in') return null;
     tx.update(WatchTargetTable)
       .set({
         processedFingerprint: input.fingerprint,
-        pendingChange:
-          existingWatchTarget.detectedFingerprint !== input.fingerprint,
+        pendingChange: false,
+        pendingSince: null,
+        pendingSinceEstimated: false,
+        lastFailureCategory: null,
+        failureCount: 0,
+        retryAt: null,
+        nextCheckAt: input.processedAt,
         updatedAt: input.processedAt,
       })
-      .where(eq(WatchTargetTable.id, input.targetId))
+      .where(
+        and(
+          eq(WatchTargetTable.userId, input.userId),
+          eq(WatchTargetTable.id, input.targetId),
+          eq(WatchTargetTable.detectedFingerprint, input.fingerprint),
+          eq(WatchTargetTable.pendingChange, true),
+        ),
+      )
       .run();
     return tx
       .select()
@@ -390,6 +463,13 @@ export const synchronizeWatchTargets = (
             activeTargets.map((target) => target.id),
           ),
           eq(WatchTargetTable.status, 'suspended'),
+          or(
+            isNull(WatchTargetTable.lastFailureCategory),
+            and(
+              ne(WatchTargetTable.lastFailureCategory, 'needs-sign-in'),
+              ne(WatchTargetTable.lastFailureCategory, 'scope-changed'),
+            ),
+          ),
         ),
       )
       .run();
@@ -432,21 +512,219 @@ export const recordWatchFailure = (
         ),
       )
       .get();
-    if (!existingWatchTarget) return null;
+    if (!existingWatchTarget || existingWatchTarget.status !== 'active')
+      return null;
+    const setting = tx
+      .select({
+        watchEnabled: SettingTable.watchEnabled,
+        consent: SettingTable.consent,
+      })
+      .from(SettingTable)
+      .where(eq(SettingTable.userId, input.userId))
+      .get();
+    if (!setting?.watchEnabled || !setting.consent) return null;
+    const connection = tx
+      .select({ id: AcademicConnectionTable.id })
+      .from(AcademicConnectionTable)
+      .where(
+        and(
+          eq(AcademicConnectionTable.userId, input.userId),
+          eq(AcademicConnectionTable.id, existingWatchTarget.connectionId),
+          eq(AcademicConnectionTable.isCourseResource, true),
+        ),
+      )
+      .get();
+    if (!connection) return null;
+    const needsIntervention =
+      input.category === 'needs-sign-in' || input.category === 'scope-changed';
     tx.update(WatchTargetTable)
       .set({
         lastAttemptAt: input.failedAt,
-        failureCount: existingWatchTarget.failureCount + 1,
+        failureCount: needsIntervention
+          ? existingWatchTarget.failureCount
+          : existingWatchTarget.failureCount + 1,
+        lastFailureCategory: input.category,
         retryAt: input.retryAt,
         nextCheckAt: input.retryAt,
-        status: input.blocked ? 'blocked' : 'active',
+        status: input.blocked
+          ? 'blocked'
+          : needsIntervention
+            ? 'suspended'
+            : 'active',
         updatedAt: input.failedAt,
       })
-      .where(eq(WatchTargetTable.id, input.targetId))
+      .where(
+        and(
+          eq(WatchTargetTable.userId, input.userId),
+          eq(WatchTargetTable.id, input.targetId),
+        ),
+      )
       .run();
     return tx
       .select()
       .from(WatchTargetTable)
-      .where(eq(WatchTargetTable.id, input.targetId))
+      .where(
+        and(
+          eq(WatchTargetTable.userId, input.userId),
+          eq(WatchTargetTable.id, input.targetId),
+        ),
+      )
       .get()!;
   });
+
+const reconnectFailureCategories = ['needs-sign-in', 'scope-changed'] as const;
+
+export const resetWatchTargetsAfterReconnect = (
+  userId: string,
+  connectionId: string,
+  reconnectedAt = new Date().toISOString(),
+) =>
+  db.transaction((tx) => {
+    const setting = tx
+      .select({
+        watchEnabled: SettingTable.watchEnabled,
+        consent: SettingTable.consent,
+        watchUrls: SettingTable.watchUrls,
+      })
+      .from(SettingTable)
+      .where(eq(SettingTable.userId, userId))
+      .get();
+    if (!setting?.watchEnabled || !setting.consent) return [];
+    const parsedSettings = watchSettingsSchema.safeParse({
+      watchEnabled: setting.watchEnabled,
+      watchUrls: setting.watchUrls,
+    });
+    if (!parsedSettings.success) return [];
+    const connection = tx
+      .select()
+      .from(AcademicConnectionTable)
+      .where(
+        and(
+          eq(AcademicConnectionTable.userId, userId),
+          eq(AcademicConnectionTable.id, connectionId),
+          eq(AcademicConnectionTable.isCourseResource, true),
+        ),
+      )
+      .get();
+    if (!connection || connection.status === 'needs-sign-in') return [];
+    const activeIdentities = new Set(
+      getEffectiveWatchTargetInputs(parsedSettings.data, [connection]).flatMap(
+        (input) => {
+          try {
+            return [
+              `${input.connectionId}:${parseWatchUrl(input.requestedUrl, [connection]).identity}`,
+            ];
+          } catch {
+            return [];
+          }
+        },
+      ),
+    );
+    const affectedTargets = tx
+      .select()
+      .from(WatchTargetTable)
+      .where(
+        and(
+          eq(WatchTargetTable.userId, userId),
+          eq(WatchTargetTable.connectionId, connectionId),
+          inArray(
+            WatchTargetTable.lastFailureCategory,
+            reconnectFailureCategories,
+          ),
+        ),
+      )
+      .all()
+      .filter((target) =>
+        activeIdentities.has(`${target.connectionId}:${target.urlIdentity}`),
+      );
+    for (const target of affectedTargets)
+      tx.update(WatchTargetTable)
+        .set({
+          status: 'active',
+          failureCount: 0,
+          lastFailureCategory: null,
+          retryAt: null,
+          nextCheckAt: reconnectedAt,
+          updatedAt: reconnectedAt,
+        })
+        .where(
+          and(
+            eq(WatchTargetTable.userId, userId),
+            eq(WatchTargetTable.id, target.id),
+            inArray(
+              WatchTargetTable.lastFailureCategory,
+              reconnectFailureCategories,
+            ),
+          ),
+        )
+        .run();
+    return affectedTargets.map((target) => target.id);
+  });
+
+export const getWatchHealthSummary = (
+  userId: string,
+  runtimeStatus: WatchRuntimeStatus,
+  now = Date.now(),
+): WatchHealthSummary => {
+  const targets = getWatchTargets(userId);
+  const pending = targets.flatMap((target) => {
+    if (!target.pendingChange) return [];
+    const pendingTimestamp = Date.parse(
+      target.pendingSince ?? target.updatedAt,
+    );
+    return [
+      {
+        timestamp: Number.isFinite(pendingTimestamp) ? pendingTimestamp : null,
+        estimated: target.pendingSinceEstimated || target.pendingSince === null,
+      },
+    ];
+  });
+  const oldestPending = pending
+    .filter(
+      (item): item is { timestamp: number; estimated: boolean } =>
+        item.timestamp !== null,
+    )
+    .sort((left, right) => left.timestamp - right.timestamp)[0];
+  const nextRetryAt = targets
+    .flatMap((target) => (target.retryAt ? [Date.parse(target.retryAt)] : []))
+    .filter((retryAt) => Number.isFinite(retryAt) && retryAt > now)
+    .sort((left, right) => left - right)[0];
+  const lastSuccessfulCheckAt = targets
+    .flatMap((target) =>
+      target.lastSuccessfulCheckAt
+        ? [Date.parse(target.lastSuccessfulCheckAt)]
+        : [],
+    )
+    .filter(Number.isFinite)
+    .sort((left, right) => right - left)[0];
+  const failures = watchTargetFailureCategories.flatMap((category) => {
+    const targetCount = targets.filter(
+      (target) => target.lastFailureCategory === category,
+    ).length;
+    return targetCount ? [{ category, targetCount }] : [];
+  });
+  const status =
+    runtimeStatus === 'off' || runtimeStatus === 'paused'
+      ? runtimeStatus
+      : failures.some((failure) => failure.category === 'needs-sign-in')
+        ? 'needs-sign-in'
+        : targets.some((target) => target.status === 'blocked') ||
+            failures.length
+          ? 'blocked'
+          : runtimeStatus;
+  return {
+    status,
+    pendingRevisionCount: pending.length,
+    oldestPendingSince: oldestPending
+      ? new Date(oldestPending.timestamp).toISOString()
+      : null,
+    oldestPendingSinceEstimated:
+      pending.some((item) => item.timestamp === null) ||
+      (oldestPending?.estimated ?? pending.length > 0),
+    lastSuccessfulCheckAt: lastSuccessfulCheckAt
+      ? new Date(lastSuccessfulCheckAt).toISOString()
+      : null,
+    nextRetryAt: nextRetryAt ? new Date(nextRetryAt).toISOString() : null,
+    failures,
+  };
+};

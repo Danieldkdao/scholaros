@@ -24,11 +24,13 @@ const { AcademicConnectionTable, CourseTable, SettingTable, WatchTargetTable } =
 const {
   getWatchSettings,
   getWatchTargets,
+  getWatchHealthSummary,
   getLastWatchReconciledAt,
   recordWatchReconciledAt,
   markWatchTargetProcessed,
   recordWatchFailure,
   recordWatchObservation,
+  resetWatchTargetsAfterReconnect,
   scheduleWatchTargetCheck,
   saveWatchSettings,
   synchronizeWatchTargets,
@@ -79,6 +81,14 @@ const insertCourse = (userId: string, id: string, sourceConnectionId: string) =>
       lastSeenAt: now,
     })
     .run();
+
+const enableWatch = (userId: string) => {
+  saveWatchSettings(userId, { watchEnabled: true, watchUrls: [] });
+  db.update(SettingTable)
+    .set({ consent: true })
+    .where(eq(SettingTable.userId, userId))
+    .run();
+};
 
 beforeEach(() => {
   db.delete(WatchTargetTable).run();
@@ -283,6 +293,7 @@ describe('watch persistence', () => {
   });
 
   it('keeps changes pending until the matching fingerprint is processed', () => {
+    enableWatch(student);
     const target = upsertWatchTarget(student, {
       connectionId,
       courseId: 'course-a',
@@ -306,6 +317,7 @@ describe('watch persistence', () => {
         targetId: target.id,
         fingerprint: 'a'.repeat(64),
         processedAt: now,
+        sessionEpoch: 0,
       })?.pendingChange,
     ).toBe(false);
 
@@ -323,9 +335,11 @@ describe('watch persistence', () => {
       targetId: target.id,
       fingerprint: 'a'.repeat(64),
       processedAt: '2026-11-01T12:02:00.000Z',
+      sessionEpoch: 0,
     });
 
-    expect(completedOldRevision).toMatchObject({
+    expect(completedOldRevision).toBeNull();
+    expect(getWatchTargets(student)[0]).toMatchObject({
       detectedFingerprint: 'b'.repeat(64),
       processedFingerprint: 'a'.repeat(64),
       pendingChange: true,
@@ -336,11 +350,359 @@ describe('watch persistence', () => {
         targetId: target.id,
         fingerprint: 'b'.repeat(64),
         processedAt: '2026-11-01T12:03:00.000Z',
+        sessionEpoch: 0,
       })?.pendingChange,
     ).toBe(false);
   });
 
+  it('preserves transient retry history through unchanged successful observations', () => {
+    enableWatch(student);
+    const target = upsertWatchTarget(student, {
+      connectionId,
+      courseId: 'course-a',
+      requestedUrl: watchUrl,
+      recipeVersion: 1,
+    })!;
+    recordWatchObservation({
+      userId: student,
+      targetId: target.id,
+      fingerprint: 'a'.repeat(64),
+      checkedAt: now,
+      nextCheckAt: '2026-11-01T12:05:00.000Z',
+      verifiedUrl: watchUrl,
+      recipeVersion: 1,
+    });
+    recordWatchFailure({
+      userId: student,
+      targetId: target.id,
+      failedAt: '2026-11-01T12:00:30.000Z',
+      retryAt: '2026-11-01T12:01:30.000Z',
+      blocked: false,
+      category: 'network',
+    });
+
+    const unchanged = recordWatchObservation({
+      userId: student,
+      targetId: target.id,
+      fingerprint: 'a'.repeat(64),
+      checkedAt: '2026-11-01T12:01:30.000Z',
+      nextCheckAt: '2026-11-01T12:06:30.000Z',
+      verifiedUrl: watchUrl,
+      recipeVersion: 1,
+    });
+
+    expect(unchanged).toMatchObject({
+      failureCount: 1,
+      lastFailureCategory: 'network',
+      retryAt: '2026-11-01T12:01:30.000Z',
+      pendingSince: now,
+    });
+
+    const changed = recordWatchObservation({
+      userId: student,
+      targetId: target.id,
+      fingerprint: 'b'.repeat(64),
+      checkedAt: '2026-11-01T12:02:00.000Z',
+      nextCheckAt: '2026-11-01T12:07:00.000Z',
+      verifiedUrl: watchUrl,
+      recipeVersion: 1,
+    });
+    expect(changed).toMatchObject({
+      failureCount: 0,
+      lastFailureCategory: null,
+      retryAt: null,
+      pendingSince: '2026-11-01T12:02:00.000Z',
+    });
+  });
+
+  it('rejects a late observation after watch permission is revoked', () => {
+    enableWatch(student);
+    const target = upsertWatchTarget(student, {
+      connectionId,
+      courseId: 'course-a',
+      requestedUrl: watchUrl,
+      recipeVersion: 1,
+    })!;
+    db.update(SettingTable)
+      .set({ watchEnabled: false, consent: false })
+      .where(eq(SettingTable.userId, student))
+      .run();
+
+    const observation = recordWatchObservation({
+      userId: student,
+      targetId: target.id,
+      fingerprint: 'a'.repeat(64),
+      checkedAt: now,
+      nextCheckAt: '2026-11-01T12:05:00.000Z',
+      verifiedUrl: watchUrl,
+      recipeVersion: 1,
+    });
+
+    expect(observation).toBeNull();
+    expect(getWatchTargets(student)[0]).toMatchObject({
+      detectedFingerprint: null,
+      pendingChange: false,
+      status: 'active',
+    });
+  });
+
+  it('persists pending age only for the current revision and clears it on coverage', () => {
+    enableWatch(student);
+    const target = upsertWatchTarget(student, {
+      connectionId,
+      courseId: 'course-a',
+      requestedUrl: watchUrl,
+      recipeVersion: 1,
+    })!;
+    const firstDetectedAt = now;
+    const secondDetectedAt = '2026-11-01T12:02:00.000Z';
+    const secondCheckedAt = '2026-11-01T12:03:00.000Z';
+
+    recordWatchObservation({
+      userId: student,
+      targetId: target.id,
+      fingerprint: 'a'.repeat(64),
+      checkedAt: firstDetectedAt,
+      nextCheckAt: '2026-11-01T12:05:00.000Z',
+      verifiedUrl: watchUrl,
+      recipeVersion: 1,
+    });
+    recordWatchObservation({
+      userId: student,
+      targetId: target.id,
+      fingerprint: 'a'.repeat(64),
+      checkedAt: secondDetectedAt,
+      nextCheckAt: '2026-11-01T12:07:00.000Z',
+      verifiedUrl: watchUrl,
+      recipeVersion: 1,
+    });
+    expect(getWatchTargets(student)[0]).toMatchObject({
+      pendingSince: firstDetectedAt,
+      pendingSinceEstimated: false,
+    });
+
+    recordWatchObservation({
+      userId: student,
+      targetId: target.id,
+      fingerprint: 'b'.repeat(64),
+      checkedAt: secondDetectedAt,
+      nextCheckAt: '2026-11-01T12:07:00.000Z',
+      verifiedUrl: watchUrl,
+      recipeVersion: 1,
+    });
+    const staleCompletion = markWatchTargetProcessed({
+      userId: student,
+      targetId: target.id,
+      fingerprint: 'a'.repeat(64),
+      processedAt: secondCheckedAt,
+      sessionEpoch: 0,
+    });
+
+    expect(staleCompletion).toBeNull();
+    expect(getWatchTargets(student)[0]).toMatchObject({
+      detectedFingerprint: 'b'.repeat(64),
+      processedFingerprint: null,
+      pendingChange: true,
+      pendingSince: secondDetectedAt,
+      pendingSinceEstimated: false,
+    });
+
+    const covered = markWatchTargetProcessed({
+      userId: student,
+      targetId: target.id,
+      fingerprint: 'b'.repeat(64),
+      processedAt: secondCheckedAt,
+      sessionEpoch: 0,
+    });
+    expect(covered).toMatchObject({
+      detectedFingerprint: 'b'.repeat(64),
+      processedFingerprint: 'b'.repeat(64),
+      pendingChange: false,
+      pendingSince: null,
+      pendingSinceEstimated: false,
+    });
+  });
+
+  it('materializes estimated pending age once for legacy revisions', () => {
+    enableWatch(student);
+    const target = upsertWatchTarget(student, {
+      connectionId,
+      courseId: 'course-a',
+      requestedUrl: watchUrl,
+      recipeVersion: 1,
+    })!;
+    const fingerprint = 'a'.repeat(64);
+    const legacySince = '2026-10-31T12:00:00.000Z';
+    recordWatchObservation({
+      userId: student,
+      targetId: target.id,
+      fingerprint,
+      checkedAt: legacySince,
+      nextCheckAt: '2026-10-31T12:05:00.000Z',
+      verifiedUrl: watchUrl,
+      recipeVersion: 1,
+    });
+    db.update(WatchTargetTable)
+      .set({ pendingSince: null, pendingSinceEstimated: false })
+      .where(eq(WatchTargetTable.id, target.id))
+      .run();
+
+    recordWatchObservation({
+      userId: student,
+      targetId: target.id,
+      fingerprint,
+      checkedAt: now,
+      nextCheckAt: '2026-11-01T12:05:00.000Z',
+      verifiedUrl: watchUrl,
+      recipeVersion: 1,
+    });
+    recordWatchObservation({
+      userId: student,
+      targetId: target.id,
+      fingerprint,
+      checkedAt: '2026-11-02T12:00:00.000Z',
+      nextCheckAt: '2026-11-02T12:05:00.000Z',
+      verifiedUrl: watchUrl,
+      recipeVersion: 1,
+    });
+
+    expect(getWatchTargets(student)[0]).toMatchObject({
+      pendingSince: legacySince,
+      pendingSinceEstimated: true,
+    });
+  });
+
+  it('rejects a late refresh failure after watch permission is revoked', () => {
+    enableWatch(student);
+    const target = upsertWatchTarget(student, {
+      connectionId,
+      courseId: 'course-a',
+      requestedUrl: watchUrl,
+      recipeVersion: 1,
+    })!;
+    db.update(SettingTable)
+      .set({ watchEnabled: false, consent: false })
+      .where(eq(SettingTable.userId, student))
+      .run();
+
+    const failure = recordWatchFailure({
+      userId: student,
+      targetId: target.id,
+      failedAt: '2026-11-01T12:01:00.000Z',
+      retryAt: '2026-11-01T12:02:00.000Z',
+      blocked: false,
+      category: 'network',
+    });
+
+    expect(failure).toBeNull();
+    expect(getWatchTargets(student)[0]).toMatchObject({
+      failureCount: 0,
+      lastFailureCategory: null,
+      retryAt: null,
+      status: 'active',
+    });
+  });
+
+  it('does not let one healthy target mask another target that needs sign-in', () => {
+    enableWatch(student);
+    const healthyTarget = upsertWatchTarget(student, {
+      connectionId,
+      courseId: 'course-a',
+      requestedUrl: watchUrl,
+      recipeVersion: 1,
+    })!;
+    const signInTarget = upsertWatchTarget(student, {
+      connectionId,
+      courseId: 'course-a',
+      requestedUrl: 'https://canvas.school.edu/courses/1/announcements',
+      recipeVersion: 1,
+    })!;
+    recordWatchObservation({
+      userId: student,
+      targetId: healthyTarget.id,
+      fingerprint: 'a'.repeat(64),
+      checkedAt: now,
+      nextCheckAt: '2026-11-01T12:05:00.000Z',
+      verifiedUrl: watchUrl,
+      recipeVersion: 1,
+    });
+    markWatchTargetProcessed({
+      userId: student,
+      targetId: healthyTarget.id,
+      fingerprint: 'a'.repeat(64),
+      processedAt: now,
+      sessionEpoch: 0,
+    });
+    recordWatchObservation({
+      userId: student,
+      targetId: signInTarget.id,
+      fingerprint: 'b'.repeat(64),
+      checkedAt: '2026-11-01T12:01:00.000Z',
+      nextCheckAt: '2026-11-01T12:06:00.000Z',
+      verifiedUrl: 'https://canvas.school.edu/courses/1/announcements',
+      recipeVersion: 1,
+    });
+    recordWatchFailure({
+      userId: student,
+      targetId: signInTarget.id,
+      failedAt: '2026-11-01T12:02:00.000Z',
+      retryAt: null,
+      blocked: false,
+      category: 'needs-sign-in',
+    });
+
+    const health = getWatchHealthSummary(
+      student,
+      'watching',
+      Date.parse('2026-11-01T12:02:00.000Z'),
+    );
+
+    expect(health).toMatchObject({
+      status: 'needs-sign-in',
+      pendingRevisionCount: 1,
+      oldestPendingSince: '2026-11-01T12:01:00.000Z',
+      oldestPendingSinceEstimated: false,
+      lastSuccessfulCheckAt: '2026-11-01T12:01:00.000Z',
+      nextRetryAt: null,
+      failures: [{ category: 'needs-sign-in', targetCount: 1 }],
+    });
+    expect(JSON.stringify(health)).not.toContain('school.edu');
+  });
+
+  it('does not let a healthy target mask another target with a retryable failure', () => {
+    enableWatch(student);
+    upsertWatchTarget(student, {
+      connectionId,
+      courseId: 'course-a',
+      requestedUrl: watchUrl,
+      recipeVersion: 1,
+    });
+    const failingTarget = upsertWatchTarget(student, {
+      connectionId,
+      courseId: 'course-a',
+      requestedUrl: 'https://canvas.school.edu/courses/1/announcements',
+      recipeVersion: 1,
+    })!;
+    recordWatchFailure({
+      userId: student,
+      targetId: failingTarget.id,
+      failedAt: now,
+      retryAt: '2026-11-01T12:01:00.000Z',
+      blocked: false,
+      category: 'network',
+    });
+
+    const health = getWatchHealthSummary(student, 'watching', Date.parse(now));
+
+    expect(health).toMatchObject({
+      status: 'blocked',
+      nextRetryAt: '2026-11-01T12:01:00.000Z',
+      failures: [{ category: 'network', targetCount: 1 }],
+    });
+  });
+
   it('schedules an unchanged partial observation without replacing its baseline', () => {
+    enableWatch(student);
     const target = upsertWatchTarget(student, {
       connectionId,
       courseId: 'course-a',
@@ -361,6 +723,7 @@ describe('watch persistence', () => {
       targetId: target.id,
       fingerprint: 'a'.repeat(64),
       processedAt: now,
+      sessionEpoch: 0,
     })!;
 
     const scheduled = scheduleWatchTargetCheck({
@@ -381,6 +744,7 @@ describe('watch persistence', () => {
   });
 
   it('backs off failed checks and blocks after three attempts without losing pending changes', () => {
+    enableWatch(student);
     const target = upsertWatchTarget(student, {
       connectionId,
       courseId: 'course-a',
@@ -403,6 +767,7 @@ describe('watch persistence', () => {
       failedAt: '2026-11-01T12:01:00.000Z',
       retryAt: '2026-11-01T12:02:00.000Z',
       blocked: false,
+      category: 'network',
     });
     const secondFailure = recordWatchFailure({
       userId: student,
@@ -410,6 +775,7 @@ describe('watch persistence', () => {
       failedAt: '2026-11-01T12:03:00.000Z',
       retryAt: '2026-11-01T12:08:00.000Z',
       blocked: false,
+      category: 'network',
     });
     const thirdFailure = recordWatchFailure({
       userId: student,
@@ -417,6 +783,7 @@ describe('watch persistence', () => {
       failedAt: '2026-11-01T12:09:00.000Z',
       retryAt: null,
       blocked: true,
+      category: 'network',
     });
 
     expect(firstFailure).toMatchObject({
@@ -440,6 +807,96 @@ describe('watch persistence', () => {
       synchronizeWatchTargets(student).find((item) => item.id === target.id)
         ?.status,
     ).toBe('blocked');
+  });
+
+  it('keeps scope-changed targets suspended during routine synchronization', () => {
+    enableWatch(student);
+    saveWatchSettings(student, { watchEnabled: true, watchUrls: [watchUrl] });
+    const target = upsertWatchTarget(student, {
+      connectionId,
+      courseId: 'course-a',
+      requestedUrl: watchUrl,
+      recipeVersion: 1,
+    })!;
+    recordWatchFailure({
+      userId: student,
+      targetId: target.id,
+      failedAt: now,
+      retryAt: null,
+      blocked: false,
+      category: 'scope-changed',
+    });
+
+    const synchronizedTarget = synchronizeWatchTargets(student).find(
+      (item) => item.id === target.id,
+    );
+
+    expect(synchronizedTarget?.status).toBe('suspended');
+  });
+
+  it('resets only currently authorized intervention targets after reconnect', () => {
+    enableWatch(student);
+    const announcementsUrl =
+      'https://canvas.school.edu/courses/1/announcements';
+    const gradesUrl = 'https://canvas.school.edu/courses/1/grades';
+    saveWatchSettings(student, {
+      watchEnabled: true,
+      watchUrls: [watchUrl, announcementsUrl],
+    });
+    const assignmentsTarget = upsertWatchTarget(student, {
+      connectionId,
+      courseId: 'course-a',
+      requestedUrl: watchUrl,
+      recipeVersion: 1,
+    })!;
+    const announcementsTarget = upsertWatchTarget(student, {
+      connectionId,
+      courseId: 'course-a',
+      requestedUrl: announcementsUrl,
+      recipeVersion: 1,
+    })!;
+    const unauthorizedTarget = upsertWatchTarget(student, {
+      connectionId,
+      courseId: 'course-a',
+      requestedUrl: gradesUrl,
+      recipeVersion: 1,
+    })!;
+    for (const [target, category] of [
+      [assignmentsTarget, 'needs-sign-in'],
+      [announcementsTarget, 'scope-changed'],
+      [unauthorizedTarget, 'needs-sign-in'],
+    ] as const)
+      recordWatchFailure({
+        userId: student,
+        targetId: target.id,
+        failedAt: now,
+        retryAt: null,
+        blocked: false,
+        category,
+      });
+
+    const resetTargetIds = resetWatchTargetsAfterReconnect(
+      student,
+      connectionId,
+      '2026-11-01T12:10:00.000Z',
+    );
+    const targets = getWatchTargets(student);
+
+    expect(resetTargetIds.sort()).toEqual(
+      [assignmentsTarget.id, announcementsTarget.id].sort(),
+    );
+    expect(
+      targets.find((target) => target.id === assignmentsTarget.id),
+    ).toMatchObject({ status: 'active', lastFailureCategory: null });
+    expect(
+      targets.find((target) => target.id === announcementsTarget.id),
+    ).toMatchObject({ status: 'active', lastFailureCategory: null });
+    expect(
+      targets.find((target) => target.id === unauthorizedTarget.id),
+    ).toMatchObject({
+      status: 'suspended',
+      lastFailureCategory: 'needs-sign-in',
+    });
   });
 
   it('does not expose or update another account’s targets', () => {
@@ -468,6 +925,7 @@ describe('watch persistence', () => {
         targetId: target.id,
         fingerprint: 'a'.repeat(64),
         processedAt: now,
+        sessionEpoch: 0,
       }),
     ).toBeNull();
   });

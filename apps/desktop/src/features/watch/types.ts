@@ -10,6 +10,7 @@ import type {
   CourseCollectionKind,
   CourseScanStatus,
 } from '../courses/types';
+import type { WatchTargetFailureCategory } from '../../db/shared';
 
 export type WatchUrlInput = z.infer<typeof watchUrlInputSchema>;
 export type WatchSettings = z.infer<typeof watchSettingsSchema>;
@@ -84,6 +85,7 @@ export type WatchProcessedRevision = {
   targetId: string;
   fingerprint: string;
   processedAt: string;
+  sessionEpoch?: number;
 };
 export type WatchFailureRecord = {
   userId: string;
@@ -91,8 +93,14 @@ export type WatchFailureRecord = {
   failedAt: string;
   retryAt: string | null;
   blocked: boolean;
+  category: WatchTargetFailureCategory;
 };
-export type WatchRefreshResult = boolean | 'busy';
+export type WatchRefreshResult =
+  | boolean
+  | 'busy'
+  | 'superseded'
+  | 'needs-sign-in'
+  | 'source-failed';
 
 export type AcademicTaskOutcome<T = void> =
   | {

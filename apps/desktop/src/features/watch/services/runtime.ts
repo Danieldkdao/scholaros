@@ -7,20 +7,22 @@ import {
 import { createMissionNavigator } from '../../onboarding/services/mission-navigation';
 import { openBackgroundPage } from '../../onboarding/services/background-page';
 import { protectMissionPage } from '../../onboarding/services/mission-request-guard';
-import { courseScanSucceeded } from '../../courses/types';
-import {
-  refreshSingleCourse,
-  startConnectionRefresh,
-} from '../../courses/services/refresh';
+import * as courseRefreshApi from '../../courses/services/refresh';
+import type {
+  CourseCollectionKind,
+  CourseScanStatus,
+} from '../../courses/types';
 import { createWatchBrowserSession, settleWatchPage } from './browser-session';
 import { createWatchController } from './controller';
 import { createWatchLifecycle } from './lifecycle';
 import {
   getWatchSettings,
   getWatchTargets,
+  getWatchHealthSummary,
   markWatchTargetProcessed,
   recordWatchFailure,
   recordWatchObservation,
+  resetWatchTargetsAfterReconnect,
   scheduleWatchTargetCheck,
   synchronizeWatchTargets,
   getLastWatchReconciledAt,
@@ -34,25 +36,104 @@ import {
   disconnectPageObserver,
 } from './page-observer';
 import { createWatchRefreshProcessor, isTaskRunnerBusy } from './refresh';
-import type { WatchRuntimeStatus } from '../types';
+import type {
+  InternalWatchExecutionCoverageReceipt,
+  WatchRuntimeStatus,
+} from '../types';
 import type { WatchTargetSelectData } from '../../../db/schema';
 
 type ActiveWatchWorkspace = {
   userId: string;
   workspace: ActiveWorkspace;
   isCurrent: () => boolean;
+  sessionEpoch: number;
 };
+
+type CourseRefreshExecutionReceipt = {
+  runId: string;
+  sessionEpoch: number;
+  coveredRevisions: Readonly<Record<string, string>>;
+  status: 'complete' | 'partial' | 'sign-in-required';
+  collections: Array<{
+    courseId: string | null;
+    kind: CourseCollectionKind;
+    status: CourseScanStatus;
+  }>;
+};
+type CourseRefreshExecution<TResult> = {
+  result: TResult;
+  receipt: CourseRefreshExecutionReceipt;
+};
+type CaptureRefreshScope = () => {
+  sessionEpoch: number;
+  coveredRevisions: Readonly<Record<string, string>>;
+};
+type P06ReceiptApi = {
+  refreshSingleCourseWithReceipt?: (
+    userId: string,
+    courseId: string,
+    captureExecutionScope: CaptureRefreshScope,
+    isCurrent: () => boolean,
+    signal: AbortSignal,
+  ) => Promise<CourseRefreshExecution<unknown>>;
+  startConnectionRefreshWithReceipt?: (
+    userId: string,
+    connectionId: string,
+    captureExecutionScope: CaptureRefreshScope,
+    isCurrent: () => boolean,
+    signal: AbortSignal,
+  ) => Promise<CourseRefreshExecution<unknown>>;
+};
+
+// P06's receipt exports arrive in the sibling integration commit.
+const p06ReceiptApi = courseRefreshApi as unknown as P06ReceiptApi;
+
+const toWatchCoverageReceipt = (
+  receipt: CourseRefreshExecutionReceipt,
+): InternalWatchExecutionCoverageReceipt => ({
+  runId: receipt.runId,
+  sessionEpoch: receipt.sessionEpoch,
+  coveredRevisions: Object.entries(receipt.coveredRevisions).map(
+    ([targetId, fingerprint]) => ({ targetId, fingerprint }),
+  ),
+  collectionCoverage: receipt.collections.flatMap((collection) =>
+    collection.courseId
+      ? [
+          {
+            courseId: collection.courseId,
+            collectionKind: collection.kind,
+            status: collection.status,
+          },
+        ]
+      : [],
+  ),
+});
 
 type WatchRuntimeOptions = {
   onStatus: (
     userId: string,
     enabled: boolean,
     status: WatchRuntimeStatus,
+    revision: number,
   ) => void;
 };
 
 export const createWatchRuntime = ({ onStatus }: WatchRuntimeOptions) => {
   let activeWorkspace: ActiveWatchWorkspace | null = null;
+  let nextSessionEpoch = 0;
+  let sessionGeneration = 0;
+  let lastSessionCheck: { userId: string; isCurrent: () => boolean } | null =
+    null;
+  const statusRevisions = new Map<string, number>();
+  const publishStatus = (
+    userId: string,
+    enabled: boolean,
+    status: WatchRuntimeStatus,
+  ) => {
+    const revision = (statusRevisions.get(userId) ?? 0) + 1;
+    statusRevisions.set(userId, revision);
+    onStatus(userId, enabled, status, revision);
+  };
   let controller: ReturnType<typeof createWatchController>;
   const assertTarget = (target: WatchTargetSelectData, signal: AbortSignal) => {
     signal.throwIfAborted();
@@ -144,62 +225,101 @@ export const createWatchRuntime = ({ onStatus }: WatchRuntimeOptions) => {
     connectionId: string,
     signal: AbortSignal,
   ) => {
+    const workspace = activeWorkspace;
+    if (!workspace || workspace.userId !== userId)
+      throw new Error('Your session changed; sign in again.');
+    const sessionEpoch = workspace.sessionEpoch;
     const isCurrent = () =>
-      activeWorkspace?.userId === userId &&
-      activeWorkspace.isCurrent() &&
-      !signal.aborted;
+      activeWorkspace === workspace && workspace.isCurrent() && !signal.aborted;
     signal.throwIfAborted();
     if (!isCurrent()) throw new Error('Your session changed; sign in again.');
-    const refreshedConnection = await startConnectionRefresh(
+    const refresh = p06ReceiptApi.startConnectionRefreshWithReceipt;
+    if (!refresh)
+      throw new Error('Exact academic refresh coverage is unavailable.');
+    const execution = await refresh(
       userId,
       connectionId,
+      () => {
+        signal.throwIfAborted();
+        if (!isCurrent())
+          throw new Error('Your session changed; sign in again.');
+        return { sessionEpoch, coveredRevisions: {} };
+      },
       isCurrent,
       signal,
     );
-    const source = refreshedConnection.snapshot.sources.find(
-      (item) => item.connectionId === connectionId,
-    );
-    return {
-      complete:
-        refreshedConnection.materialRefreshStatus === 'complete' &&
-        source?.outcome === 'complete' &&
-        refreshedConnection.snapshot.courses
-          .filter(
-            (course) => course.connectionId === connectionId && course.active,
-          )
-          .every(
-            (course) =>
-              course.overviewSyncedAt !== null &&
-              courseScanSucceeded(course.assignmentsStatus) &&
-              courseScanSucceeded(course.announcementsStatus),
-          ),
-    };
+    signal.throwIfAborted();
+    if (!isCurrent() || activeWorkspace?.sessionEpoch !== sessionEpoch)
+      throw new Error('Your session changed; sign in again.');
+    return { complete: execution.receipt.status === 'complete' };
   };
   const processChange = createWatchRefreshProcessor({
-    startRefresh: async (target, signal) => {
+    startRefresh: async (target, fingerprint, signal) => {
+      const workspace = activeWorkspace;
+      if (!workspace || workspace.userId !== target.userId)
+        throw new Error('Your session changed; sign in again.');
+      const sessionEpoch = workspace.sessionEpoch;
       const isCurrent = () =>
-        activeWorkspace?.userId === target.userId &&
-        activeWorkspace.isCurrent() &&
+        activeWorkspace === workspace &&
+        workspace.isCurrent() &&
         !signal.aborted;
-      if (target.courseId) {
-        const refreshedCourse = await refreshSingleCourse(
-          target.userId,
-          target.courseId,
-          isCurrent,
-          signal,
-        );
+      const captureExecutionScope: CaptureRefreshScope = () => {
+        signal.throwIfAborted();
+        if (!isCurrent())
+          throw new Error('Your session changed; sign in again.');
         return {
-          complete:
-            !!refreshedCourse &&
-            refreshedCourse.materialRefreshStatus === 'complete' &&
-            refreshedCourse.overviewSyncedAt !== null &&
-            courseScanSucceeded(refreshedCourse.assignmentsStatus) &&
-            courseScanSucceeded(refreshedCourse.announcementsStatus),
+          sessionEpoch,
+          coveredRevisions: { [target.id]: fingerprint },
         };
-      }
-      return refreshConnection(target.userId, target.connectionId, signal);
+      };
+      const refresh = target.courseId
+        ? p06ReceiptApi.refreshSingleCourseWithReceipt
+        : p06ReceiptApi.startConnectionRefreshWithReceipt;
+      if (!refresh)
+        throw new Error('Exact academic refresh coverage is unavailable.');
+      const execution = target.courseId
+        ? await p06ReceiptApi.refreshSingleCourseWithReceipt!(
+            target.userId,
+            target.courseId,
+            captureExecutionScope,
+            isCurrent,
+            signal,
+          )
+        : await p06ReceiptApi.startConnectionRefreshWithReceipt!(
+            target.userId,
+            target.connectionId,
+            captureExecutionScope,
+            isCurrent,
+            signal,
+          );
+      signal.throwIfAborted();
+      if (!isCurrent() || activeWorkspace?.sessionEpoch !== sessionEpoch)
+        throw new Error('Your session changed; sign in again.');
+      return {
+        complete:
+          execution.receipt.status === 'complete' &&
+          (!target.courseId || execution.result !== null),
+        failureCategory:
+          execution.receipt.status === 'sign-in-required'
+            ? 'needs-sign-in'
+            : execution.receipt.status === 'partial'
+              ? 'unknown'
+              : undefined,
+        receipt: toWatchCoverageReceipt(execution.receipt),
+      };
     },
-    markProcessed: markWatchTargetProcessed,
+    markProcessed: (revision) => {
+      const workspace = activeWorkspace;
+      if (
+        !workspace ||
+        workspace.userId !== revision.userId ||
+        revision.sessionEpoch === undefined ||
+        workspace.sessionEpoch !== revision.sessionEpoch ||
+        !workspace.isCurrent()
+      )
+        return null;
+      return markWatchTargetProcessed(revision);
+    },
   });
   controller = createWatchController({
     getSettings: getWatchSettings,
@@ -242,20 +362,32 @@ export const createWatchRuntime = ({ onStatus }: WatchRuntimeOptions) => {
         if (accountId === userId) listener();
       }),
     onStatus: (userId, status) =>
-      onStatus(userId, getWatchSettings(userId).watchEnabled, status),
+      publishStatus(userId, getWatchSettings(userId).watchEnabled, status),
   });
   browser.setMutationHandler((targetId) => {
     if (activeWorkspace)
       void controller.requestCheck(activeWorkspace.userId, targetId);
   });
   const lifecycle = createWatchLifecycle({
-    start: async (userId, isCurrent) => {
-      const workspace = await getWorkspace(userId, isCurrent);
+    start: async (userId, isCurrent, signal) => {
+      signal.throwIfAborted();
+      const workspace = await getWorkspace(
+        userId,
+        () => isCurrent() && !signal.aborted,
+      );
+      signal.throwIfAborted();
       if (!isCurrent()) throw new Error('Your session changed; sign in again.');
-      activeWorkspace = { userId, workspace, isCurrent };
+      activeWorkspace = {
+        userId,
+        workspace,
+        isCurrent,
+        sessionEpoch: ++nextSessionEpoch,
+      };
       await browser.closeAll();
+      signal.throwIfAborted();
       synchronizeWatchTargets(userId);
-      await controller.start(userId);
+      await controller.start(userId, signal);
+      signal.throwIfAborted();
       return controller.getStatus(userId);
     },
     stop: async (userId) => {
@@ -265,15 +397,22 @@ export const createWatchRuntime = ({ onStatus }: WatchRuntimeOptions) => {
       if (activeWorkspace?.userId === userId) activeWorkspace = null;
     },
     onStatus: (userId, status) =>
-      onStatus(userId, getWatchSettings(userId).watchEnabled, status),
+      publishStatus(userId, getWatchSettings(userId).watchEnabled, status),
   });
   const configure = (
     userId: string,
     setupComplete: boolean,
     isCurrent: () => boolean,
   ) => {
-    if (activeWorkspace?.userId === userId)
-      activeWorkspace.isCurrent = isCurrent;
+    const sessionChanged =
+      (lastSessionCheck?.userId === userId && !lastSessionCheck.isCurrent()) ||
+      (activeWorkspace?.userId === userId && !activeWorkspace.isCurrent());
+    if (sessionChanged) sessionGeneration += 1;
+    if (activeWorkspace?.userId === userId) {
+      if (sessionChanged) activeWorkspace = null;
+      else activeWorkspace.isCurrent = isCurrent;
+    }
+    lastSessionCheck = { userId, isCurrent };
     const settings = getWatchSettings(userId);
     const state = getOnboardingState(userId);
     const effectiveTargets = getEffectiveWatchTargetInputs(
@@ -301,6 +440,7 @@ export const createWatchRuntime = ({ onStatus }: WatchRuntimeOptions) => {
         setupComplete,
         state.settings.consent,
         state.workspace?.ready,
+        sessionGeneration,
         state.connections.map((connection) => [
           connection.id,
           connection.status,
@@ -316,17 +456,30 @@ export const createWatchRuntime = ({ onStatus }: WatchRuntimeOptions) => {
     resume: lifecycle.resume,
     suspend: lifecycle.suspend,
     stop: lifecycle.stop,
+    reconnectSucceeded: async (userId: string, connectionId: string) => {
+      const resetTargetIds = resetWatchTargetsAfterReconnect(
+        userId,
+        connectionId,
+      );
+      if (resetTargetIds.length && activeWorkspace?.userId === userId)
+        await controller.tick(userId);
+      return resetTargetIds;
+    },
     getState: (userId: string) => {
-      const status = lifecycle.getStatus(userId);
+      const lifecycleStatus = lifecycle.getStatus(userId);
+      const status =
+        activeWorkspace?.userId === userId &&
+        (lifecycleStatus === 'watching' ||
+          lifecycleStatus === 'checking' ||
+          lifecycleStatus === 'updating')
+          ? controller.getStatus(userId)
+          : lifecycleStatus;
+      const health = getWatchHealthSummary(userId, status);
       return {
         enabled: getWatchSettings(userId).watchEnabled,
-        status:
-          activeWorkspace?.userId === userId &&
-          (status === 'watching' ||
-            status === 'checking' ||
-            status === 'updating')
-            ? controller.getStatus(userId)
-            : status,
+        status: health.status,
+        revision: statusRevisions.get(userId) ?? 0,
+        health,
         metrics: controller.getMetrics(userId),
       };
     },

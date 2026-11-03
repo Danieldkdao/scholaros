@@ -1,4 +1,5 @@
 import type { WatchTargetSelectData } from '../../../db/schema';
+import type { WatchTargetFailureCategory } from '../../../db/shared';
 import { createPageFingerprint } from '../lib/page-fingerprint';
 import {
   maxWatchFailures,
@@ -40,7 +41,7 @@ type WatchControllerDependencies = {
     target: WatchTargetSelectData,
     fingerprint: string,
     signal: AbortSignal,
-  ) => Promise<WatchRefreshResult>;
+  ) => Promise<WatchRefreshResult | 'superseded'>;
   reconcileCourses?: {
     lastSuccessfulAt: (userId: string) => string | null;
     run: (userId: string, signal: AbortSignal) => Promise<WatchRefreshResult>;
@@ -63,14 +64,18 @@ type WatchRun = {
   ticking: Promise<void> | null;
   stopped: boolean;
   status: WatchRuntimeStatus;
-  healthStatus: 'needs-sign-in' | 'blocked' | null;
-  processing: Map<string, Promise<WatchRefreshResult>>;
+  processing: Map<string, Promise<WatchRefreshResult | 'superseded'>>;
+  processingFingerprints: Map<string, string>;
   refreshRetries: Map<string, { fingerprint: string; retryAt: number }>;
   requestedChecks: Set<string>;
+  followUpTargets: Set<string>;
   unsubscribeCapacity: (() => void) | null;
+  removeOwnerAbortListener: (() => void) | null;
+  stopPromise: Promise<void> | null;
   changesDetected: number;
   changesProcessed: number;
   pendingSince: Map<string, number>;
+  pendingFingerprints: Map<string, string>;
   retryAfterProcessing: boolean;
   reconciling: Promise<void> | null;
   reconcileRetryAt: number;
@@ -82,17 +87,93 @@ export const createWatchController = (
   dependencies: WatchControllerDependencies,
 ) => {
   const runs = new Map<string, WatchRun>();
+  const stoppingRuns = new Map<string, WatchRun>();
   const now = dependencies.now ?? Date.now;
   const schedule = dependencies.schedule ?? setTimeout;
   const cancelSchedule = dependencies.cancelSchedule ?? clearTimeout;
   const publish = (
     userId: string,
     run: WatchRun,
-    status: WatchRuntimeStatus,
+    requestedStatus: WatchRuntimeStatus,
+    force = false,
   ) => {
-    if (run.status === status) return;
+    const targetHealth = dependencies.getTargets(userId);
+    const status =
+      requestedStatus === 'off' || requestedStatus === 'paused'
+        ? requestedStatus
+        : requestedStatus === 'needs-sign-in' ||
+            targetHealth.some(
+              (target) => target.lastFailureCategory === 'needs-sign-in',
+            )
+          ? 'needs-sign-in'
+          : requestedStatus === 'blocked' ||
+              targetHealth.some(
+                (target) =>
+                  target.status === 'blocked' || !!target.lastFailureCategory,
+              )
+            ? 'blocked'
+            : requestedStatus;
+    if (run.status === status && !force) return;
     run.status = status;
     dependencies.onStatus?.(userId, status);
+  };
+  const classifyFailure = (error: unknown): WatchTargetFailureCategory => {
+    const message = String(error);
+    if (/sign.?in|authenticat|\b401\b|\b403\b/i.test(message))
+      return 'needs-sign-in';
+    if (/\b429\b|rate.?limit|too many requests/i.test(message))
+      return 'rate-limited';
+    if (
+      /session changed|permission|consent|scope changed|no longer (enabled|available)|connection (removed|unavailable)/i.test(
+        message,
+      )
+    )
+      return 'scope-changed';
+    if (/navigat|redirect|page closed|target closed|err_aborted/i.test(message))
+      return 'navigation';
+    if (/network|fetch|timeout|timed out|econn|err_/i.test(message))
+      return 'network';
+    return 'unknown';
+  };
+  const recordTargetFailure = (
+    userId: string,
+    run: WatchRun,
+    target: WatchTargetSelectData,
+    error: unknown,
+  ) => {
+    if (run.controller.signal.aborted) return null;
+    const currentTarget =
+      dependencies.getTargets(userId).find((item) => item.id === target.id) ??
+      target;
+    const category = classifyFailure(error);
+    const needsIntervention =
+      category === 'needs-sign-in' || category === 'scope-changed';
+    const failureCount = currentTarget.failureCount + 1;
+    const blocked = !needsIntervention && failureCount >= maxWatchFailures;
+    const retryAfter =
+      needsIntervention || blocked
+        ? null
+        : watchRetryBackoffMs[Math.min(failureCount - 1, maxWatchFailures - 2)];
+    const failure = dependencies.recordFailure({
+      userId,
+      targetId: target.id,
+      failedAt: toIso(now()),
+      retryAt: retryAfter === null ? null : toIso(now() + retryAfter),
+      blocked,
+      category,
+    });
+    if (failure) {
+      const requestedStatus =
+        category === 'needs-sign-in'
+          ? 'needs-sign-in'
+          : blocked
+            ? 'blocked'
+            : run.processing.size
+              ? 'updating'
+              : 'checking';
+      publish(userId, run, requestedStatus, true);
+    }
+    return failure;
   };
   const scheduleNextTick = (
     userId: string,
@@ -156,9 +237,10 @@ export const createWatchController = (
         run.reconciling = null;
         if (run.stopped) return;
         if (!run.ticking && !run.processing.size) {
-          publish(userId, run, run.healthStatus ?? 'watching');
-          if (run.retryAfterProcessing) {
+          publish(userId, run, 'watching');
+          if (run.retryAfterProcessing || run.followUpTargets.size) {
             run.retryAfterProcessing = false;
+            run.followUpTargets.clear();
             void tick(userId, run);
           }
         }
@@ -177,56 +259,100 @@ export const createWatchController = (
       target.status !== 'active' ||
       (target.retryAt !== null && Date.parse(target.retryAt) > now()) ||
       (retry?.fingerprint === fingerprint && retry.retryAt > now()) ||
-      run.processing.has(target.id) ||
       run.stopped
     )
       return;
-    if (!run.pendingSince.has(target.id)) {
-      const lastObservedAt = Date.parse(
-        target.lastSuccessfulCheckAt ?? target.updatedAt,
-      );
+    if (run.processing.has(target.id)) {
+      if (run.processingFingerprints.get(target.id) !== fingerprint) {
+        run.followUpTargets.add(target.id);
+        run.retryAfterProcessing = true;
+      }
+      return;
+    }
+    if (run.pendingFingerprints.get(target.id) !== fingerprint) {
+      const pendingSince = Date.parse(target.pendingSince ?? target.updatedAt);
       run.pendingSince.set(
         target.id,
-        Number.isFinite(lastObservedAt)
-          ? Math.min(now(), lastObservedAt)
-          : now(),
+        Number.isFinite(pendingSince) ? Math.min(now(), pendingSince) : now(),
       );
+      run.pendingFingerprints.set(target.id, fingerprint);
     }
     publish(userId, run, 'updating');
+    run.processingFingerprints.set(target.id, fingerprint);
     const processing = Promise.resolve()
       .then(() =>
         dependencies.processChange(target, fingerprint, run.controller.signal),
       )
       .then((processed) => {
+        const currentTarget = dependencies
+          .getTargets(userId)
+          .find((item) => item.id === target.id);
+        if (
+          processed === 'superseded' ||
+          (currentTarget &&
+            currentTarget.detectedFingerprint !== fingerprint &&
+            currentTarget.pendingChange)
+        ) {
+          run.followUpTargets.add(target.id);
+          run.retryAfterProcessing = true;
+          return 'superseded';
+        }
+        if (processed === 'needs-sign-in') {
+          recordTargetFailure(
+            userId,
+            run,
+            target,
+            new Error('Sign in to the academic source.'),
+          );
+          return processed;
+        }
+        if (processed === 'source-failed') {
+          recordTargetFailure(
+            userId,
+            run,
+            target,
+            new Error('Academic refresh coverage was incomplete.'),
+          );
+          return processed;
+        }
         if (processed === false && !run.stopped)
           run.refreshRetries.set(target.id, {
             fingerprint,
             retryAt: now() + watchIntervalMs,
           });
-        if (processed !== true || run.stopped) return processed;
+        if (processed !== true || run.stopped || !currentTarget)
+          return processed;
         run.refreshRetries.delete(target.id);
         run.changesProcessed += 1;
-        const currentTarget = dependencies
-          .getTargets(userId)
-          .find((item) => item.id === target.id);
-        if (!currentTarget?.pendingChange) run.pendingSince.delete(target.id);
+        if (!currentTarget.pendingChange) {
+          run.pendingSince.delete(target.id);
+          run.pendingFingerprints.delete(target.id);
+        }
         return processed;
       })
-      .catch(() => {
-        run.refreshRetries.set(target.id, {
-          fingerprint,
-          retryAt: now() + watchIntervalMs,
-        });
+      .catch((error: unknown) => {
+        const failure = recordTargetFailure(userId, run, target, error);
+        if (failure?.retryAt) {
+          const retryAt = Date.parse(failure.retryAt);
+          if (Number.isFinite(retryAt))
+            run.refreshRetries.set(target.id, { fingerprint, retryAt });
+        }
         return false;
       })
       .finally(() => {
         run.processing.delete(target.id);
+        run.processingFingerprints.delete(target.id);
         if (run.stopped) return;
-        const settings = dependencies.getSettings(userId);
-        if (settings.watchEnabled && !run.ticking && !run.reconciling)
-          publish(userId, run, 'watching');
-        if (run.retryAfterProcessing && !run.ticking && !run.reconciling) {
+        if (dependencies.getSettings(userId).watchEnabled)
+          publish(userId, run, 'watching', true);
+        if (
+          !run.ticking &&
+          !run.reconciling &&
+          !run.processing.size &&
+          (run.retryAfterProcessing || run.followUpTargets.size)
+        ) {
           run.retryAfterProcessing = false;
+          run.followUpTargets.clear();
           void tick(userId, run);
         }
       });
@@ -264,13 +390,25 @@ export const createWatchController = (
           verifiedUrl: snapshot.url,
           recipeVersion: snapshot.recipeVersion,
         });
-        if (observation?.pendingChange) {
-          if (!samePendingRevision) {
-            run.changesDetected += 1;
-            run.pendingSince.set(target.id, checkedAt);
-          }
+        if (!observation)
+          throw new Error('The watch observation could not be persisted.');
+        if (observation.pendingChange) {
+          if (!samePendingRevision) run.changesDetected += 1;
+          const pendingSince = Date.parse(
+            observation.pendingSince ?? observation.updatedAt,
+          );
+          run.pendingSince.set(
+            target.id,
+            Number.isFinite(pendingSince)
+              ? Math.min(now(), pendingSince)
+              : now(),
+          );
+          run.pendingFingerprints.set(target.id, fingerprint);
           processPendingTarget(userId, run, observation);
-        } else run.pendingSince.delete(target.id);
+        } else {
+          run.pendingSince.delete(target.id);
+          run.pendingFingerprints.delete(target.id);
+        }
       } else {
         dependencies.scheduleCheck({
           userId,
@@ -280,33 +418,10 @@ export const createWatchController = (
           attempted: false,
         });
       }
-      if (run.healthStatus === 'needs-sign-in') run.healthStatus = null;
+      publish(userId, run, run.processing.size ? 'updating' : 'checking', true);
     } catch (error) {
       if (run.controller.signal.aborted) return;
-      const failureCount = target.failureCount + 1;
-      const blocked = failureCount >= maxWatchFailures;
-      const retryAfter = blocked
-        ? null
-        : watchRetryBackoffMs[
-            Math.min(failureCount - 1, watchRetryBackoffMs.length - 1)
-          ];
-      const failure: WatchFailureRecord = {
-        userId,
-        targetId: target.id,
-        failedAt: toIso(now()),
-        retryAt: retryAfter === null ? null : toIso(now() + retryAfter),
-        blocked,
-      };
-      dependencies.recordFailure(failure);
-      if (blocked) {
-        run.healthStatus = 'blocked';
-        publish(userId, run, 'blocked');
-      } else if (
-        /sign.?in|session|authenticat|\b401\b|\b403\b/i.test(String(error))
-      ) {
-        run.healthStatus = 'needs-sign-in';
-        publish(userId, run, 'needs-sign-in');
-      }
+      recordTargetFailure(userId, run, target, error);
     }
   };
   const tick = (userId: string, run: WatchRun): Promise<void> => {
@@ -319,14 +434,31 @@ export const createWatchController = (
           return;
         }
         const targets = dependencies.getTargets(userId);
-        reconcileCourses(userId, run);
-        if (
-          targets.some((target) => target.status === 'blocked') &&
-          !targets.some((target) => target.status === 'active')
-        )
-          run.healthStatus = 'blocked';
-        for (const target of targets) processPendingTarget(userId, run, target);
         const currentTime = now();
+        for (const target of targets) {
+          if (!target.pendingChange || !target.detectedFingerprint) {
+            run.pendingSince.delete(target.id);
+            run.pendingFingerprints.delete(target.id);
+            continue;
+          }
+          if (
+            run.pendingFingerprints.get(target.id) ===
+            target.detectedFingerprint
+          )
+            continue;
+          const pendingSince = Date.parse(
+            target.pendingSince ?? target.updatedAt,
+          );
+          run.pendingSince.set(
+            target.id,
+            Number.isFinite(pendingSince)
+              ? Math.min(currentTime, pendingSince)
+              : currentTime,
+          );
+          run.pendingFingerprints.set(target.id, target.detectedFingerprint);
+        }
+        reconcileCourses(userId, run);
+        for (const target of targets) processPendingTarget(userId, run, target);
         const dueTargets = targets.filter(
           (target) =>
             target.status === 'active' &&
@@ -380,31 +512,23 @@ export const createWatchController = (
           }),
         );
         if (!run.stopped && dependencies.getSettings(userId).watchEnabled) {
-          const refreshedTargets = dependencies.getTargets(userId);
-          const onlyBlockedTargets =
-            refreshedTargets.some((target) => target.status === 'blocked') &&
-            !refreshedTargets.some((target) => target.status === 'active');
           publish(
             userId,
             run,
-            run.healthStatus ??
-              (onlyBlockedTargets
-                ? 'blocked'
-                : run.processing.size || run.reconciling
-                  ? 'updating'
-                  : 'watching'),
+            run.processing.size || run.reconciling ? 'updating' : 'watching',
           );
         }
         scheduleNextTick(userId, run, dependencies.getTargets(userId));
       } finally {
         run.ticking = null;
         if (
-          run.retryAfterProcessing &&
+          (run.retryAfterProcessing || run.followUpTargets.size) &&
           !run.processing.size &&
           !run.reconciling &&
           !run.stopped
         ) {
           run.retryAfterProcessing = false;
+          run.followUpTargets.clear();
           void tick(userId, run);
         }
       }
@@ -412,10 +536,14 @@ export const createWatchController = (
     return run.ticking;
   };
 
-  const start = async (userId: string) => {
+  const start = (userId: string, ownerSignal?: AbortSignal): Promise<void> => {
+    if (ownerSignal?.aborted) return Promise.resolve();
     const existingRun = runs.get(userId);
     if (existingRun && !existingRun.stopped)
       return existingRun.ticking ?? Promise.resolve();
+    const stoppingRun = stoppingRuns.get(userId);
+    if (stoppingRun?.stopPromise)
+      return stoppingRun.stopPromise.then(() => start(userId, ownerSignal));
     const run: WatchRun = {
       controller: new AbortController(),
       cursor: 0,
@@ -423,20 +551,32 @@ export const createWatchController = (
       ticking: null,
       stopped: false,
       status: 'starting',
-      healthStatus: null,
       processing: new Map(),
+      processingFingerprints: new Map(),
       refreshRetries: new Map(),
       requestedChecks: new Set(),
+      followUpTargets: new Set(),
       unsubscribeCapacity: null,
+      removeOwnerAbortListener: null,
+      stopPromise: null,
       changesDetected: 0,
       changesProcessed: 0,
       pendingSince: new Map(),
+      pendingFingerprints: new Map(),
       retryAfterProcessing: false,
       reconciling: null,
       reconcileRetryAt: 0,
     };
     runs.set(userId, run);
-    dependencies.onStatus?.(userId, 'starting');
+    if (ownerSignal) {
+      const abortFromOwner = () => {
+        run.controller.abort(ownerSignal.reason);
+        void stop(userId).catch(() => undefined);
+      };
+      ownerSignal.addEventListener('abort', abortFromOwner, { once: true });
+      run.removeOwnerAbortListener = () =>
+        ownerSignal.removeEventListener('abort', abortFromOwner);
+    }
     run.unsubscribeCapacity =
       dependencies.subscribeCapacity?.(userId, () => {
         if (run.stopped) return;
@@ -446,23 +586,30 @@ export const createWatchController = (
         }
         void tick(userId, run);
       }) ?? null;
+    dependencies.onStatus?.(userId, 'starting');
     return tick(userId, run);
   };
 
-  const stop = async (userId: string) => {
-    const run = runs.get(userId);
-    if (!run) return;
+  const stop = (userId: string): Promise<void> => {
+    const run = runs.get(userId) ?? stoppingRuns.get(userId);
+    if (!run) return Promise.resolve();
+    if (run.stopPromise) return run.stopPromise;
     run.stopped = true;
     run.controller.abort();
     if (run.timer) cancelSchedule(run.timer);
     run.unsubscribeCapacity?.();
+    run.removeOwnerAbortListener?.();
     runs.delete(userId);
-    await Promise.all([
+    stoppingRuns.set(userId, run);
+    run.stopPromise = Promise.all([
       run.ticking?.catch(() => undefined),
       run.reconciling,
       ...run.processing.values(),
-    ]);
-    publish(userId, run, 'off');
+    ]).then(() => {
+      publish(userId, run, 'off');
+      if (stoppingRuns.get(userId) === run) stoppingRuns.delete(userId);
+    });
+    return run.stopPromise;
   };
 
   return {

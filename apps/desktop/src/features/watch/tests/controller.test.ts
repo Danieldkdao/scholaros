@@ -93,6 +93,7 @@ describe('watch controller', () => {
     let controller = createWatchController(dependencies);
     await controller.start('student-a');
     await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(lastSuccessfulAt).not.toBeNull());
     await controller.stop('student-a');
     expect(lastSuccessfulAt).toBe(new Date(clock).toISOString());
 
@@ -545,6 +546,216 @@ describe('watch controller', () => {
     expect(target.processedFingerprint).toBe(
       createPageFingerprint(makeSnapshot('partial')),
     );
+  });
+
+  it('retries incomplete source coverage after one and five minutes, then blocks', async () => {
+    let currentTime = Date.parse('2026-11-01T12:00:00.000Z');
+    const baseline = makeSnapshot('assignment revision');
+    const target = {
+      ...makeTarget('1'),
+      pendingChange: true,
+      detectedFingerprint: createPageFingerprint(baseline),
+      pendingSince: '2026-11-01T12:00:00.000Z',
+      nextCheckAt: '2026-11-01T12:05:00.000Z',
+    };
+    const failures: Array<{
+      category: string;
+      retryAt: string | null;
+      blocked: boolean;
+    }> = [];
+    const recordFailure = vi.fn((failure) => {
+      failures.push({
+        category: failure.category,
+        retryAt: failure.retryAt,
+        blocked: failure.blocked,
+      });
+      target.failureCount += 1;
+      target.lastFailureCategory = failure.category;
+      target.retryAt = failure.retryAt;
+      target.nextCheckAt = failure.retryAt;
+      target.status = failure.blocked ? 'blocked' : 'active';
+      return target;
+    });
+    const controller = createWatchController({
+      now: () => currentTime,
+      getSettings: () => enabledSettings,
+      getTargets: () => [target],
+      checkTarget: vi.fn(async () => baseline),
+      recordObservation: vi.fn((observation) => {
+        target.lastAttemptAt = observation.checkedAt;
+        target.lastSuccessfulCheckAt = observation.checkedAt;
+        target.nextCheckAt = observation.nextCheckAt;
+        target.updatedAt = observation.checkedAt;
+        return target;
+      }),
+      recordFailure,
+      scheduleCheck: vi.fn(),
+      processChange: vi.fn(async () => 'source-failed' as const),
+      schedule: vi.fn(
+        () => ({ unref: vi.fn() }) as unknown as ReturnType<typeof setTimeout>,
+      ),
+      cancelSchedule: vi.fn(),
+    });
+
+    await controller.start('student-a');
+    await vi.waitFor(() => expect(recordFailure).toHaveBeenCalledTimes(1));
+    currentTime += 60_000;
+    await controller.tick('student-a');
+    await vi.waitFor(() => expect(recordFailure).toHaveBeenCalledTimes(2));
+    currentTime += 5 * 60_000;
+    await controller.tick('student-a');
+    await vi.waitFor(() => expect(recordFailure).toHaveBeenCalledTimes(3));
+
+    expect(failures).toEqual([
+      {
+        category: 'unknown',
+        retryAt: '2026-11-01T12:01:00.000Z',
+        blocked: false,
+      },
+      {
+        category: 'unknown',
+        retryAt: '2026-11-01T12:06:00.000Z',
+        blocked: false,
+      },
+      { category: 'unknown', retryAt: null, blocked: true },
+    ]);
+    expect(target).toMatchObject({ pendingChange: true, status: 'blocked' });
+    await controller.stop('student-a');
+  });
+
+  it('suspends a needs-sign-in target without spending its transient retry budget', async () => {
+    const target = {
+      ...makeTarget('1'),
+      pendingChange: true,
+      detectedFingerprint: fingerprint('pending'),
+      nextCheckAt: '2026-11-01T12:05:00.000Z',
+    };
+    const recordFailure = vi.fn((failure) => {
+      target.status = 'suspended';
+      target.lastFailureCategory = failure.category;
+      target.retryAt = failure.retryAt;
+      return target;
+    });
+    const processChange = vi.fn(async () => 'needs-sign-in' as const);
+    const controller = createWatchController({
+      now: () => Date.parse('2026-11-01T12:00:00.000Z'),
+      getSettings: () => enabledSettings,
+      getTargets: () => [target],
+      checkTarget: vi.fn(),
+      recordObservation: vi.fn(),
+      recordFailure,
+      scheduleCheck: vi.fn(),
+      processChange,
+      schedule: vi.fn(
+        () => ({ unref: vi.fn() }) as unknown as ReturnType<typeof setTimeout>,
+      ),
+      cancelSchedule: vi.fn(),
+    });
+
+    await controller.start('student-a');
+    await vi.waitFor(() => expect(recordFailure).toHaveBeenCalledOnce());
+
+    expect(recordFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        category: 'needs-sign-in',
+        retryAt: null,
+        blocked: false,
+      }),
+    );
+    expect(target.failureCount).toBe(0);
+    expect(target.status).toBe('suspended');
+    await controller.tick('student-a');
+    expect(processChange).toHaveBeenCalledOnce();
+    await controller.stop('student-a');
+  });
+
+  it('restores pending age from the durable revision timestamp after restart', async () => {
+    const target = {
+      ...makeTarget('1'),
+      pendingChange: true,
+      detectedFingerprint: fingerprint('pending'),
+      pendingSince: '2026-10-31T12:00:00.000Z',
+      nextCheckAt: '2026-11-01T12:05:00.000Z',
+    };
+    const processChange = vi.fn(async () => 'busy' as const);
+    const dependencies = {
+      now: () => Date.parse('2026-11-01T12:00:00.000Z'),
+      getSettings: () => enabledSettings,
+      getTargets: () => [target],
+      checkTarget: vi.fn(),
+      recordObservation: vi.fn(),
+      recordFailure: vi.fn(),
+      scheduleCheck: vi.fn(),
+      processChange,
+    };
+    let controller = createWatchController(dependencies);
+
+    await controller.start('student-a');
+    await vi.waitFor(() => expect(processChange).toHaveBeenCalledOnce());
+    expect(controller.getMetrics('student-a')?.pendingChangeAgeMs).toBe(
+      24 * 60 * 60_000,
+    );
+    await controller.stop('student-a');
+
+    controller = createWatchController(dependencies);
+    await controller.start('student-a');
+    await vi.waitFor(() => expect(processChange).toHaveBeenCalledTimes(2));
+    expect(controller.getMetrics('student-a')?.pendingChangeAgeMs).toBe(
+      24 * 60 * 60_000,
+    );
+    await controller.stop('student-a');
+  });
+
+  it('runs one serialized follow-up when a newer revision arrives during processing', async () => {
+    const revisionA = fingerprint('revision-a');
+    const revisionB = fingerprint('revision-b');
+    const target = {
+      ...makeTarget('1'),
+      pendingChange: true,
+      detectedFingerprint: revisionA,
+      pendingSince: '2026-11-01T12:00:00.000Z',
+      nextCheckAt: '2026-11-01T12:05:00.000Z',
+    };
+    let releaseRevisionA!: () => void;
+    let activeJobs = 0;
+    let maximumActiveJobs = 0;
+    const processChange = vi.fn(async (_target, revision) => {
+      activeJobs += 1;
+      maximumActiveJobs = Math.max(maximumActiveJobs, activeJobs);
+      if (revision === revisionA)
+        await new Promise<void>((resolve) => {
+          releaseRevisionA = resolve;
+        });
+      else target.pendingChange = false;
+      activeJobs -= 1;
+      return true;
+    });
+    const controller = createWatchController({
+      now: () => Date.parse('2026-11-01T12:00:00.000Z'),
+      getSettings: () => enabledSettings,
+      getTargets: () => [target],
+      checkTarget: vi.fn(),
+      recordObservation: vi.fn(),
+      recordFailure: vi.fn(),
+      scheduleCheck: vi.fn(),
+      processChange,
+    });
+
+    await controller.start('student-a');
+    await vi.waitFor(() => expect(processChange).toHaveBeenCalledOnce());
+    target.detectedFingerprint = revisionB;
+    target.pendingSince = '2026-11-01T12:01:00.000Z';
+    await controller.tick('student-a');
+    releaseRevisionA();
+    await vi.waitFor(() => expect(processChange).toHaveBeenCalledTimes(2));
+
+    expect(processChange.mock.calls.map((call) => call[1])).toEqual([
+      revisionA,
+      revisionB,
+    ]);
+    expect(maximumActiveJobs).toBe(1);
+    expect(target.pendingChange).toBe(false);
+    await controller.stop('student-a');
   });
 
   it('aborts an active page check when stopped', async () => {
