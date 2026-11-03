@@ -3,14 +3,29 @@ import type {
   IpcMainEvent,
   IpcMainInvokeEvent,
   WebContents,
+  WebFrameMain,
 } from 'electron';
 
 type TrustedWindowEntry = {
   window: BrowserWindow;
+  webContents: WebContents;
   expectedDocument: string;
+  mainFrame: WebFrameMain | null;
+  pendingFrame: WebFrameMain | null;
+  navigationPending: boolean;
   dispose: () => void;
 };
-type NavigationEvent = Electron.Event<{ isMainFrame: boolean; url: string }>;
+type FrameNavigationEvent = Electron.Event<{
+  isMainFrame: boolean;
+  url: string;
+}>;
+type NavigationStartedEvent =
+  Electron.Event<Electron.WebContentsDidStartNavigationEventParams>;
+type RedirectNavigationEvent = Electron.Event<{
+  isMainFrame: boolean;
+  url: string;
+}>;
+type MainNavigationEvent = Electron.Event<{ url: string }>;
 type IpcSenderEvent = IpcMainEvent | IpcMainInvokeEvent;
 
 const trustedWindows = new Map<number, TrustedWindowEntry>();
@@ -29,27 +44,28 @@ const matchesDocument = (value: string, expectedDocument: string) =>
   canonicalDocument(value) === expectedDocument;
 
 const matchesTrustedEntry = (entry: TrustedWindowEntry) => {
-  const { window, expectedDocument } = entry;
-  try {
-    const { webContents } = window;
-    return (
-      !window.isDestroyed() &&
-      !webContents.isDestroyed() &&
-      matchesDocument(webContents.getURL(), expectedDocument) &&
-      matchesDocument(webContents.mainFrame.url, expectedDocument)
-    );
-  } catch {
-    return false;
-  }
+  const { window, webContents, expectedDocument, mainFrame } = entry;
+  return (
+    !entry.navigationPending &&
+    mainFrame !== null &&
+    !window.isDestroyed() &&
+    !webContents.isDestroyed() &&
+    window.webContents === webContents &&
+    webContents.mainFrame === mainFrame &&
+    matchesDocument(webContents.getURL(), expectedDocument) &&
+    matchesDocument(mainFrame.url, expectedDocument)
+  );
 };
 
 export const isTrustedWebContents = (webContents: WebContents) => {
   const entry = trustedWindows.get(webContents.id);
-  return (
-    !!entry &&
-    entry.window.webContents === webContents &&
-    matchesTrustedEntry(entry)
-  );
+  try {
+    return (
+      !!entry && entry.webContents === webContents && matchesTrustedEntry(entry)
+    );
+  } catch {
+    return false;
+  }
 };
 
 export const installTrustedFocusedWebContentsGuard = (api: {
@@ -82,37 +98,131 @@ export const registerTrustedWindow = (
   if (!canonicalExpectedDocument)
     throw new Error('Expected a valid application document URL.');
 
-  const { webContents } = window;
+  const webContents = window.webContents;
+  if (window.isDestroyed() || webContents.isDestroyed())
+    throw new Error('Cannot register a destroyed application window.');
+
   const id = webContents.id;
   const existing = trustedWindows.get(id);
   if (existing) unregisterEntry(id, existing);
 
-  const onWillNavigate = (details: NavigationEvent) => {
+  const currentFrame = webContents.mainFrame;
+  const entry: TrustedWindowEntry = {
+    window,
+    webContents,
+    expectedDocument: canonicalExpectedDocument,
+    mainFrame:
+      matchesDocument(webContents.getURL(), canonicalExpectedDocument) &&
+      matchesDocument(currentFrame.url, canonicalExpectedDocument)
+        ? currentFrame
+        : null,
+    pendingFrame: null,
+    navigationPending: false,
+    dispose: () => undefined,
+  };
+  let disposed = false;
+
+  const restorePendingFrame = () => {
+    const frame = entry.pendingFrame;
+    if (!frame) return;
+    try {
+      if (
+        webContents.isDestroyed() ||
+        webContents.mainFrame !== frame ||
+        !matchesDocument(webContents.getURL(), canonicalExpectedDocument) ||
+        !matchesDocument(frame.url, canonicalExpectedDocument)
+      )
+        return;
+      entry.mainFrame = frame;
+      entry.pendingFrame = null;
+      entry.navigationPending = false;
+    } catch {
+      return;
+    }
+  };
+  const onWillFrameNavigate = (details: FrameNavigationEvent) => {
     if (
       details.isMainFrame &&
       !matchesDocument(details.url, canonicalExpectedDocument)
-    )
+    ) {
       details.preventDefault();
+      restorePendingFrame();
+    }
   };
-  const onDestroyed = () => unregisterTrustedWindow(id);
-  const entry: TrustedWindowEntry = {
-    window,
-    expectedDocument: canonicalExpectedDocument,
-    dispose: () => {
-      webContents.removeListener('will-frame-navigate', onWillNavigate);
-      webContents.removeListener('will-redirect', onWillNavigate);
-      webContents.removeListener('destroyed', onDestroyed);
-      window.removeListener('closed', onDestroyed);
-    },
+  const onWillNavigate = (details: MainNavigationEvent) => {
+    if (!matchesDocument(details.url, canonicalExpectedDocument)) {
+      details.preventDefault();
+      restorePendingFrame();
+    }
+  };
+  const onWillRedirect = (details: RedirectNavigationEvent) => {
+    if (
+      details.isMainFrame &&
+      !matchesDocument(details.url, canonicalExpectedDocument)
+    ) {
+      details.preventDefault();
+      restorePendingFrame();
+    }
+  };
+  const onDidStartNavigation = (details: NavigationStartedEvent) => {
+    if (!details.isMainFrame || details.isSameDocument) return;
+    entry.pendingFrame ??= entry.mainFrame;
+    entry.mainFrame = null;
+    entry.navigationPending = true;
+  };
+  const onDidNavigate = (_event: Electron.Event, url: string) => {
+    try {
+      const currentFrame = webContents.mainFrame;
+      if (
+        !matchesDocument(url, canonicalExpectedDocument) ||
+        !matchesDocument(webContents.getURL(), canonicalExpectedDocument) ||
+        !matchesDocument(currentFrame.url, canonicalExpectedDocument)
+      ) {
+        unregisterEntry(id, entry);
+        return;
+      }
+      entry.mainFrame = currentFrame;
+      entry.pendingFrame = null;
+      entry.navigationPending = false;
+    } catch {
+      unregisterEntry(id, entry);
+    }
+  };
+  const onDidFailLoad = (
+    _event: Electron.Event,
+    _errorCode: number,
+    _errorDescription: string,
+    _validatedURL: string,
+    isMainFrame: boolean,
+  ) => {
+    if (isMainFrame) restorePendingFrame();
+  };
+  const onDestroyed = () => unregisterEntry(id, entry);
+
+  entry.dispose = () => {
+    if (disposed) return;
+    disposed = true;
+    webContents.removeListener('will-frame-navigate', onWillFrameNavigate);
+    webContents.removeListener('will-navigate', onWillNavigate);
+    webContents.removeListener('will-redirect', onWillRedirect);
+    webContents.removeListener('did-start-navigation', onDidStartNavigation);
+    webContents.removeListener('did-navigate', onDidNavigate);
+    webContents.removeListener('did-fail-load', onDidFailLoad);
+    webContents.removeListener('destroyed', onDestroyed);
+    window.removeListener('closed', onDestroyed);
   };
 
   trustedWindows.set(id, entry);
-  webContents.on('will-frame-navigate', onWillNavigate);
-  webContents.on('will-redirect', onWillNavigate);
+  webContents.on('will-frame-navigate', onWillFrameNavigate);
+  webContents.on('will-navigate', onWillNavigate);
+  webContents.on('will-redirect', onWillRedirect);
+  webContents.on('did-start-navigation', onDidStartNavigation);
+  webContents.on('did-navigate', onDidNavigate);
+  webContents.on('did-fail-load', onDidFailLoad);
   webContents.once('destroyed', onDestroyed);
   window.once('closed', onDestroyed);
 
-  return () => unregisterTrustedWindow(id);
+  return () => unregisterEntry(id, entry);
 };
 
 export const unregisterTrustedWindow = (id: number) => {
@@ -120,10 +230,38 @@ export const unregisterTrustedWindow = (id: number) => {
   if (entry) unregisterEntry(id, entry);
 };
 
-export const getTrustedWindows = () =>
-  [...trustedWindows.values()]
-    .filter(matchesTrustedEntry)
-    .map(({ window }) => window);
+const isDestroyed = (entry: TrustedWindowEntry) => {
+  try {
+    return entry.window.isDestroyed() || entry.webContents.isDestroyed();
+  } catch {
+    return true;
+  }
+};
+
+const hasUnexpectedCommittedDocument = (entry: TrustedWindowEntry) => {
+  if (entry.navigationPending || entry.mainFrame === null) return false;
+  try {
+    return (
+      entry.webContents.mainFrame !== entry.mainFrame ||
+      !matchesDocument(entry.webContents.getURL(), entry.expectedDocument) ||
+      !matchesDocument(entry.mainFrame.url, entry.expectedDocument)
+    );
+  } catch {
+    return true;
+  }
+};
+
+export const getTrustedWindows = () => {
+  const windows: BrowserWindow[] = [];
+  for (const [id, entry] of trustedWindows) {
+    if (isDestroyed(entry) || hasUnexpectedCommittedDocument(entry)) {
+      unregisterEntry(id, entry);
+      continue;
+    }
+    if (isTrustedWebContents(entry.webContents)) windows.push(entry.window);
+  }
+  return windows;
+};
 
 export const getTrustedWindow = () => getTrustedWindows()[0] ?? null;
 
@@ -131,20 +269,17 @@ export const requireTrustedSender = (event: IpcSenderEvent) => {
   const entry = trustedWindows.get(event.sender.id);
   if (!entry) throw new Error('Untrusted application frame.');
 
-  const { window, expectedDocument } = entry;
   try {
     if (
-      window.isDestroyed() ||
-      event.sender.isDestroyed() ||
-      window.webContents !== event.sender ||
+      entry.webContents !== event.sender ||
+      event.senderFrame !== entry.mainFrame ||
       event.senderFrame !== event.sender.mainFrame ||
-      !matchesDocument(event.sender.getURL(), expectedDocument) ||
-      !matchesDocument(event.senderFrame.url, expectedDocument)
+      !matchesTrustedEntry(entry)
     )
       throw new Error('Untrusted application frame.');
   } catch {
     throw new Error('Untrusted application frame.');
   }
 
-  return window;
+  return entry.window;
 };
