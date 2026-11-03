@@ -41,6 +41,40 @@ describe('session teardown', () => {
     expect(closeBrowser).toHaveBeenCalledOnce();
   });
 
+  it('waits for watcher cancellation before clearing the signed-in session', async () => {
+    const calls: string[] = [];
+    let finishStop!: () => void;
+    const stopped = new Promise<void>((resolve) => {
+      finishStop = resolve;
+    });
+    const teardown = tearDownSession({
+      invalidateSession: () => calls.push('invalidate'),
+      stopMissions: async () => {
+        calls.push('stop-start');
+        await stopped;
+        calls.push('stop-finish');
+      },
+      clearLocalSession: async () => {
+        calls.push('clear');
+      },
+      closeBrowser: async () => {
+        calls.push('browser');
+      },
+    });
+
+    await Promise.resolve();
+    expect(calls).toEqual(['invalidate', 'stop-start']);
+    finishStop();
+    await teardown;
+    expect(calls).toEqual([
+      'invalidate',
+      'stop-start',
+      'stop-finish',
+      'clear',
+      'browser',
+    ]);
+  });
+
   it('returns without waiting for a stalled browser close', async () => {
     const started = Date.now();
     await tearDownSession(

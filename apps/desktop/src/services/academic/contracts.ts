@@ -6,6 +6,9 @@ export const academicMethods = [
   'getCurrentUser',
   'signOut',
   'getState',
+  'getWatchSettings',
+  'saveWatchSettings',
+  'getWatchRuntimeState',
   'saveSettings',
   'findBrowsers',
   'chooseBrowser',
@@ -63,6 +66,7 @@ export const academicEventChannels = [
   'scholar:connectChange',
   'scholar:previewChange',
   'scholar:coursesChange',
+  'scholar:watchChange',
 ] as const;
 export type AcademicEventChannel = (typeof academicEventChannels)[number];
 export const academicMessageSchema = z.discriminatedUnion('kind', [

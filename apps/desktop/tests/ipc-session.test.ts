@@ -6,6 +6,12 @@ const mocks = vi.hoisted(() => ({
     string,
     (event: unknown, input?: unknown) => Promise<unknown>
   >(),
+  appListeners: new Map<
+    string,
+    (event: { preventDefault: () => void }) => void
+  >(),
+  powerListeners: new Map<string, () => void>(),
+  appQuit: vi.fn(),
   getCurrentUser: vi.fn(),
   getCookie: vi.fn(() => 'initial-cookie'),
   capturePage: vi.fn(async (_id, _page, check) => {
@@ -15,6 +21,8 @@ const mocks = vi.hoisted(() => ({
   getPreview: vi.fn(),
   discoverAcademicContext: vi.fn(),
   startCourseRefresh: vi.fn(),
+  refreshSingleCourse: vi.fn(),
+  startConnectionRefresh: vi.fn(),
   getCoursesSnapshot: vi.fn(() => ({
     courses: [],
     sources: [],
@@ -26,10 +34,34 @@ const mocks = vi.hoisted(() => ({
   connectWorkspace: vi.fn(),
   workspace: vi.fn(),
   invalidate: vi.fn(),
+  watchRuntime: {
+    configure: vi.fn(async () => undefined),
+    pause: vi.fn(async () => undefined),
+    resume: vi.fn(async () => undefined),
+    suspend: vi.fn(async () => vi.fn(async () => undefined)),
+    stop: vi.fn(async () => undefined),
+    getState: vi.fn(() => ({ enabled: false, status: 'off' })),
+  },
+  watchSettings: { watchEnabled: false, watchUrls: [] as string[] },
+  getWatchSettings: vi.fn(() => mocks.watchSettings),
+  saveWatchSettings: vi.fn((_userId, settings) => {
+    mocks.watchSettings = settings;
+    return settings;
+  }),
   state: { settings: { consent: true, localSetupCompletedAt: null } },
 }));
 vi.mock('electron', () => ({
-  app: { on: vi.fn() },
+  app: {
+    on: (
+      name: string,
+      listener: (event: { preventDefault: () => void }) => void,
+    ) => mocks.appListeners.set(name, listener),
+    quit: mocks.appQuit,
+  },
+  powerMonitor: {
+    on: (name: string, listener: () => void) =>
+      mocks.powerListeners.set(name, listener),
+  },
   BrowserWindow: { fromWebContents: () => ({}), getAllWindows: () => [] },
   ipcMain: {
     handle: (
@@ -78,6 +110,8 @@ vi.mock('../src/features/onboarding/services/store', () => ({
 }));
 vi.mock('../src/features/courses/services/refresh', () => ({
   startCourseRefresh: mocks.startCourseRefresh,
+  refreshSingleCourse: mocks.refreshSingleCourse,
+  startConnectionRefresh: mocks.startConnectionRefresh,
   cancelCourseRefresh: vi.fn(),
 }));
 vi.mock('../src/features/courses/services/store', () => ({
@@ -122,6 +156,13 @@ vi.mock('../src/features/onboarding/services/connection-resolver', () => ({
 }));
 vi.mock('../src/features/onboarding/services/discovery', () => ({
   discoverAcademicContext: mocks.discoverAcademicContext,
+}));
+vi.mock('../src/features/watch/services/runtime', () => ({
+  createWatchRuntime: () => mocks.watchRuntime,
+}));
+vi.mock('../src/features/watch/services/store', () => ({
+  getWatchSettings: mocks.getWatchSettings,
+  saveWatchSettings: mocks.saveWatchSettings,
 }));
 const { registerAcademicActions } =
   await import('../src/features/onboarding/services/ipc');
@@ -182,6 +223,7 @@ const refreshed = () => ({
 beforeEach(async () => {
   vi.clearAllMocks();
   mocks.getCookie.mockReturnValue('initial-cookie');
+  mocks.watchSettings = { watchEnabled: false, watchUrls: [] };
   mocks.state = { settings: { consent: true, localSetupCompletedAt: null } };
   if (!mocks.handlers.size)
     registerAcademicActions({
@@ -237,6 +279,43 @@ it('does not expose the removed onboarding course-map scan before setup is compl
   mocks.getCurrentUser.mockResolvedValue({ id: 'student-a' });
   await expect(invoke('discoverContext')).rejects.toThrow('after setup');
   expect(mocks.discoverAcademicContext).not.toHaveBeenCalled();
+});
+
+describe('course page watching IPC', () => {
+  beforeEach(async () => {
+    mocks.state = readyState();
+    mocks.getCurrentUser.mockResolvedValue({
+      id: 'student-a',
+      hasCompletedOnboarding: true,
+    });
+    await invoke('getCurrentUser');
+  });
+
+  it('keeps watching disabled until local setup, consent, and a ready workspace exist', async () => {
+    await expect(
+      invoke('saveWatchSettings', { watchEnabled: true, watchUrls: [] }),
+    ).rejects.toThrow('computer setup');
+    expect(mocks.saveWatchSettings).not.toHaveBeenCalled();
+
+    mocks.state.settings.localSetupCompletedAt = '2026-11-01T12:00:00.000Z';
+    mocks.state.settings.consent = false;
+    await expect(
+      invoke('saveWatchSettings', { watchEnabled: true, watchUrls: [] }),
+    ).rejects.toThrow('academic access');
+    expect(mocks.saveWatchSettings).not.toHaveBeenCalled();
+  });
+
+  it('saves account-scoped settings and reconfigures the watcher', async () => {
+    mocks.state.settings.localSetupCompletedAt = '2026-11-01T12:00:00.000Z';
+    await expect(
+      invoke('saveWatchSettings', { watchEnabled: true, watchUrls: [] }),
+    ).resolves.toEqual({ watchEnabled: true, watchUrls: [] });
+    expect(mocks.saveWatchSettings).toHaveBeenCalledWith('student-a', {
+      watchEnabled: true,
+      watchUrls: [],
+    });
+    expect(mocks.watchRuntime.configure).toHaveBeenCalled();
+  });
 });
 
 describe('device setup for an account that already finished onboarding', () => {
@@ -330,6 +409,16 @@ describe('foreground browser work and background sync', () => {
     expect(mocks.startCourseRefresh).toHaveBeenCalledOnce();
   });
 
+  it('pauses and resumes the watcher around a manual course refresh', async () => {
+    const releaseWatch = vi.fn(async () => undefined);
+    mocks.watchRuntime.suspend.mockResolvedValueOnce(releaseWatch);
+    mocks.refreshSingleCourse.mockResolvedValue(null);
+    await invoke('refreshCourse', 'course-a');
+    expect(mocks.watchRuntime.suspend).toHaveBeenCalledOnce();
+    expect(mocks.refreshSingleCourse).toHaveBeenCalledOnce();
+    expect(releaseWatch).toHaveBeenCalledOnce();
+  });
+
   it('leaves scheduled work off until a connection is a course resource', async () => {
     mocks.state.connections[0].isCourseResource = false;
     await expect(invoke('getState')).resolves.toMatchObject({
@@ -402,6 +491,42 @@ describe('foreground browser work and background sync', () => {
       preferences: { backgroundSync: { status: 'paused' } },
     });
   });
+});
+
+it('stops course watching before academic consent is revoked', async () => {
+  mocks.state = readyState();
+  mocks.getCurrentUser.mockResolvedValue({
+    id: 'student-a',
+    hasCompletedOnboarding: true,
+  });
+  await invoke('getCurrentUser');
+  mocks.state.settings.localSetupCompletedAt = '2026-11-01T12:00:00.000Z';
+  mocks.state.settings.consent = false;
+  mocks.watchRuntime.stop.mockClear();
+
+  await invoke('saveSettings', { consent: false });
+
+  expect(mocks.watchRuntime.stop).toHaveBeenCalledOnce();
+});
+
+it('pauses on system suspend and waits for watcher cleanup on explicit Quit', async () => {
+  mocks.powerListeners.get('suspend')?.();
+  await vi.waitFor(() => expect(mocks.watchRuntime.pause).toHaveBeenCalled());
+
+  let finishStop!: () => void;
+  mocks.watchRuntime.stop.mockImplementationOnce(
+    () => new Promise<void>((resolve) => (finishStop = resolve)),
+  );
+  const preventDefault = vi.fn();
+  mocks.appListeners.get('before-quit')!({ preventDefault });
+  expect(preventDefault).toHaveBeenCalledOnce();
+  await vi.waitFor(() => expect(mocks.watchRuntime.stop).toHaveBeenCalled());
+  expect(mocks.appQuit).not.toHaveBeenCalled();
+  finishStop();
+  await vi.waitFor(() => expect(mocks.appQuit).toHaveBeenCalledOnce());
+
+  mocks.powerListeners.get('resume')?.();
+  await vi.waitFor(() => expect(mocks.watchRuntime.resume).toHaveBeenCalled());
 });
 
 it('requires consent and an authenticated account to resolve sites', async () => {

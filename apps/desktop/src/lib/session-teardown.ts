@@ -1,6 +1,6 @@
 type SessionTeardownDependencies = {
   invalidateSession: () => void;
-  stopMissions: () => void;
+  stopMissions: () => void | Promise<void>;
   clearLocalSession: () => Promise<void>;
   closeBrowser: () => Promise<void>;
 };
@@ -20,7 +20,7 @@ export const tearDownSession = async (
   options: { clearBoundMs?: number } = {},
 ) => {
   dependencies.invalidateSession();
-  dependencies.stopMissions();
+  await dependencies.stopMissions();
   // The Electron auth client clears its local cookie before the request; wait
   // only briefly so an unreachable account service cannot retain this session.
   await bounded(

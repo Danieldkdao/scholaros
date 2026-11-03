@@ -1,10 +1,15 @@
 import { errorMessage } from '../../lib/error-message';
 import type { SettingsUpdateSchema } from '../onboarding/schemas';
+import type { WatchSettings } from '../watch/types';
+
+export type SettingsSaveDraft = Partial<SettingsUpdateSchema> & {
+  watchSettings?: WatchSettings;
+};
 
 export type SettingsSaveState = {
   pending: number;
   error: string | null;
-  draft: Partial<SettingsUpdateSchema>;
+  draft: SettingsSaveDraft;
   revision: number;
 };
 
@@ -41,35 +46,54 @@ export const subscribeSettingsSaveState = (
 
 export const reconcileSettingsSaveDraft = (
   accountId: string,
-  persisted: { decisionTimeSeconds: number; blockedWords: string[] },
+  persisted: {
+    decisionTimeSeconds?: number;
+    blockedWords?: string[];
+    watchSettings?: WatchSettings;
+  },
 ) => {
   const state = getSettingsSaveState(accountId);
   if (state.pending > 0 || state.error) return;
   const draft = { ...state.draft };
-  if (draft.decisionTimeSeconds === persisted.decisionTimeSeconds)
+  if (
+    draft.decisionTimeSeconds !== undefined &&
+    draft.decisionTimeSeconds === persisted.decisionTimeSeconds
+  )
     delete draft.decisionTimeSeconds;
   if (
     draft.blockedWords &&
+    persisted.blockedWords &&
     draft.blockedWords.length === persisted.blockedWords.length &&
     draft.blockedWords.every(
-      (word, index) => word === persisted.blockedWords[index],
+      (word, index) => word === persisted.blockedWords?.[index],
     )
   )
     delete draft.blockedWords;
+  if (
+    draft.watchSettings &&
+    persisted.watchSettings &&
+    draft.watchSettings.watchEnabled === persisted.watchSettings.watchEnabled &&
+    draft.watchSettings.watchUrls.length ===
+      persisted.watchSettings.watchUrls.length &&
+    draft.watchSettings.watchUrls.every(
+      (url, index) => url === persisted.watchSettings?.watchUrls[index],
+    )
+  )
+    delete draft.watchSettings;
   if (Object.keys(draft).length !== Object.keys(state.draft).length)
     publishState(accountId, { ...state, draft });
 };
 
-export const queueSettingsSave = (
+const queueSettingsOperation = (
   accountId: string,
-  changes: SettingsUpdateSchema,
+  updateDraft: (draft: SettingsSaveDraft) => SettingsSaveDraft,
   save: () => Promise<void>,
 ) => {
   const currentState = getSettingsSaveState(accountId);
   publishState(accountId, {
     pending: currentState.pending + 1,
     error: null,
-    draft: { ...currentState.draft, ...changes },
+    draft: updateDraft(currentState.draft),
     revision: currentState.revision + 1,
   });
   const previous = settingsQueues.get(accountId) ?? Promise.resolve();
@@ -99,3 +123,25 @@ export const queueSettingsSave = (
   });
   return operation;
 };
+
+export const queueSettingsSave = (
+  accountId: string,
+  changes: SettingsUpdateSchema,
+  save: () => Promise<void>,
+) =>
+  queueSettingsOperation(
+    accountId,
+    (draft) => ({ ...draft, ...changes }),
+    save,
+  );
+
+export const queueWatchSettingsSave = (
+  accountId: string,
+  settings: WatchSettings,
+  save: () => Promise<void>,
+) =>
+  queueSettingsOperation(
+    accountId,
+    (draft) => ({ ...draft, watchSettings: settings }),
+    save,
+  );

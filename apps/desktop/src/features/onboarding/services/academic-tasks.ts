@@ -1,18 +1,43 @@
-import type { CourseRefreshActivity } from '../../courses/types';
+import type {
+  CourseRefreshActivity,
+  CourseRefreshMetricName,
+  CourseRefreshMetrics,
+} from '../../courses/types';
 
 type AcademicTask = {
   accountId: string;
   controller: AbortController;
   completion: Promise<unknown>;
   key?: string;
+  exclusive: boolean;
   signal: AbortSignal;
   activity?: CourseRefreshActivity;
   partial?: boolean;
+  signInRequired?: boolean;
+  startedAt: number;
 };
 
-export const createAcademicTaskRunner = () => {
+const emptyMetrics = (): CourseRefreshMetrics => ({
+  pagesOpened: 0,
+  modelCalls: 0,
+  knownDestinationsReused: 0,
+  navigationRepairs: 0,
+  candidatesExtracted: 0,
+  duplicatesReconciled: 0,
+  ambiguousIdentityConflicts: 0,
+  recordsCreated: 0,
+  recordsUpdated: 0,
+  recordsRetired: 0,
+  firstFindingMs: null,
+  durationMs: null,
+});
+
+export const createAcademicTaskRunner = (
+  options: { now?: () => number } = {},
+) => {
   const active = new Set<AcademicTask>();
   const history: { accountId: string; activity: CourseRefreshActivity }[] = [];
+  const now = options.now ?? Date.now;
   const getActivity = (accountId: string) =>
     history
       .filter((run) => run.accountId === accountId)
@@ -35,6 +60,41 @@ export const createAcademicTaskRunner = () => {
       }
     }
   };
+  const recordMetric = (
+    signal: AbortSignal,
+    metric: CourseRefreshMetricName,
+    amount = 1,
+  ) => {
+    const task = [...active].find((item) => item.signal === signal);
+    if (
+      !task?.activity?.metrics ||
+      signal.aborted ||
+      !Number.isFinite(amount) ||
+      amount < 0
+    )
+      return;
+    task.activity.metrics[metric] =
+      (task.activity.metrics[metric] ?? 0) + amount;
+    notify(task.accountId);
+  };
+  const markFirstFinding = (signal: AbortSignal) => {
+    const task = [...active].find((item) => item.signal === signal);
+    if (
+      !task?.activity?.metrics ||
+      signal.aborted ||
+      task.activity.metrics.firstFindingMs !== null
+    )
+      return;
+    task.activity.metrics.firstFindingMs = Math.max(0, now() - task.startedAt);
+    notify(task.accountId);
+  };
+  const reportSignInRequired = (signal: AbortSignal, message: string) => {
+    const task = [...active].find((task) => task.signal === signal);
+    if (!task?.activity || signal.aborted) return;
+    task.signInRequired = true;
+    task.activity.events = [...task.activity.events, message].slice(-100);
+    notify(task.accountId);
+  };
   const subscribe = (listener: (accountId: string) => void) => {
     listeners.add(listener);
     return () => {
@@ -44,9 +104,11 @@ export const createAcademicTaskRunner = () => {
   const getRefreshState = (accountId: string) => {
     const tasks = [...active].filter((task) => task.accountId === accountId);
     return {
-      allCourses: tasks.some((task) => task.key === 'courses'),
+      allCourses: tasks.some(
+        (task) => task.key === 'courses' || task.exclusive,
+      ),
       courseIds: tasks.flatMap((task) =>
-        task.key && task.key !== 'courses' ? [task.key] : [],
+        task.key && task.key !== 'courses' && !task.exclusive ? [task.key] : [],
       ),
     };
   };
@@ -55,13 +117,16 @@ export const createAcademicTaskRunner = () => {
     action: (signal: AbortSignal) => Promise<T>,
     externalSignal?: AbortSignal,
     key?: string,
+    options: { exclusive?: boolean } = {},
   ): Promise<T> => {
+    const exclusive = options.exclusive ?? key === 'courses';
     const duplicate =
       key &&
       [...active].find(
         (task) =>
           task.accountId === accountId &&
           task.key === key &&
+          task.exclusive === exclusive &&
           !task.controller.signal.aborted,
       );
     if (duplicate && !externalSignal?.aborted)
@@ -70,6 +135,8 @@ export const createAcademicTaskRunner = () => {
       [...active].some(
         (task) =>
           !key ||
+          exclusive ||
+          task.exclusive ||
           !task.key ||
           key === 'courses' ||
           task.key === 'courses' ||
@@ -90,6 +157,7 @@ export const createAcademicTaskRunner = () => {
     const signal = externalSignal
       ? AbortSignal.any([controller.signal, externalSignal])
       : controller.signal;
+    const startedAt = now();
     const completion = Promise.resolve()
       .then(() => {
         signal.throwIfAborted();
@@ -97,16 +165,21 @@ export const createAcademicTaskRunner = () => {
       })
       .then(
         (value) => {
-          if (task.activity)
+          if (task.activity) {
+            if (task.activity.metrics)
+              task.activity.metrics.durationMs = Math.max(0, now() - startedAt);
             task.activity.status = signal.aborted
               ? 'cancelled'
-              : task.partial
-                ? 'partial'
+              : task.signInRequired
+                ? 'sign-in-required'
                 : 'complete';
+          }
           return value;
         },
         (error) => {
           if (task.activity) {
+            if (task.activity.metrics)
+              task.activity.metrics.durationMs = Math.max(0, now() - startedAt);
             task.activity.status = signal.aborted ? 'cancelled' : 'failed';
             if (!signal.aborted)
               task.activity.events.push(
@@ -126,6 +199,7 @@ export const createAcademicTaskRunner = () => {
           key,
           status: 'running',
           events: ['Starting refresh'],
+          metrics: emptyMetrics(),
         }
       : undefined;
     const task: AcademicTask = {
@@ -133,8 +207,10 @@ export const createAcademicTaskRunner = () => {
       controller,
       completion,
       key,
+      exclusive,
       signal,
       activity,
+      startedAt,
     };
     if (activity) {
       const previous = history.findIndex(
@@ -197,6 +273,9 @@ export const createAcademicTaskRunner = () => {
     getRefreshState,
     getActivity,
     report,
+    reportSignInRequired,
+    recordMetric,
+    markFirstFinding,
   };
 };
 export const academicTasks = createAcademicTaskRunner();
