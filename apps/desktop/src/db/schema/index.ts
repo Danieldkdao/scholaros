@@ -7,3 +7,8 @@ export * from './course';
 export * from './course-announcement';
 export * from './course-assignment';
 export * from './course-source';
+export * from './navigation-location';
+export * from './course-material';
+export * from './course-material-chunk';
+export * from './course-record-tombstone';
+export * from './watch-target';

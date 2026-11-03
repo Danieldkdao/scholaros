@@ -11,6 +11,14 @@ export const SettingTable = sqliteTable('settings', {
   backgroundSync: integer('background_sync', { mode: 'boolean' })
     .notNull()
     .default(false),
+  watchEnabled: integer('watch_enabled', { mode: 'boolean' })
+    .notNull()
+    .default(false),
+  watchReconciledAt: text('watch_reconciled_at'),
+  watchUrls: text('watch_urls', { mode: 'json' })
+    .$type<string[]>()
+    .notNull()
+    .default([]),
   decisionTimeSeconds: real('decision_time_seconds').notNull().default(1),
   blockedWords: text('blocked_words', { mode: 'json' })
     .$type<string[]>()
