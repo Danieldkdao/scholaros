@@ -24,6 +24,8 @@ type ActivityMarkupNode = {
 
 const maximumBundleBytes = 512 * 1024;
 const maximumDocumentBytes = 2 * 1024 * 1024;
+export const activityConnectionAllowlistHeader =
+  '();webrtc=block;redirects=block';
 const deniedMarkupTags = new Set([
   'audio',
   'base',
@@ -268,7 +270,7 @@ export const buildActivityDocument = (
   const headers = {
     'Content-Type': 'text/html; charset=utf-8',
     'Content-Security-Policy': outerPolicy,
-    'Connection-Allowlist': '();webrtc=block;redirects=block',
+    'Connection-Allowlist': activityConnectionAllowlistHeader,
     'Referrer-Policy': 'no-referrer',
     'X-Content-Type-Options': 'nosniff',
     'Cache-Control': 'no-store',

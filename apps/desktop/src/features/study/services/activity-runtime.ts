@@ -3,6 +3,7 @@ import type { BrowserWindow, Session, WebContents } from 'electron';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
+  activityConnectionAllowlistHeader,
   buildActivityDocument,
   createActivityContentDigest,
   type ActivityBundle,
@@ -87,6 +88,7 @@ type ActivityGuardCounters = {
   cancelledDownloads: number;
   deniedPermissions: number;
   fileChooserEvents: number;
+  connectionPolicyHeaderVerified: boolean;
 };
 
 type ActivityManagerDependencies = {
@@ -345,6 +347,20 @@ const registerActivitySessionGuards = (
     callback({ cancel: true });
   });
   cleanups.push(() => activitySession.webRequest.onBeforeRequest(null));
+
+  activitySession.webRequest.onHeadersReceived((details, callback) => {
+    const connectionAllowlist = Object.entries(
+      details.responseHeaders ?? {},
+    ).find(([name]) => name.toLowerCase() === 'connection-allowlist')?.[1];
+    const verified =
+      details.url === url &&
+      details.resourceType === 'mainFrame' &&
+      connectionAllowlist?.length === 1 &&
+      connectionAllowlist[0] === activityConnectionAllowlistHeader;
+    if (verified) counters.connectionPolicyHeaderVerified = true;
+    callback({ cancel: !verified });
+  });
+  cleanups.push(() => activitySession.webRequest.onHeadersReceived(null));
 
   const onDownload = (event: Electron.Event) => {
     counters.cancelledDownloads += 1;
@@ -732,6 +748,7 @@ export const createActivityManager = (
       cancelledDownloads: 0,
       deniedPermissions: 0,
       fileChooserEvents: 0,
+      connectionPolicyHeaderVerified: false,
     };
     const binding: ActivityMailboxBinding = {
       runtimeVersion: authorizedRun.runtimeVersion,
@@ -831,6 +848,10 @@ export const createActivityManager = (
       input.hostWindow.contentView.addChildView(view);
 
       await withTimeout(view.webContents.loadURL(url), bootstrapTimeoutMs);
+      if (!counters.connectionPolicyHeaderVerified)
+        throw new Error(
+          'The activity connection allowlist header was not verified.',
+        );
       const fileChooserResult = await withTimeout(fileChooserGuard, 3000);
       if (!fileChooserResult.supported)
         throw new Error(
