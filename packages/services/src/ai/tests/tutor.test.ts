@@ -10,6 +10,7 @@ import {
 } from '../learning-dispatch';
 import {
   assessPracticeCandidateForLearning,
+  assessTutorCandidate,
   evaluatePracticeAnswerForLearning,
   generatePracticeCandidateForLearning,
   generateTutorCandidate,
@@ -207,6 +208,51 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('Meta model capability selection', () => {
+  it('bounds the guard response without exhausting its reasoning token allowance', async () => {
+    const fetchMock = vi.fn(async (_url: string, _init: RequestInit) =>
+      metaChatResponse({ allowed: true, reasonCode: 'safe' }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(
+      assessTutorCandidate(
+        'synthetic-account',
+        learningRequestSchema.parse(request),
+        learningCandidateSchema.parse(candidate),
+        [sourceReference],
+        new AbortController().signal,
+      ),
+    ).resolves.toMatchObject({ allowed: true });
+    expect(
+      JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)),
+    ).toMatchObject({ max_completion_tokens: 2048 });
+  });
+
+  it('sends Meta-compatible structured output while retaining strict tutor and practice validation', async () => {
+    const outputs: unknown[] = [candidate, practiceModelCandidate];
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      if (String(init.body).includes('"oneOf"'))
+        return Response.json(
+          { error: { message: "'oneOf' is not permitted." } },
+          { status: 400 },
+        );
+      return metaChatResponse(outputs.shift());
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(
+      generateTutorCandidate(
+        learningRequestSchema.parse(request),
+        new AbortController().signal,
+      ),
+    ).resolves.toMatchObject({ candidate });
+    await expect(
+      generatePracticeCandidateForLearning(
+        practiceGenerationRequest,
+        new AbortController().signal,
+      ),
+    ).resolves.toMatchObject({ candidate: { questions: expect.any(Array) } });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('passes the host assistance summary and safe retry directive to Meta', async () => {
     const fetchMock = vi.fn(async (_url: string, _init: RequestInit) =>
       metaChatResponse(candidate),
@@ -300,10 +346,54 @@ describe('Meta model capability selection', () => {
 });
 
 describe('Meta practice handlers', () => {
+  it('rejects unsafe feedback even when the app-owned answer evaluation is deterministic', async () => {
+    const fetchMock = vi.fn(async () =>
+      metaChatResponse({
+        ...safeIntegrityAssessment,
+        verdict: 'unsafe',
+        riskTags: ['answer-adjacent'],
+        reconstructionRisk: 'high',
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(
+      evaluatePracticeAnswerForLearning(
+        practiceEvaluationRequest,
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: 'scope-denied' });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it('rejects a hidden active-work solution even when the public practice projection passes', async () => {
+    const outputs: unknown[] = [
+      practiceModelCandidate,
+      safeIntegrityAssessment,
+      { allowed: false, reasonCode: 'active-work' },
+    ];
+    const fetchMock = vi.fn(async (_url: string, _init: RequestInit) =>
+      metaChatResponse(outputs.shift()),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const result = await generatePracticeCandidateForLearning(
+      practiceGenerationRequest,
+      new AbortController().signal,
+    );
+    await expect(
+      assessPracticeCandidateForLearning(
+        practiceGenerationRequest,
+        result.candidate,
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: 'scope-denied' });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
   it('generates host-private practice and assesses the full candidate with Meta Standard', async () => {
     const outputs: unknown[] = [
       practiceModelCandidate,
       safeIntegrityAssessment,
+      { allowed: true, reasonCode: 'safe' },
     ];
     const fetchMock = vi.fn(async (_url: string, _init: RequestInit) =>
       metaChatResponse(outputs.shift()),
@@ -325,21 +415,28 @@ describe('Meta practice handlers', () => {
     expect(JSON.stringify(result.candidate.questions)).not.toContain(
       'correctOptionId',
     );
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(
       fetchMock.mock.calls.map(
         ([, options]) => JSON.parse(String(options.body)).model,
       ),
-    ).toEqual(['muse-spark-1.3', 'muse-spark-1.3']);
+    ).toEqual(['muse-spark-1.3', 'muse-spark-1.3', 'muse-spark-1.3']);
     const integrityRequest = JSON.stringify(
       JSON.parse(String(fetchMock.mock.calls[1]![1].body)),
     );
     expect(integrityRequest).not.toContain('hostAnswerKey');
     expect(integrityRequest).not.toContain('correctOptionId');
-    expect(integrityRequest).toContain('Which structure regulates cell transport?');
+    expect(integrityRequest).toContain(
+      'Which structure regulates cell transport?',
+    );
     expect(integrityRequest).toContain(
       'One earlier practice attempt covered transport.',
     );
+    const privateAssessment = JSON.stringify(
+      JSON.parse(String(fetchMock.mock.calls[2]![1].body)),
+    );
+    expect(privateAssessment).toContain('hostAnswerKey');
+    expect(privateAssessment).toContain('correctOptionId');
   });
 
   it('evaluates short explanations through the P23 evaluator on Meta Standard', async () => {
@@ -364,11 +461,15 @@ describe('Meta practice handlers', () => {
         answerKey,
       },
     };
-    const fetchMock = vi.fn(async (_url: string, _init: RequestInit) =>
-      metaChatResponse({
+    const outputs = [
+      {
         outcome: 'correct',
         explanation: 'That identifies the membrane’s transport role.',
-      }),
+      },
+      safeIntegrityAssessment,
+    ];
+    const fetchMock = vi.fn(async (_url: string, _init: RequestInit) =>
+      metaChatResponse(outputs.shift()),
     );
     vi.stubGlobal('fetch', fetchMock);
 
@@ -383,7 +484,7 @@ describe('Meta practice handlers', () => {
       assisted: false,
     });
     expect(result.evaluation).not.toHaveProperty('answerKey');
-    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(JSON.parse(String(fetchMock.mock.calls[0]![1].body)).model).toBe(
       'muse-spark-1.3',
     );

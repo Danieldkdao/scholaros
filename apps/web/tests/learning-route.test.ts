@@ -253,6 +253,7 @@ describe('POST /api/learning', () => {
     const outputs: unknown[] = [
       practiceModelCandidate,
       safeIntegrityAssessment,
+      { allowed: true, reasonCode: 'safe' },
     ];
     const fetchMock = vi.fn(async (_url: string, _init: RequestInit) =>
       metaResponse(outputs.shift()),
@@ -286,12 +287,12 @@ describe('POST /api/learning', () => {
       },
       usage: { inputTokens: null, outputTokens: null },
     });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(
       fetchMock.mock.calls.map(
         ([, options]) => JSON.parse(String(options.body)).model,
       ),
-    ).toEqual(['muse-spark-1.3', 'muse-spark-1.3']);
+    ).toEqual(['muse-spark-1.3', 'muse-spark-1.3', 'muse-spark-1.3']);
   });
 
   it('runs real P23 answer evaluation and keeps the tutor wire response unchanged', async () => {
@@ -301,6 +302,10 @@ describe('POST /api/learning', () => {
       META_MODEL: 'muse-spark-1.3',
       META_API_KEY: 'x',
     });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => metaResponse(safeIntegrityAssessment)),
+    );
     const response = await productionLearningPost(
       postRequest(practiceEvaluationRequest),
     );

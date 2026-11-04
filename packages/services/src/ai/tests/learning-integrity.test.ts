@@ -52,6 +52,23 @@ beforeEach(() => {
 });
 
 describe('server learning integrity assessment', () => {
+  it('distinguishes distinct-practice feedback from hidden external-work answers', async () => {
+    await assessLearningCandidate(
+      { ...request, kind: 'practice-evaluate' },
+      new AbortController().signal,
+    );
+    expect(mocks.generateText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        instructions: expect.stringMatching(
+          /genuinely distinct app-generated practice/,
+        ),
+      }),
+    );
+    expect(mocks.generateText.mock.calls[0]?.[0]?.instructions).toMatch(
+      /External work is always active or unknown/,
+    );
+  });
+
   it('uses one bounded structured Meta assessment with server-owned instructions', async () => {
     const result = await assessLearningCandidate(
       request,
@@ -66,7 +83,7 @@ describe('server learning integrity assessment', () => {
       expect.objectContaining({
         model: 'server-selected-meta-model',
         maxRetries: 0,
-        maxOutputTokens: 256,
+        maxOutputTokens: 2048,
         reasoning: 'minimal',
         telemetry: { isEnabled: false },
         abortSignal: expect.any(AbortSignal),

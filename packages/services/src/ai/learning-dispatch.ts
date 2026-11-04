@@ -84,6 +84,7 @@ const sourceInputSchema = z.strictObject({
 });
 export const practiceAnswerEvaluationInputSchema = z
   .strictObject({
+    priorAssistanceSummary: z.string().max(2000).optional(),
     question: practiceQuestionSchema,
     answer: jsonValueSchema,
     answerKey: practiceAnswerKeySchema.element,

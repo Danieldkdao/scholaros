@@ -20,6 +20,7 @@ import {
 import {
   PracticeGenerationError,
   generatePracticeCandidate,
+  createLearningOutputSchema,
 } from './practice-generation';
 import type {
   GeneratedPracticeCandidate,
@@ -109,7 +110,9 @@ export const generateTutorCandidate = async (
       model: getModel(),
       instructions: tutorInstructions,
       prompt: JSON.stringify(request.input),
-      output: Output.object({ schema: learningCandidateSchema }),
+      output: Output.object({
+        schema: createLearningOutputSchema(learningCandidateSchema),
+      }),
       reasoning: 'low',
       maxOutputTokens: 6000,
       abortSignal: signal,
@@ -154,7 +157,7 @@ export const assessTutorCandidate = async (
       }),
       output: Output.object({ schema: guardDecisionSchema }),
       reasoning: 'low',
-      maxOutputTokens: 512,
+      maxOutputTokens: 2048,
       abortSignal: signal,
       maxRetries: 0,
       telemetry: { isEnabled: false },
@@ -217,12 +220,35 @@ export const evaluatePracticeAnswerForLearning = async (
   if (request.kind !== 'practice-evaluate')
     throw new LearningDispatchError('feature-unavailable');
   try {
+    const { priorAssistanceSummary, ...evaluationInput } = request.input;
     const evaluation = await evaluatePracticeAnswer(
-      request.input,
+      evaluationInput,
       signal,
       getModel(),
     );
     signalFrom(signal);
+    const assessment = await assessLearningCandidate(
+      {
+        kind: 'practice-evaluate',
+        studentInput: JSON.stringify(request.input.answer).slice(0, 8000),
+        taskContext: JSON.stringify({
+          question: request.input.question,
+          rubricVersion: request.input.rubricVersion,
+        }).slice(0, 8000),
+        recentTurns: [],
+        priorAssistanceSummary: priorAssistanceSummary ?? '',
+        sourcePassages: [],
+        candidate: jsonValueSchema.parse(evaluation),
+      },
+      signal,
+    );
+    signalFrom(signal);
+    if (!assessment.allowed)
+      throw new LearningDispatchError(
+        assessment.reasonCode === 'assessment-unavailable'
+          ? 'feature-unavailable'
+          : 'scope-denied',
+      );
     return {
       evaluation,
       usage: { inputTokens: null, outputTokens: null },
@@ -268,7 +294,33 @@ export const assessPracticeCandidateForLearning = async (
     throw new LearningDispatchError('feature-unavailable');
   }
   signalFrom(signal);
-  if (assessment.allowed) return;
+  if (assessment.allowed) {
+    try {
+      const result = await generateText({
+        model: getModel(),
+        instructions: `${guardInstructions} This is host-private app-owned practice: an answer key is expected, not a publication violation by itself. Independently inspect every private answer, explanation and rubric for the same solution as active external coursework, cumulative reconstruction, or answer leakage hidden behind an innocent public question. Reject uncertain cases.`,
+        prompt: JSON.stringify({
+          selectedCourseId: request.courseId,
+          input: request.input,
+          candidate,
+        }),
+        output: Output.object({ schema: guardDecisionSchema }),
+        reasoning: 'low',
+        maxOutputTokens: 2048,
+        abortSignal: signal,
+        maxRetries: 0,
+        telemetry: { isEnabled: false },
+        providerOptions: withMetaOptions,
+      });
+      signalFrom(signal);
+      if (result.output.allowed) return;
+      throw new LearningDispatchError('scope-denied');
+    } catch (error) {
+      if (signal.aborted) throw new LearningDispatchError('cancelled');
+      if (error instanceof LearningDispatchError) throw error;
+      throw new LearningDispatchError('provider-failed');
+    }
+  }
   if (assessment.reasonCode === 'assessment-unavailable')
     throw new LearningDispatchError('feature-unavailable');
   if (assessment.reasonCode === 'limit-exceeded')

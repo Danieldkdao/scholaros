@@ -189,11 +189,14 @@ export const assessLearningCandidate = async (
   try {
     const { output } = await generateText({
       model: getInferenceModel(),
-      instructions,
+      instructions:
+        parsed.data.kind === 'practice-evaluate'
+          ? `${instructions} For practice-evaluate only, correctness and a bounded explanation about genuinely distinct app-generated practice are intended feedback, not a hidden answer key. This never permits external or unknown-source task answers, task-identical practice, hidden answer-key fields, or cumulative reconstruction.`
+          : instructions,
       prompt: JSON.stringify(parsed.data),
       output: Output.object({ schema: assessmentSchema }),
       reasoning: 'minimal',
-      maxOutputTokens: 256,
+      maxOutputTokens: 2048,
       maxRetries: 0,
       timeout: { totalMs: 12_000 },
       abortSignal: signal,
