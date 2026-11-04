@@ -75,6 +75,9 @@ const proposeLearningObservationInputSchema = z.strictObject({
   attemptId: idSchema,
   confidence: z.number().min(0).max(1).optional(),
 });
+export type ProposeLearningObservationInputSchema = z.infer<
+  typeof proposeLearningObservationInputSchema
+>;
 const proposePreferenceInferenceInputSchema = z.strictObject({
   preference: preferenceContentSchema.extend({
     value: z.string().trim().min(1).max(300),
@@ -83,13 +86,23 @@ const proposePreferenceInferenceInputSchema = z.strictObject({
   confidence: z.number().min(0).max(1),
   courseId: idSchema.optional(),
 });
+export type ProposePreferenceInferenceInputSchema = z.infer<
+  typeof proposePreferenceInferenceInputSchema
+>;
 const detachLearningEvidenceInputSchema = z.strictObject({
   sessionId: idSchema,
 });
+export type DetachLearningEvidenceInputSchema = z.infer<
+  typeof detachLearningEvidenceInputSchema
+>;
 const learningProgressInputSchema = z.strictObject({
   courseId: idSchema.optional(),
 });
+export type LearningProgressInputSchema = z.infer<
+  typeof learningProgressInputSchema
+>;
 const practiceQuestionsSchema = z.array(practiceQuestionSchema).max(20);
+export type PracticeQuestionsSchema = z.infer<typeof practiceQuestionsSchema>;
 const evidenceSummarySchema = z.strictObject({
   attemptId: idSchema,
   questionId: idSchema.nullable(),
@@ -100,6 +113,7 @@ const evidenceSummarySchema = z.strictObject({
   outcome: z.enum(observationOutcomes),
   confidence: z.number().min(0).max(1).nullable(),
 });
+export type EvidenceSummarySchema = z.infer<typeof evidenceSummarySchema>;
 const conceptProposalSchema = z.strictObject({
   courseId: idSchema,
   concepts: z
@@ -124,12 +138,16 @@ const conceptProposalSchema = z.strictObject({
     )
     .max(100),
 });
+export type ConceptProposalSchema = z.infer<typeof conceptProposalSchema>;
 const courseConceptGraphInputSchema = z.strictObject({
   courseId: idSchema,
   conceptId: idSchema.optional(),
   maxDepth: z.number().int().min(1).max(6).optional(),
   maxNodes: z.number().int().min(1).max(100).optional(),
 });
+export type CourseConceptGraphInputSchema = z.infer<
+  typeof courseConceptGraphInputSchema
+>;
 
 export type CourseConceptNode = {
   id: string;

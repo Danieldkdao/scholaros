@@ -75,27 +75,37 @@ export const publishMemoryChange = (change: MemoryChange) => {
 const boundedPreferenceContentSchema = preferenceContentSchema.extend({
   value: z.string().trim().min(1).max(300),
 });
+export type BoundedPreferenceContentSchema = z.infer<
+  typeof boundedPreferenceContentSchema
+>;
 const explicitPreferenceInputSchema = z.strictObject({
   requestId: requestIdSchema,
   preference: boundedPreferenceContentSchema,
   courseId: idSchema.optional(),
 });
+export type ExplicitPreferenceInputSchema = z.infer<
+  typeof explicitPreferenceInputSchema
+>;
 const memoryListInputSchema = pageInputSchema.extend({
   type: z.enum(memoryTypes).optional(),
 });
+export type MemoryListInputSchema = z.infer<typeof memoryListInputSchema>;
 const memoryCursorSchema = z.strictObject({
   createdAt: instantSchema,
   id: idSchema,
 });
+export type MemoryCursorSchema = z.infer<typeof memoryCursorSchema>;
 const correctMemoryInputSchema = z.strictObject({
   memoryId: idSchema,
   expectedRevision: revisionSchema,
   preference: boundedPreferenceContentSchema,
 });
+export type CorrectMemoryInputSchema = z.infer<typeof correctMemoryInputSchema>;
 const deleteMemoryInputSchema = z.strictObject({
   memoryId: idSchema,
   expectedRevision: revisionSchema,
 });
+export type DeleteMemoryInputSchema = z.infer<typeof deleteMemoryInputSchema>;
 
 type ExplicitPreferenceInput = z.infer<typeof explicitPreferenceInputSchema>;
 

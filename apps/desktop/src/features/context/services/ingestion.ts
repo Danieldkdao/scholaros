@@ -46,6 +46,9 @@ export const ingestSelectedFileInputSchema = z.strictObject({
   sessionId: idSchema.optional(),
   courseId: idSchema.optional(),
 });
+export type IngestSelectedFileInputSchema = z.infer<
+  typeof ingestSelectedFileInputSchema
+>;
 export type IngestSelectedFileInput = z.infer<
   typeof ingestSelectedFileInputSchema
 >;
@@ -54,6 +57,9 @@ export const retryContextIngestionInputSchema = z.strictObject({
   itemId: idSchema,
   requestId: requestIdSchema,
 });
+export type RetryContextIngestionInputSchema = z.infer<
+  typeof retryContextIngestionInputSchema
+>;
 export type RetryContextIngestionInput = z.infer<
   typeof retryContextIngestionInputSchema
 >;
@@ -61,6 +67,9 @@ export type RetryContextIngestionInput = z.infer<
 export const cancelContextIngestionInputSchema = z.strictObject({
   operationId: idSchema,
 });
+export type CancelContextIngestionInputSchema = z.infer<
+  typeof cancelContextIngestionInputSchema
+>;
 export type CancelContextIngestionInput = z.infer<
   typeof cancelContextIngestionInputSchema
 >;
@@ -70,6 +79,9 @@ export const readContextPreviewInputSchema = z.strictObject({
   versionId: idSchema.optional(),
   sessionId: idSchema.optional(),
 });
+export type ReadContextPreviewInputSchema = z.infer<
+  typeof readContextPreviewInputSchema
+>;
 export type ReadContextPreviewInput = z.infer<
   typeof readContextPreviewInputSchema
 >;

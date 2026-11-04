@@ -41,6 +41,7 @@ const policyInputSchema = z.strictObject({
   targetAssignmentId: z.string().min(1).max(300).optional(),
   sourceIds: z.array(z.string().min(1).max(300)).max(50),
 });
+export type PolicyInputSchema = z.infer<typeof policyInputSchema>;
 const candidateSchema = jsonValueSchema.superRefine((candidate, validation) => {
   const bytes = new TextEncoder().encode(JSON.stringify(candidate)).byteLength;
   if (bytes > 512 * 1024)
@@ -49,6 +50,7 @@ const candidateSchema = jsonValueSchema.superRefine((candidate, validation) => {
       message: 'Candidate exceeds the publication budget.',
     });
 });
+export type CandidateSchema = z.infer<typeof candidateSchema>;
 const candidateInputSchema = z.strictObject({
   sessionId: z.string().min(1).max(300),
   turnId: z.string().min(1).max(300),
@@ -56,16 +58,23 @@ const candidateInputSchema = z.strictObject({
   policy: assistancePolicySchema,
   sourceReferences: z.array(sourceReferenceSchema).max(50),
 });
+export type CandidateInputSchema = z.infer<typeof candidateInputSchema>;
 const practiceCandidateProjectionSchema = z.strictObject({
   rubricVersion: z.string().min(1).max(300),
   questions: z.array(practiceQuestionSchema).min(1).max(20),
 });
+export type PracticeCandidateProjectionSchema = z.infer<
+  typeof practiceCandidateProjectionSchema
+>;
 const practiceCandidateInputSchema = z.strictObject({
   courseId: z.string().min(1).max(300),
   sessionId: z.string().min(1).max(300),
   candidate: practiceCandidateProjectionSchema,
   sourceReferences: z.array(sourceReferenceSchema).max(50),
 });
+export type PracticeCandidateInputSchema = z.infer<
+  typeof practiceCandidateInputSchema
+>;
 
 export type PracticeCandidateAssessmentInput = z.infer<
   typeof practiceCandidateInputSchema
@@ -536,6 +545,9 @@ export const isAssistancePolicyCurrent = (
 const priorAssistanceDigestsSchema = z.object({
   candidateDigests: z.array(z.string().regex(/^[a-f0-9]{64}$/)).max(16),
 });
+export type PriorAssistanceDigestsSchema = z.infer<
+  typeof priorAssistanceDigestsSchema
+>;
 const candidateDigest = (candidate: JsonValue) =>
   createHash('sha256').update(JSON.stringify(candidate)).digest('hex');
 const sourceReferenceKey = (reference: SourceReference) =>

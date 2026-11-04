@@ -41,11 +41,13 @@ const operationCountsSchema = z.strictObject({
   'distinct-practice': z.number().int().nonnegative().max(10_000),
   'source-feedback-review': z.number().int().nonnegative().max(10_000),
 });
+export type OperationCountsSchema = z.infer<typeof operationCountsSchema>;
 const assistanceSummarySchema = z.strictObject({
   version: z.literal(1),
   operations: operationCountsSchema,
   candidateDigests: z.array(z.string().regex(/^[a-f0-9]{64}$/)).max(16),
 });
+export type AssistanceSummarySchema = z.infer<typeof assistanceSummarySchema>;
 const emptyOperationCounts = (): z.infer<typeof operationCountsSchema> => ({
   concept: 0,
   requirements: 0,
@@ -224,6 +226,9 @@ const recordAssistanceInputSchema = z.strictObject({
   expectedPolicyRevision: z.number().int().nonnegative().safe(),
   expectedConsentRevision: z.number().int().nonnegative().safe(),
 });
+export type RecordAssistanceInputSchema = z.infer<
+  typeof recordAssistanceInputSchema
+>;
 
 const emptyLedgerTags = (): AssistanceRiskTag[] => [];
 const currentTimestamp = () => new Date().toISOString();
@@ -512,6 +517,9 @@ const publicAssistanceSummarySchema = z.strictObject({
   expectedPolicyRevision: z.number().int().nonnegative().safe(),
   expectedConsentRevision: z.number().int().nonnegative().safe(),
 });
+export type PublicAssistanceSummarySchema = z.infer<
+  typeof publicAssistanceSummarySchema
+>;
 export type AllowedSupportSummary = z.infer<
   typeof publicAssistanceSummarySchema
 >;
@@ -532,6 +540,9 @@ const publicRecordAssistanceInputSchema = z
         message: 'A support operation or risk classification is required.',
       });
   });
+export type PublicRecordAssistanceInputSchema = z.infer<
+  typeof publicRecordAssistanceInputSchema
+>;
 
 export const recordAssistance = (
   context: AuthorizedContext,

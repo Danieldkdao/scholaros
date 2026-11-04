@@ -30,6 +30,7 @@ const previewInputSchema = z.strictObject({
   reference: sourceReferenceSchema,
   text: z.string().min(1).max(50_000),
 });
+export type PreviewInputSchema = z.infer<typeof previewInputSchema>;
 const normalize = (text: string) =>
   text.normalize('NFC').replace(/\s+/g, ' ').trim();
 const containsExactSourceText = (

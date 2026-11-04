@@ -25,6 +25,9 @@ import { getMemoryRevision, MemoryServiceError } from './memory-store';
 const preparePersonalContextInputSchema = z.strictObject({
   courseId: idSchema.nullable().optional(),
 });
+export type PreparePersonalContextInputSchema = z.infer<
+  typeof preparePersonalContextInputSchema
+>;
 
 const toMemoryDTO = (row: typeof MemoryTable.$inferSelect): MemoryDTO => {
   const parsedMemory = memorySchema.safeParse({

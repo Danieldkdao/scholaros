@@ -35,6 +35,9 @@ const deleteCourseMaterialInputSchema = z.strictObject({
   courseId: z.string().trim().min(1).max(200),
   materialId: z.string().trim().min(1).max(200),
 });
+export type DeleteCourseMaterialInputSchema = z.infer<
+  typeof deleteCourseMaterialInputSchema
+>;
 export type DeleteCourseMaterialInput = z.infer<
   typeof deleteCourseMaterialInputSchema
 >;
@@ -44,6 +47,9 @@ const materialCollectionReconciliationContextSchema = z.strictObject({
   connectionId: z.string().trim().min(1).max(200),
   courseId: z.string().trim().min(1).max(200),
 });
+export type MaterialCollectionReconciliationContextSchema = z.infer<
+  typeof materialCollectionReconciliationContextSchema
+>;
 const materialCollectionReconciliationInputSchema = z.strictObject({
   coverage: hostCourseCollectionCoverageEvidenceSchema,
   seenIds: z
@@ -51,6 +57,9 @@ const materialCollectionReconciliationInputSchema = z.strictObject({
     .max(10_000)
     .refine((ids) => new Set(ids).size === ids.length),
 });
+export type MaterialCollectionReconciliationInputSchema = z.infer<
+  typeof materialCollectionReconciliationInputSchema
+>;
 export type MaterialCollectionReconciliationContext = z.infer<
   typeof materialCollectionReconciliationContextSchema
 >;

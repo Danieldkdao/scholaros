@@ -34,6 +34,15 @@ import {
 } from '../../../db/schema';
 import { ContextStorageError, createOriginalStore } from './original-store';
 
+export const contextNoteKinds = ['note', 'preference'] as const;
+export type ContextNoteKind = (typeof contextNoteKinds)[number];
+
+export const contextFileKinds = ['document', 'image'] as const;
+export type ContextFileKind = (typeof contextFileKinds)[number];
+
+export const savedContextKinds = ['explanation', 'activity'] as const;
+export type SavedContextKind = (typeof savedContextKinds)[number];
+
 export type ContextStoreErrorCode =
   | 'cancelled'
   | 'invalid-input'
@@ -60,7 +69,7 @@ const createContextNoteInputSchema = z.strictObject({
   requestId: requestIdSchema,
   title: z.string().trim().min(1).max(160),
   text: z.string().trim().min(1).max(100_000),
-  kind: z.enum(['note', 'preference']),
+  kind: z.enum(contextNoteKinds),
   courseId: idSchema.optional(),
 });
 export type CreateContextNoteInputSchema = z.infer<
@@ -114,6 +123,9 @@ const readContextIngestionItemInputSchema = z.strictObject({
   sessionId: idSchema.optional(),
   courseId: idSchema.optional(),
 });
+export type ReadContextIngestionItemInputSchema = z.infer<
+  typeof readContextIngestionItemInputSchema
+>;
 const readContextIngestionVersionInputSchema = z
   .strictObject({
     itemId: idSchema,
@@ -128,11 +140,14 @@ const readContextIngestionVersionInputSchema = z
         Number(storageKey !== undefined) <=
       1,
   );
+export type ReadContextIngestionVersionInputSchema = z.infer<
+  typeof readContextIngestionVersionInputSchema
+>;
 
 const createUploadedContextItemInputSchema = z.strictObject({
   itemId: idSchema,
   title: z.string().trim().min(1).max(160),
-  kind: z.enum(['document', 'image']),
+  kind: z.enum(contextFileKinds),
   sessionId: idSchema.optional(),
   courseId: idSchema.optional(),
   saveToLibrary: z.boolean(),
@@ -145,7 +160,7 @@ const saveGeneratedContextItemInputSchema = z.strictObject({
   requestId: requestIdSchema,
   title: z.string().trim().min(1).max(160),
   text: z.string().trim().min(1).max(100_000),
-  kind: z.enum(['explanation', 'activity']),
+  kind: z.enum(savedContextKinds),
   sourceId: idSchema,
   courseId: idSchema.nullable().optional(),
   sessionId: idSchema.optional(),
@@ -193,6 +208,7 @@ const cursorSchema = z.strictObject({
   updatedAt: instantSchema,
   id: idSchema,
 });
+export type CursorSchema = z.infer<typeof cursorSchema>;
 
 type ContextItemRow = typeof ContextItemTable.$inferSelect;
 type ContextVersionRow = typeof ContextVersionTable.$inferSelect;
