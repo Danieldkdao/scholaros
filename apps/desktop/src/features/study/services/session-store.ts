@@ -81,6 +81,7 @@ export type StudyTurnAdmissionInput = {
 };
 
 export type StudyTurnAdmission = {
+  draftRevision: number;
   turnId: string;
   generationEpoch: number;
   revision: number;
@@ -1699,6 +1700,7 @@ export const createSessionStore = ({
             turnId: existingTurn.id,
             generationEpoch: existingTurn.generationEpoch,
             revision: existingStudySession.revision,
+            draftRevision: existingStudySession.draftRevision,
             policyRevision: existingTurn.policyRevision,
             contextRevision: existingTurn.contextRevision,
             gradeConsentRevision: revisions.gradeConsentRevision,
@@ -1862,6 +1864,7 @@ export const createSessionStore = ({
           turnId,
           generationEpoch: existingStudySession.generationEpoch,
           revision: updatedStudySession.revision,
+          draftRevision: updatedStudySession.draftRevision,
           policyRevision: revisions.policyRevision,
           contextRevision: revisions.contextRevision,
           gradeConsentRevision: revisions.gradeConsentRevision,
@@ -2772,6 +2775,7 @@ export const createSessionStore = ({
             turnId: turn.id,
             generationEpoch: turn.generationEpoch,
             revision: session.revision,
+            draftRevision: session.draftRevision,
             policyRevision: turn.policyRevision,
             contextRevision: turn.contextRevision,
             gradeConsentRevision: revisions.gradeConsentRevision,
@@ -2930,6 +2934,7 @@ export const createSessionStore = ({
           turnId: updatedTurn.id,
           generationEpoch: updatedTurn.generationEpoch,
           revision: updatedSession.revision,
+          draftRevision: updatedSession.draftRevision,
           policyRevision: updatedTurn.policyRevision,
           contextRevision: updatedTurn.contextRevision,
           gradeConsentRevision: revisions.gradeConsentRevision,

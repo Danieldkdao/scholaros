@@ -731,6 +731,7 @@ export const registerTutorPracticeActions = (
         turnId: admitted.turnId,
         requestId: input.requestId,
         revision: admitted.revision,
+        draftRevision: admitted.draftRevision,
         generationEpoch: admitted.generationEpoch,
         attemptNumber: admitted.turn.attemptNumber,
         contextRevision: admitted.contextRevision,

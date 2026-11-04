@@ -80,6 +80,7 @@ export type BeginStudyTurnRequest =
   | ({ kind: 'retry' } & RetryStudyTurnInput);
 
 export type TurnAdmission = {
+  draftRevision?: number;
   sessionId: string;
   turnId: string;
   requestId: string;
@@ -706,7 +707,13 @@ export const createTutorService = (
       ...parsed.data,
     });
     if (admission.executionRequired) launchTurn(context, admission);
-    return { turnId: admission.turnId, revision: admission.revision };
+    return {
+      turnId: admission.turnId,
+      revision: admission.revision,
+      ...(admission.draftRevision === undefined
+        ? {}
+        : { draftRevision: admission.draftRevision }),
+    };
   };
 
   const retryStudyTurn = async (

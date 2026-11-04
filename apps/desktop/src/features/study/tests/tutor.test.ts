@@ -391,6 +391,39 @@ describe('tutor action registration', () => {
 });
 
 describe('durable tutor turns', () => {
+  it('returns the committed draft revision without waiting for inference and preserves typed configuration failures', async () => {
+    const dependencies = createTutorDependencies(async () => {
+      throw {
+        code: 'feature-unavailable',
+        message: 'private server configuration',
+      };
+    });
+    dependencies.beginStudyTurn = vi.fn(async (_context, input) => ({
+      ...createTurnAdmission(input),
+      draftRevision: 3,
+    }));
+    const service = createTutorService(dependencies, lifecycle);
+    try {
+      await expect(
+        service.sendStudyTurn(authorizedContext(), sendInput),
+      ).resolves.toEqual({ turnId: 'turn-a', revision: 4, draftRevision: 3 });
+      await vi.waitFor(() =>
+        expect(dependencies.settleStudyTurn).toHaveBeenCalledWith(
+          expect.anything(),
+          {
+            sessionId: 'session-a',
+            turnId: 'turn-a',
+            status: 'failed',
+            errorCode: 'feature-unavailable',
+          },
+        ),
+      );
+      expect(dependencies.commitStudyTurn).not.toHaveBeenCalled();
+    } finally {
+      await service.cleanup();
+    }
+  });
+
   it('deduplicates concurrent Sends for one admitted logical turn', async () => {
     let releaseCandidate:
       | ((value: Partial<typeof response>) => void)

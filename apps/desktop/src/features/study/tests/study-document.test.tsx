@@ -1425,6 +1425,126 @@ describe('StudyDocument', () => {
 });
 
 describe('useStudySession account and session fences', () => {
+  it('uses the durable Send acknowledgement when turn events supersede its snapshot read', async () => {
+    let study: ReturnType<typeof useStudySession> | null = null;
+    let releaseSendRead: ((value: SessionSnapshot) => void) | undefined;
+    const getStudySession = vi.fn(async () => snapshot());
+    const currentBridge = bridge(getStudySession);
+    currentBridge.sendStudyTurn = vi.fn(async () => ({
+      turnId: 'turn-1',
+      revision: 2,
+      draftRevision: 2,
+    }));
+    const View = () => {
+      study = useStudySession('student-a', 'session-1');
+      return createElement(
+        'div',
+        null,
+        study.snapshot?.session.title ?? 'Loading',
+      );
+    };
+    const container = document.createElement('div');
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => root?.render(createElement(View)));
+    await act(drain);
+    getStudySession.mockImplementationOnce(
+      () =>
+        new Promise<SessionSnapshot>((resolve) => {
+          releaseSendRead = resolve;
+        }),
+    );
+    let send:
+      | Promise<{ turnId: string; draftRevision: number | null }>
+      | undefined;
+    await act(async () => {
+      send = study!.sendTurn({
+        text: 'How are you doing?',
+        attachmentIds: [],
+        expectedDraftRevision: 1,
+        composerRevision: 0,
+      });
+      await drain();
+    });
+    expect(releaseSendRead).toBeDefined();
+    await expect(send).resolves.toEqual({ turnId: 'turn-1', draftRevision: 2 });
+    await act(async () => {
+      eventListener?.({
+        version: 1,
+        accountId: 'student-a',
+        resource: 'study',
+        targetId: 'session-1',
+        revision: 3,
+      });
+      await drain();
+    });
+    await act(async () => {
+      releaseSendRead!(snapshot());
+      await send;
+    });
+    await expect(send).resolves.toEqual({ turnId: 'turn-1', draftRevision: 2 });
+  });
+
+  it('does not use a late Send acknowledgement to clear another account draft', async () => {
+    const currentBridge = bridge();
+    let releaseSend:
+      | ((value: {
+          turnId: string;
+          revision: number;
+          draftRevision: number;
+        }) => void)
+      | undefined;
+    currentBridge.sendStudyTurn = vi.fn(
+      () =>
+        new Promise<{
+          turnId: string;
+          revision: number;
+          draftRevision: number;
+        }>((resolve) => {
+          releaseSend = resolve;
+        }),
+    );
+    let study: ReturnType<typeof useStudySession> | null = null;
+    const View = ({ accountId }: { accountId: string }) => {
+      study = useStudySession(accountId, 'session-1');
+      return createElement(
+        'div',
+        null,
+        study.snapshot?.session.title ?? 'Loading',
+      );
+    };
+    const container = document.createElement('div');
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () =>
+      root?.render(createElement(View, { accountId: 'student-a' })),
+    );
+    await act(drain);
+    let send:
+      | Promise<{ turnId: string; draftRevision: number | null }>
+      | undefined;
+    await act(async () => {
+      send = study!.sendTurn({
+        text: 'Original account draft',
+        attachmentIds: [],
+        expectedDraftRevision: 1,
+        composerRevision: 0,
+      });
+      await drain();
+    });
+    await act(async () =>
+      root?.render(createElement(View, { accountId: 'student-b' })),
+    );
+    await act(async () => {
+      releaseSend!({ turnId: 'turn-old', revision: 4, draftRevision: 2 });
+      await send;
+    });
+    await expect(send).resolves.toEqual({
+      turnId: 'turn-old',
+      draftRevision: null,
+    });
+  });
+
   it('discards a late session reply after the displayed account and session change', async () => {
     let resolveOld: ((value: SessionSnapshot) => void) | undefined;
     const getStudySession = vi.fn(({ sessionId }: { sessionId: string }) =>

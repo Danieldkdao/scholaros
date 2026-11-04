@@ -477,12 +477,24 @@ export const useStudySession = (
           text: input.text,
           attachmentIds: input.attachmentIds,
         });
-        const refreshedSnapshot = await reload();
-        if (refreshedSnapshot) requestIdsRef.current.delete(requestKey);
-        return {
-          turnId: result.turnId,
-          draftRevision: refreshedSnapshot?.session.draft.revision ?? null,
-        };
+        let refreshedSnapshot: SessionSnapshot | null = null;
+        if (result.draftRevision === undefined) {
+          refreshedSnapshot = await reload();
+        } else if (scopeRef.current === requestedScope) {
+          // Refresh the document independently; a slow read cannot hold Send open.
+          void reload();
+        }
+        // The host acknowledges the draft revision in the same transaction as
+        // admission. Product events may supersede this reload while inference
+        // starts, so a superseded read must not turn an accepted Send into an error.
+        const draftRevision =
+          scopeRef.current === requestedScope
+            ? (result.draftRevision ??
+              refreshedSnapshot?.session.draft.revision ??
+              null)
+            : null;
+        if (draftRevision !== null) requestIdsRef.current.delete(requestKey);
+        return { turnId: result.turnId, draftRevision };
       } catch (error) {
         const code = getErrorCode(error);
         if (scopeRef.current === requestedScope && code === 'offline')

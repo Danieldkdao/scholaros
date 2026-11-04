@@ -283,7 +283,7 @@ export type LearningMethodContracts = {
       text: string;
       attachmentIds: Id[];
     };
-    result: { turnId: Id; revision: Revision };
+    result: { turnId: Id; revision: Revision; draftRevision?: Revision };
   };
   retryStudyTurn: {
     input: { sessionId: Id; turnId: Id; requestId: RequestId };

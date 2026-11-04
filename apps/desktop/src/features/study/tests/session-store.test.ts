@@ -745,6 +745,37 @@ describe('reading and updating history', () => {
 });
 
 describe('durable turn admission', () => {
+  it('acknowledges the exact draft revision durably cleared during Send', async () => {
+    const created = await store.createStudySession(
+      accountContext(),
+      createInput(),
+    );
+    const saved = await store.saveStudyDraft(accountContext(), {
+      sessionId: created.id,
+      text: 'How are you doing?',
+      expectedDraftRevision: 0,
+    });
+    const input = {
+      sessionId: created.id,
+      requestId: randomUUID(),
+      expectedDraftRevision: saved.draftRevision,
+      text: 'How are you doing?',
+      attachmentIds: [] as string[],
+    };
+    const accepted = await store.beginStudyTurn(accountContext(), input);
+    const replayed = await store.beginStudyTurn(accountContext(), input);
+    expect(accepted.draftRevision).toBe(saved.draftRevision + 1);
+    expect(replayed.draftRevision).toBe(accepted.draftRevision);
+    const persisted = await store.getStudySession(accountContext(), {
+      sessionId: created.id,
+    });
+    expect(persisted?.session.draft).toEqual({
+      text: '',
+      revision: accepted.draftRevision,
+    });
+    expect(persisted?.messages).toHaveLength(1);
+  });
+
   it('persists the student message and turn once before inference', async () => {
     const created = await store.createStudySession(
       accountContext(),
