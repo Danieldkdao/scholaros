@@ -31,6 +31,7 @@ export const studyContextInputSchema = z.strictObject({
   policyRevision: z.number().int().nonnegative().safe(),
   gradeConsentRevision: z.number().int().nonnegative().safe(),
 });
+export type StudyContextInputSchema = z.infer<typeof studyContextInputSchema>;
 export type StudyContextInput = z.infer<typeof studyContextInputSchema>;
 
 export type StudySourceReadResult = {

@@ -57,14 +57,17 @@ type StartResponse = {
 const startResponseSchema = z.strictObject({
   operationId: idSchema,
 });
+export type StartResponseSchema = z.infer<typeof startResponseSchema>;
 const audioResponseSchema = z.strictObject({
   acceptedSequence: revisionSchema,
 });
+export type AudioResponseSchema = z.infer<typeof audioResponseSchema>;
 const controlResponseSchema = startResponseSchema;
 const safeErrorResponseSchema = z.strictObject({
   error: z.string().max(300),
   code: safeErrorCodeSchema,
 });
+export type SafeErrorResponseSchema = z.infer<typeof safeErrorResponseSchema>;
 
 type ActiveDictation = {
   operationId: string;

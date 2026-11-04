@@ -26,6 +26,9 @@ export const tutorGenerationInputSchema = z.strictObject({
     })
     .optional(),
 });
+export type TutorGenerationInputSchema = z.infer<
+  typeof tutorGenerationInputSchema
+>;
 export type TutorGenerationInput = z.infer<typeof tutorGenerationInputSchema>;
 
 const tutorCandidatePartSchema = z.discriminatedUnion('kind', [
@@ -35,6 +38,7 @@ const tutorCandidatePartSchema = z.discriminatedUnion('kind', [
     reference: sourceReferenceSchema,
   }),
 ]);
+export type TutorCandidatePartSchema = z.infer<typeof tutorCandidatePartSchema>;
 export type TutorCandidatePart = z.infer<typeof tutorCandidatePartSchema>;
 
 export const learningRequestSchema = z.strictObject({
@@ -55,6 +59,7 @@ export const learningRequestSchema = z.strictObject({
       .optional(),
   }),
 });
+export type LearningRequestSchema = z.infer<typeof learningRequestSchema>;
 export type LearningRequest = z.infer<typeof learningRequestSchema>;
 
 export const learningResponseSchema = z.strictObject({
@@ -70,6 +75,7 @@ export const learningResponseSchema = z.strictObject({
   }),
   configurationRevision: z.string().min(1).max(300),
 });
+export type LearningResponseSchema = z.infer<typeof learningResponseSchema>;
 export type LearningResponse = z.infer<typeof learningResponseSchema>;
 
 export type LearningTransport = {

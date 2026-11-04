@@ -67,11 +67,15 @@ import type {
 const overviewInputSchema = z.strictObject({
   limit: z.number().int().min(1).max(20).optional(),
 });
+export type OverviewInputSchema = z.infer<typeof overviewInputSchema>;
 export type OverviewInput = z.infer<typeof overviewInputSchema>;
 
 const recommendationsInputSchema = z.strictObject({
   limit: z.number().int().min(1).max(5).optional(),
 });
+export type RecommendationsInputSchema = z.infer<
+  typeof recommendationsInputSchema
+>;
 export type RecommendationsInput = z.infer<typeof recommendationsInputSchema>;
 
 const maxSourceRows = 500;

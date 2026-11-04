@@ -24,7 +24,9 @@ export const activityMessageLimits = {
 } as const;
 
 const idSchema = z.string().min(1).max(300);
+export type IdSchema = z.infer<typeof idSchema>;
 const jsonValueSchema = z.unknown();
+export type JsonValueSchema = z.infer<typeof jsonValueSchema>;
 const activityEnvelopeSchema = z.object({
   protocolVersion: z.literal(1),
   runtimeVersion: z.literal('activity-runtime-v1'),
@@ -37,6 +39,7 @@ const activityEnvelopeSchema = z.object({
   sequence: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
   baseStateRevision: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
 });
+export type ActivityEnvelopeSchema = z.infer<typeof activityEnvelopeSchema>;
 
 const activityMessageSchema = z.discriminatedUnion('kind', [
   activityEnvelopeSchema
@@ -71,6 +74,7 @@ const activityMessageSchema = z.discriminatedUnion('kind', [
     })
     .strict(),
 ]);
+export type ActivityMessageSchema = z.infer<typeof activityMessageSchema>;
 
 export type ActivityProtocolMessage = z.infer<typeof activityMessageSchema>;
 

@@ -257,12 +257,16 @@ const timerCommandInputSchema = z.strictObject({
   requestId: requestIdSchema,
   expectedTimerRevision: revisionSchema,
 });
+export type TimerCommandInputSchema = z.infer<typeof timerCommandInputSchema>;
 const extendStudyTimerInputSchema = z.strictObject({
   sessionId: idSchema,
   requestId: requestIdSchema,
   expectedTimerRevision: revisionSchema,
   durationMinutes: z.number().int().min(1).max(240),
 });
+export type ExtendStudyTimerInputSchema = z.infer<
+  typeof extendStudyTimerInputSchema
+>;
 
 export const createStudyTimer = ({
   database = db,

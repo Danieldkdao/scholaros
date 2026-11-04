@@ -35,26 +35,40 @@ const sourceSelectorSchema = z.strictObject({
   versionId: idSchema.nullable(),
   locator: locatorSchema.nullable(),
 });
+export type SourceSelectorSchema = z.infer<typeof sourceSelectorSchema>;
 const sourceReferencesSchema = z.array(sourceSelectorSchema).min(1).max(20);
+export type SourceReferencesSchema = z.infer<typeof sourceReferencesSchema>;
 const retrieveSourceEffectSchema = z.strictObject({
   kind: z.literal('retrieve-source'),
   references: sourceReferencesSchema,
 });
+export type RetrieveSourceEffectSchema = z.infer<
+  typeof retrieveSourceEffectSchema
+>;
 const rememberPreferenceEffectSchema = z.strictObject({
   kind: z.literal('remember-preference'),
   preference: preferenceContentSchema,
   evidence: z.string().min(1).max(500),
 });
+export type RememberPreferenceEffectSchema = z.infer<
+  typeof rememberPreferenceEffectSchema
+>;
 const createActivityEffectSchema = z.strictObject({
   kind: z.literal('create-activity'),
   objective: z.string().min(1).max(1000),
   references: sourceReferencesSchema,
 });
+export type CreateActivityEffectSchema = z.infer<
+  typeof createActivityEffectSchema
+>;
 const offerPracticeEffectSchema = z.strictObject({
   kind: z.literal('offer-practice'),
   objective: z.string().min(1).max(1000),
   references: sourceReferencesSchema,
 });
+export type OfferPracticeEffectSchema = z.infer<
+  typeof offerPracticeEffectSchema
+>;
 
 export const learningEffectSchema = z.discriminatedUnion('kind', [
   retrieveSourceEffectSchema,
@@ -62,6 +76,7 @@ export const learningEffectSchema = z.discriminatedUnion('kind', [
   createActivityEffectSchema,
   offerPracticeEffectSchema,
 ]);
+export type LearningEffectSchema = z.infer<typeof learningEffectSchema>;
 export type LearningEffect = z.infer<typeof learningEffectSchema>;
 type LearningEffectSourceSelector = z.infer<typeof sourceSelectorSchema>;
 
