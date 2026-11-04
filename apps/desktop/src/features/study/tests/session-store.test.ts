@@ -9,8 +9,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   AuthorizedContext,
   AuthorizedRegistrar,
+  ProductPreferences,
   ProductEventV1,
 } from '@scholaros/services/learning/product-contracts';
+import type { SourceReference } from '@scholaros/services/learning/context-contracts';
+import type { MessagePart } from '@scholaros/services/learning/study-contracts';
 
 vi.mock('electron', async () => {
   const { mkdtempSync } = await import('node:fs');
@@ -35,6 +38,7 @@ const {
   ContextVersionTable,
   CourseAssignmentTable,
   CourseTable,
+  GradeEvidenceTable,
   SettingTable,
   StudyMessageTable,
   StudySessionTable,
@@ -173,6 +177,221 @@ const createInput = (overrides: Record<string, unknown> = {}) => ({
   title: 'Cell division review',
   ...overrides,
 });
+
+const createMigratedAppendFixture = async (gradeConsent?: {
+  enabled: boolean;
+  revision: number;
+}) => {
+  const fixtureDirectory = mkdtempSync(
+    join(tmpdir(), 'scholaros-study-effects-'),
+  );
+  const databasePath = join(fixtureDirectory, 'study.sqlite');
+  const client = new Database(databasePath);
+  const database = drizzle({ client, schema });
+  const fixtureContext = accountContext('effects-student');
+  const fixtureCourseId = 'effects-course';
+  const sourceReference: SourceReference = {
+    sourceKind: 'assignment',
+    sourceId: 'effects-assignment',
+    versionId: null,
+    courseId: fixtureCourseId,
+    locator: null,
+    title: 'Cell study guide',
+    provenance: 'connected-source',
+    observedAt: now,
+    state: 'current',
+  };
+  const events: ProductEventV1[] = [];
+  const visibleMessageCountsAtPublish: number[] = [];
+
+  try {
+    migrate(database, {
+      migrationsFolder: join(process.cwd(), 'src', 'db', 'migrations'),
+    });
+    database
+      .insert(CourseTable)
+      .values({
+        id: fixtureCourseId,
+        userId: fixtureContext.userId,
+        connectionId: null,
+        sourceKey: `manual:${fixtureCourseId}`,
+        sourceName: 'Manual',
+        sourceHost: '',
+        externalId: null,
+        name: 'Effects course',
+        code: null,
+        term: null,
+        instructor: null,
+        description: null,
+        url: '',
+        firstSeenAt: now,
+        lastSeenAt: now,
+      })
+      .run();
+    database
+      .insert(CourseAssignmentTable)
+      .values({
+        id: sourceReference.sourceId,
+        userId: fixtureContext.userId,
+        courseId: fixtureCourseId,
+        sourceKey: `manual:${sourceReference.sourceId}`,
+        title: sourceReference.title,
+        body: null,
+        dateValue: null,
+        dateText: null,
+        url: '',
+        lastSeenAt: now,
+      })
+      .run();
+    if (gradeConsent) {
+      const productPreferences: ProductPreferences = {
+        grades: { ...gradeConsent, notes: '' },
+        notifications: {
+          enabled: false,
+          categories: {
+            'connection-attention': false,
+            'sync-completed': false,
+            'sync-failed': false,
+            'context-completed': false,
+            'context-failed': false,
+            'tutor-ready': false,
+            'activity-ready': false,
+            'timer-expired': false,
+            'deadline-reminder': false,
+          },
+          quietHours: {
+            enabled: false,
+            startMinute: 1320,
+            endMinute: 480,
+            timeZone: 'UTC',
+          },
+          revision: 0,
+        },
+        learning: {
+          educationLevel: null,
+          appearance: 'system',
+          accessibility: { reduceMotion: false, highContrast: false },
+          revision: 0,
+        },
+      };
+      database
+        .insert(SettingTable)
+        .values({
+          userId: fixtureContext.userId,
+          productPreferences,
+          updatedAt: now,
+        })
+        .run();
+      database
+        .insert(GradeEvidenceTable)
+        .values({
+          id: 'effects-grade-evidence',
+          userId: fixtureContext.userId,
+          connectionId: 'effects-connection',
+          courseId: fixtureCourseId,
+          assignmentIdentity: 'effects-assignment',
+          sourceVersion: 'effects-grade-v1',
+          observedAt: now,
+          consentRevision: gradeConsent.revision,
+          completed: 'unknown',
+          grade: null,
+          remainingOpportunity: 'unknown',
+          conflicts: [],
+          sourceReferences: [],
+          revokedAt: null,
+        })
+        .run();
+    }
+
+    const fixtureStore = createSessionStore({
+      database,
+      now: () => Date.parse(now),
+      publish: (event) => {
+        events.push(event);
+        const observer = new Database(databasePath, { readonly: true });
+        try {
+          const result = observer
+            .prepare(
+              'SELECT COUNT(*) AS count FROM study_messages WHERE user_id = ?',
+            )
+            .get(fixtureContext.userId) as { count: number };
+          visibleMessageCountsAtPublish.push(result.count);
+        } finally {
+          observer.close();
+        }
+      },
+    });
+    const created = await fixtureStore.createStudySession(
+      fixtureContext,
+      createInput({
+        requestId: randomUUID(),
+        courseId: fixtureCourseId,
+        durationMinutes: null,
+      }),
+    );
+    const turn = await fixtureStore.beginStudyTurn(fixtureContext, {
+      sessionId: created.id,
+      requestId: randomUUID(),
+      expectedDraftRevision: 0,
+      text: 'Explain mitosis.',
+      attachmentIds: [],
+    });
+    const commitTutorTurn = (
+      options: {
+        parts?: MessagePart[];
+        sourceReferences?: SourceReference[];
+        gradeDerived?: boolean;
+        gradeConsentRevision?: number | null;
+      } = {},
+    ) =>
+      fixtureStore.commitStudyTurn(fixtureContext, {
+        turnId: turn.turnId,
+        generationEpoch: turn.generationEpoch,
+        policyRevision: turn.policyRevision,
+        contextRevision: turn.contextRevision,
+        parts: options.parts ?? [
+          { kind: 'text', text: 'Mitosis creates two daughter cells.' },
+        ],
+        sourceReferences: options.sourceReferences ?? [],
+        gradeDerived: options.gradeDerived ?? false,
+        gradeConsentRevision: options.gradeConsentRevision ?? null,
+      });
+
+    return {
+      context: fixtureContext,
+      database,
+      events,
+      sessionId: created.id,
+      sourceReference,
+      store: fixtureStore,
+      turn,
+      visibleMessageCountsAtPublish,
+      commitTutorTurn,
+      close: () => {
+        if (client.open) client.close();
+        rmSync(fixtureDirectory, { recursive: true, force: true });
+      },
+    };
+  } catch (error) {
+    if (client.open) client.close();
+    rmSync(fixtureDirectory, { recursive: true, force: true });
+    throw error;
+  }
+};
+
+const withMigratedAppendFixture = async (
+  run: (
+    fixture: Awaited<ReturnType<typeof createMigratedAppendFixture>>,
+  ) => Promise<void>,
+  gradeConsent?: { enabled: boolean; revision: number },
+) => {
+  const fixture = await createMigratedAppendFixture(gradeConsent);
+  try {
+    await run(fixture);
+  } finally {
+    fixture.close();
+  }
+};
 
 const resetStudyData = () => {
   publishedEvents.length = 0;
@@ -1137,5 +1356,332 @@ describe('durable turn admission', () => {
       if (firstClient.open) firstClient.close();
       rmSync(fixtureDirectory, { recursive: true, force: true });
     }
+  });
+});
+
+describe('durable tutor effect append', () => {
+  it('appends validated parts only after the tutor turn is committed', async () => {
+    await withMigratedAppendFixture(async (fixture) => {
+      const input = {
+        sessionId: fixture.sessionId,
+        turnId: fixture.turn.turnId,
+        generationEpoch: fixture.turn.generationEpoch,
+        idempotencyKey: 'effects-turn:0:first-effect',
+        parts: [
+          { kind: 'text', text: 'Review the phases in order.' },
+          { kind: 'citation', reference: fixture.sourceReference },
+        ] satisfies MessagePart[],
+      };
+
+      await expect(
+        fixture.store.appendStudyTurnParts(fixture.context, input),
+      ).rejects.toMatchObject({ code: 'revision-conflict' });
+      expect(await fixture.commitTutorTurn()).toMatchObject({
+        status: 'complete',
+      });
+      const beforeAppend = await fixture.store.getStudySession(
+        fixture.context,
+        { sessionId: fixture.sessionId },
+      );
+      if (!beforeAppend)
+        throw new Error('The committed session was not found.');
+
+      const result = await fixture.store.appendStudyTurnParts(
+        fixture.context,
+        input,
+      );
+      const snapshot = await fixture.store.getStudySession(fixture.context, {
+        sessionId: fixture.sessionId,
+      });
+
+      expect(result).toEqual({
+        committed: true,
+        revision: beforeAppend.session.revision + 1,
+      });
+      expect(
+        snapshot?.messages.map(({ sequence, role }) => [sequence, role]),
+      ).toEqual([
+        [0, 'student'],
+        [1, 'tutor'],
+        [2, 'tutor'],
+      ]);
+      expect(snapshot?.messages.at(-1)).toMatchObject({
+        turnId: fixture.turn.turnId,
+        status: 'accepted',
+        parts: input.parts,
+        gradeDerived: false,
+        gradeConsentRevision: null,
+      });
+      expect(snapshot?.sourceReferences).toEqual([fixture.sourceReference]);
+      expect(fixture.visibleMessageCountsAtPublish.at(-1)).toBe(3);
+      expect(fixture.events.at(-1)).toMatchObject({
+        targetId: fixture.sessionId,
+        revision: result.revision,
+      });
+    });
+  });
+
+  it('replays identical effects once and preserves later effect order', async () => {
+    await withMigratedAppendFixture(async (fixture) => {
+      await fixture.commitTutorTurn();
+      const input = {
+        sessionId: fixture.sessionId,
+        turnId: fixture.turn.turnId,
+        generationEpoch: fixture.turn.generationEpoch,
+        idempotencyKey: 'effects-turn:0:replay',
+        parts: [
+          { kind: 'citation', reference: fixture.sourceReference },
+        ] satisfies MessagePart[],
+      };
+
+      const first = await fixture.store.appendStudyTurnParts(
+        fixture.context,
+        input,
+      );
+      const eventCountAfterFirstAppend = fixture.events.length;
+      const replayed = await fixture.store.appendStudyTurnParts(
+        fixture.context,
+        input,
+      );
+      const nextEffect = await fixture.store.appendStudyTurnParts(
+        fixture.context,
+        {
+          ...input,
+          idempotencyKey: 'effects-turn:1:replay-order',
+          parts: [
+            { kind: 'text', text: 'Then review cytokinesis.' },
+          ] satisfies MessagePart[],
+        },
+      );
+      const snapshot = await fixture.store.getStudySession(fixture.context, {
+        sessionId: fixture.sessionId,
+      });
+
+      expect(replayed).toEqual(first);
+      expect(nextEffect.revision).toBe(first.revision + 1);
+      expect(
+        snapshot?.messages.filter(
+          (message) =>
+            message.turnId === fixture.turn.turnId && message.role === 'tutor',
+        ),
+      ).toMatchObject([
+        {
+          parts: [
+            { kind: 'text', text: 'Mitosis creates two daughter cells.' },
+          ],
+        },
+        { parts: input.parts },
+        { parts: [{ kind: 'text', text: 'Then review cytokinesis.' }] },
+      ]);
+      expect(snapshot?.sourceReferences).toEqual([fixture.sourceReference]);
+      expect(fixture.events).toHaveLength(eventCountAfterFirstAppend + 1);
+    });
+  });
+
+  it('rejects reuse of an idempotency key with different parts', async () => {
+    await withMigratedAppendFixture(async (fixture) => {
+      await fixture.commitTutorTurn();
+      const input = {
+        sessionId: fixture.sessionId,
+        turnId: fixture.turn.turnId,
+        generationEpoch: fixture.turn.generationEpoch,
+        idempotencyKey: 'effects-turn:0:payload-conflict',
+        parts: [
+          { kind: 'text', text: 'Review mitosis.' },
+        ] satisfies MessagePart[],
+      };
+
+      await fixture.store.appendStudyTurnParts(fixture.context, input);
+      await expect(
+        fixture.store.appendStudyTurnParts(fixture.context, {
+          ...input,
+          parts: [{ kind: 'text', text: 'Review meiosis.' }],
+        }),
+      ).rejects.toMatchObject({ code: 'revision-conflict' });
+      const snapshot = await fixture.store.getStudySession(fixture.context, {
+        sessionId: fixture.sessionId,
+      });
+
+      expect(
+        snapshot?.messages.filter((message) => message.role === 'tutor'),
+      ).toHaveLength(2);
+      expect(snapshot?.messages.at(-1)?.parts).toEqual(input.parts);
+    });
+  });
+
+  it('rejects malformed message parts without writing an effect', async () => {
+    await withMigratedAppendFixture(async (fixture) => {
+      await fixture.commitTutorTurn();
+
+      await expect(
+        fixture.store.appendStudyTurnParts(fixture.context, {
+          sessionId: fixture.sessionId,
+          turnId: fixture.turn.turnId,
+          generationEpoch: fixture.turn.generationEpoch,
+          idempotencyKey: 'effects-turn:0:invalid-parts',
+          parts: [{ kind: 'unknown-part' }] as unknown as MessagePart[],
+        }),
+      ).rejects.toMatchObject({ code: 'invalid-input' });
+      expect(
+        fixture.database.select().from(StudyMessageTable).all(),
+      ).toHaveLength(2);
+    });
+  });
+
+  it('rejects stale epochs, another account, and deleted sessions', async () => {
+    await withMigratedAppendFixture(async (fixture) => {
+      await fixture.commitTutorTurn();
+      const input = {
+        sessionId: fixture.sessionId,
+        turnId: fixture.turn.turnId,
+        generationEpoch: fixture.turn.generationEpoch,
+        idempotencyKey: 'effects-turn:0:stale-scope',
+        parts: [
+          { kind: 'text', text: 'Review cell division.' },
+        ] satisfies MessagePart[],
+      };
+
+      await expect(
+        fixture.store.appendStudyTurnParts(fixture.context, {
+          ...input,
+          generationEpoch: input.generationEpoch + 1,
+        }),
+      ).rejects.toMatchObject({ code: 'session-changed' });
+      await expect(
+        fixture.store.appendStudyTurnParts(
+          accountContext('effects-other-student'),
+          input,
+        ),
+      ).rejects.toMatchObject({ code: 'not-found' });
+      await expect(
+        fixture.store.appendStudyTurnParts(
+          { ...fixture.context, isCurrent: () => false },
+          input,
+        ),
+      ).rejects.toMatchObject({ code: 'session-changed' });
+      const snapshot = await fixture.store.getStudySession(fixture.context, {
+        sessionId: fixture.sessionId,
+      });
+      if (!snapshot) throw new Error('The committed session was not found.');
+      await fixture.store.deleteStudySession(fixture.context, {
+        sessionId: fixture.sessionId,
+        expectedRevision: snapshot.session.revision,
+        requestId: randomUUID(),
+      });
+
+      await expect(
+        fixture.store.appendStudyTurnParts(fixture.context, input),
+      ).rejects.toMatchObject({ code: 'session-changed' });
+      expect(
+        await fixture.store.getStudySession(fixture.context, {
+          sessionId: fixture.sessionId,
+        }),
+      ).toBeNull();
+      expect(fixture.database.select().from(StudyMessageTable).all()).toEqual(
+        [],
+      );
+    });
+  });
+
+  it('rejects appending to a cancelled turn', async () => {
+    await withMigratedAppendFixture(async (fixture) => {
+      await fixture.store.settleStudyTurn(fixture.context, {
+        turnId: fixture.turn.turnId,
+        status: 'cancelled',
+      });
+
+      await expect(
+        fixture.store.appendStudyTurnParts(fixture.context, {
+          sessionId: fixture.sessionId,
+          turnId: fixture.turn.turnId,
+          generationEpoch: fixture.turn.generationEpoch,
+          idempotencyKey: 'effects-turn:0:cancelled',
+          parts: [{ kind: 'text', text: 'This must not be saved.' }],
+        }),
+      ).rejects.toMatchObject({ code: 'cancelled' });
+      expect(
+        fixture.database
+          .select()
+          .from(StudyMessageTable)
+          .all()
+          .filter((message) => message.role === 'tutor'),
+      ).toEqual([]);
+    });
+  });
+
+  it('validates grade citations against current evidence and consent on replay', async () => {
+    await withMigratedAppendFixture(
+      async (fixture) => {
+        await fixture.commitTutorTurn();
+        const gradeReference: SourceReference = {
+          sourceKind: 'grade-evidence',
+          sourceId: 'effects-grade-evidence',
+          versionId: null,
+          courseId: 'effects-course',
+          locator: null,
+          title: 'Recent biology grade',
+          provenance: 'connected-source',
+          observedAt: now,
+          state: 'current',
+        };
+        const input = {
+          sessionId: fixture.sessionId,
+          turnId: fixture.turn.turnId,
+          generationEpoch: fixture.turn.generationEpoch,
+          idempotencyKey: 'effects-turn:0:grade-citation',
+          parts: [
+            { kind: 'citation', reference: gradeReference },
+          ] satisfies MessagePart[],
+        };
+
+        await expect(
+          fixture.store.appendStudyTurnParts(fixture.context, {
+            ...input,
+            idempotencyKey: 'effects-turn:0:missing-grade',
+            parts: [
+              {
+                kind: 'citation',
+                reference: {
+                  ...gradeReference,
+                  sourceId: 'missing-grade-evidence',
+                },
+              },
+            ],
+          }),
+        ).rejects.toMatchObject({ code: 'permission-revoked' });
+
+        const appended = await fixture.store.appendStudyTurnParts(
+          fixture.context,
+          input,
+        );
+        const gradeMessage = fixture.database
+          .select()
+          .from(StudyMessageTable)
+          .all()
+          .find(
+            (message) =>
+              message.turnId === fixture.turn.turnId &&
+              message.role === 'tutor' &&
+              JSON.stringify(message.parts) === JSON.stringify(input.parts),
+          );
+        expect(appended.committed).toBe(true);
+        expect(gradeMessage).toMatchObject({
+          gradeDerived: true,
+          gradeConsentRevision: 4,
+          parts: input.parts,
+        });
+        fixture.database.$client
+          .prepare('UPDATE grade_evidence SET revoked_at = ? WHERE id = ?')
+          .run(now, gradeReference.sourceId);
+
+        await expect(
+          fixture.store.appendStudyTurnParts(fixture.context, input),
+        ).rejects.toMatchObject({ code: 'permission-revoked' });
+        expect(
+          fixture.database.select().from(StudyMessageTable).all(),
+        ).toHaveLength(3);
+      },
+      { enabled: true, revision: 4 },
+    );
   });
 });

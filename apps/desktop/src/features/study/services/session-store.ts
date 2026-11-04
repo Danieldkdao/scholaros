@@ -102,6 +102,19 @@ export type CommitStudyTurnInput = {
   gradeConsentRevision: number | null;
 };
 
+export type AppendStudyTurnPartsInput = {
+  sessionId: string;
+  turnId: string;
+  generationEpoch: number;
+  idempotencyKey: string;
+  parts: MessagePart[];
+};
+
+export type AppendStudyTurnPartsResult = {
+  committed: boolean;
+  revision: number;
+};
+
 export type CreateSessionStoreOptions = {
   database?: typeof db;
   now?: () => number;
@@ -176,6 +189,14 @@ const commitTurnInput = z.strictObject({
   gradeDerived: z.boolean(),
   gradeConsentRevision: z.number().int().nonnegative().safe().nullable(),
 });
+const appendTurnPartsInput = z.strictObject({
+  sessionId: z.string().min(1).max(300),
+  turnId: z.string().min(1).max(300),
+  generationEpoch: z.number().int().nonnegative().safe(),
+  idempotencyKey: z.string().min(1).max(1000),
+  parts: z.unknown(),
+});
+const appendTurnPartsSchema = z.array(studyMessagePartSchema).min(1).max(100);
 const settleTurnInput = z.strictObject({
   turnId: z.string().min(1).max(300),
   status: z.enum(['failed', 'cancelled']),
@@ -699,7 +720,7 @@ const validateSessionSourceReference = (
   context: AuthorizedContext,
   session: StudySessionSelectData,
   reference: z.infer<typeof sourceReferenceSchema>,
-  revisions: StudyRevisions,
+  revisions: Pick<StudyRevisions, 'gradeConsentRevision' | 'gradesEnabled'>,
 ) => {
   if (reference.state !== 'current')
     throw new StudySessionError(
@@ -2125,6 +2146,235 @@ export const createSessionStore = ({
     }
   };
 
+  const appendStudyTurnParts = async (
+    context: AuthorizedContext,
+    rawInput: AppendStudyTurnPartsInput,
+  ): Promise<AppendStudyTurnPartsResult> => {
+    const parsedInput = appendTurnPartsInput.safeParse(rawInput);
+    if (!parsedInput.success)
+      throw new StudySessionError('invalid-input', 'Invalid tutor effect.');
+    assertCurrent(context);
+
+    try {
+      const result = database.transaction((transaction) => {
+        assertCurrent(context);
+        const turn = transaction
+          .select()
+          .from(StudyTurnTable)
+          .where(
+            and(
+              eq(StudyTurnTable.userId, context.userId),
+              eq(StudyTurnTable.sessionId, parsedInput.data.sessionId),
+              eq(StudyTurnTable.id, parsedInput.data.turnId),
+            ),
+          )
+          .get();
+        if (!turn)
+          throw new StudySessionError('not-found', 'Study turn not found.');
+
+        const session = readSession(
+          transaction,
+          context,
+          parsedInput.data.sessionId,
+        );
+        if (!session)
+          throw new StudySessionError(
+            'session-changed',
+            'The study session changed.',
+          );
+        if (
+          session.generationEpoch !== parsedInput.data.generationEpoch ||
+          turn.generationEpoch !== parsedInput.data.generationEpoch
+        )
+          throw new StudySessionError(
+            'session-changed',
+            'The study session changed.',
+          );
+        if (turn.status === 'cancelled')
+          throw new StudySessionError(
+            'cancelled',
+            'The study turn was cancelled.',
+          );
+        if (turn.status !== 'complete')
+          throw new StudySessionError(
+            'revision-conflict',
+            'The tutor response has not been committed.',
+          );
+
+        const tutorMessage = transaction
+          .select({ id: StudyMessageTable.id })
+          .from(StudyMessageTable)
+          .where(
+            and(
+              eq(StudyMessageTable.userId, context.userId),
+              eq(StudyMessageTable.sessionId, session.id),
+              eq(StudyMessageTable.turnId, turn.id),
+              eq(StudyMessageTable.role, 'tutor'),
+              eq(StudyMessageTable.status, 'accepted'),
+            ),
+          )
+          .get();
+        if (!tutorMessage)
+          throw new StudySessionError(
+            'revision-conflict',
+            'The tutor response has not been committed.',
+          );
+
+        const parts = appendTurnPartsSchema.safeParse(parsedInput.data.parts);
+        if (!parts.success)
+          throw new StudySessionError('invalid-input', 'Invalid tutor effect.');
+        const citations = parts.data.flatMap((part) =>
+          part.kind === 'citation' ? [part.reference] : [],
+        );
+        if (citations.length > 20)
+          throw new StudySessionError('invalid-input', 'Invalid tutor effect.');
+
+        const messageId = stableId(
+          JSON.stringify([
+            'study-turn-effect',
+            context.userId,
+            session.id,
+            turn.id,
+            parsedInput.data.idempotencyKey,
+          ]),
+        );
+        const existingMessage = transaction
+          .select()
+          .from(StudyMessageTable)
+          .where(eq(StudyMessageTable.id, messageId))
+          .get();
+        if (
+          existingMessage &&
+          (existingMessage.userId !== context.userId ||
+            existingMessage.sessionId !== session.id ||
+            existingMessage.turnId !== turn.id ||
+            existingMessage.role !== 'tutor' ||
+            existingMessage.status !== 'accepted' ||
+            JSON.stringify(existingMessage.parts) !==
+              JSON.stringify(parts.data))
+        )
+          throw new StudySessionError(
+            'revision-conflict',
+            'This tutor effect key was already used for different content.',
+          );
+
+        const grades = readActiveGradeSettings(transaction, context.userId);
+        const revisions = {
+          gradesEnabled: grades.enabled,
+          gradeConsentRevision: grades.revision,
+        };
+        for (const reference of citations)
+          validateSessionSourceReference(
+            transaction,
+            context,
+            session,
+            reference,
+            revisions,
+          );
+        const gradeDerived = citations.some(
+          (reference) => reference.sourceKind === 'grade-evidence',
+        );
+        const gradeConsentRevision = gradeDerived
+          ? revisions.gradeConsentRevision
+          : null;
+        if (
+          existingMessage &&
+          (existingMessage.gradeDerived !== gradeDerived ||
+            existingMessage.gradeConsentRevision !== gradeConsentRevision)
+        )
+          throw new StudySessionError(
+            'revision-conflict',
+            'This tutor effect key was already used for different content.',
+          );
+        if (existingMessage)
+          return {
+            messageId,
+            sessionId: session.id,
+            revision: session.revision,
+            changed: false,
+          };
+
+        assertCurrent(context);
+        const nowIso = toIso(now());
+        transaction
+          .insert(StudyMessageTable)
+          .values({
+            id: messageId,
+            userId: context.userId,
+            sessionId: session.id,
+            sequence: messageSequence(transaction, context.userId, session.id),
+            turnId: turn.id,
+            role: 'tutor',
+            status: 'accepted',
+            parts: parts.data,
+            gradeDerived,
+            gradeConsentRevision,
+            createdAt: nowIso,
+          })
+          .run();
+        for (const reference of citations)
+          transaction
+            .insert(StudySourceReferenceTable)
+            .values({
+              id: idGenerator(),
+              userId: context.userId,
+              sessionId: session.id,
+              messageId,
+              sourceKind: reference.sourceKind,
+              sourceId: reference.sourceId,
+              versionId: reference.versionId,
+              locator: reference.locator,
+              state: reference.state,
+            })
+            .run();
+        const updatedSession = transaction
+          .update(StudySessionTable)
+          .set({
+            revision: session.revision + 1,
+            updatedAt: nowIso,
+          })
+          .where(
+            and(
+              eq(StudySessionTable.userId, context.userId),
+              eq(StudySessionTable.id, session.id),
+              eq(StudySessionTable.revision, session.revision),
+              eq(
+                StudySessionTable.generationEpoch,
+                parsedInput.data.generationEpoch,
+              ),
+              isNull(StudySessionTable.deletedAt),
+            ),
+          )
+          .returning({ revision: StudySessionTable.revision })
+          .get();
+        if (!updatedSession)
+          throw new StudySessionError(
+            'session-changed',
+            'The study session changed.',
+          );
+        assertCurrent(context);
+        return {
+          messageId,
+          sessionId: session.id,
+          revision: updatedSession.revision,
+          changed: true,
+        };
+      });
+      assertCurrent(context);
+      if (result.changed)
+        publishSessionChange(
+          publish,
+          context,
+          result.sessionId,
+          result.revision,
+          result.messageId,
+        );
+      return { committed: true, revision: result.revision };
+    } catch (error) {
+      throw asStudyError(error, 'The tutor effect could not be saved.');
+    }
+  };
+
   const settleStudyTurn = async (
     context: AuthorizedContext,
     rawInput: z.infer<typeof settleTurnInput>,
@@ -3095,6 +3345,7 @@ export const createSessionStore = ({
     beginStudyTurn,
     updateStudyTurnStatus,
     commitStudyTurn,
+    appendStudyTurnParts,
     settleStudyTurn,
     reconcileOrphanedStudyTurns,
     retryStudyTurn,
@@ -3114,6 +3365,7 @@ export const deleteStudySession = defaultStore.deleteStudySession;
 export const beginStudyTurn = defaultStore.beginStudyTurn;
 export const updateStudyTurnStatus = defaultStore.updateStudyTurnStatus;
 export const commitStudyTurn = defaultStore.commitStudyTurn;
+export const appendStudyTurnParts = defaultStore.appendStudyTurnParts;
 export const settleStudyTurn = defaultStore.settleStudyTurn;
 export const reconcileOrphanedStudyTurns =
   defaultStore.reconcileOrphanedStudyTurns;
