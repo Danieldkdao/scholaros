@@ -3,13 +3,11 @@ import type {
   LearningLifecycle,
 } from '@scholaros/services/learning/product-contracts';
 import type { LearningActionRegistrar } from './contracts';
-
 import {
   learningRequestSchema,
   learningResponseSchema,
 } from '../../../../../packages/services/src/ai/learning-dispatch';
 import type { TutorPracticeDependencies } from './tutor-practice-adapter';
-
 import { LearningClientError } from '../../features/study/services/learning-client';
 
 const requestLearning: TutorPracticeDependencies['requestLearning'] = async (
@@ -71,7 +69,12 @@ export type LearningActionModule = (
 export type LearningLifecycleRuntime = LearningLifecycle & {
   cancelOperations: (key?: string) => void;
   cancelOperationsAndWait: () => Promise<void>;
-  invalidate: () => Promise<void>;
+  invalidate: (excludedOperationId?: string) => Promise<void>;
+  withOperationsQuiesced: <TResult>(
+    excludedOperationId: string,
+    stopExternal: () => Promise<void>,
+    action: () => Promise<TResult>,
+  ) => Promise<TResult>;
   trackOperation: <TResult>(
     operationId: string,
     operation: () => Promise<TResult>,
@@ -89,6 +92,7 @@ export const createLearningLifecycle = (): LearningLifecycleRuntime => {
   let controller = new AbortController();
   let invalidating: Promise<void> | null = null;
   let cancellationCount = 0;
+  let quiescing = false;
   const operations = new Map<
     string,
     Map<string, RegisteredLearningOperation>
@@ -114,9 +118,11 @@ export const createLearningLifecycle = (): LearningLifecycleRuntime => {
     }
   };
 
-  const waitForOperations = async () => {
+  const waitForOperations = async (excludedOperationId?: string) => {
     while (true) {
-      const requests = [...pendingOperations.values()];
+      const requests = [...pendingOperations]
+        .filter(([operationId]) => operationId !== excludedOperationId)
+        .map(([, operation]) => operation);
       const registered = [...operations.values()].flatMap((scopedOperations) =>
         [...scopedOperations.values()].map((operation) => operation.settled),
       );
@@ -153,7 +159,7 @@ export const createLearningLifecycle = (): LearningLifecycleRuntime => {
     }
   };
 
-  const invalidate = () => {
+  const invalidate = (excludedOperationId?: string) => {
     if (invalidating) return invalidating;
 
     epoch += 1;
@@ -175,22 +181,23 @@ export const createLearningLifecycle = (): LearningLifecycleRuntime => {
       }
     });
     teardownCallbacks.clear();
-    void Promise.all([waitForOperations(), Promise.allSettled(teardowns)]).then(
-      ([, results]) => {
-        const failures = results.flatMap((result) =>
-          result.status === 'rejected' ? [result.reason] : [],
+    void Promise.all([
+      waitForOperations(excludedOperationId),
+      Promise.allSettled(teardowns),
+    ]).then(([, results]) => {
+      const failures = results.flatMap((result) =>
+        result.status === 'rejected' ? [result.reason] : [],
+      );
+      if (invalidating === currentInvalidation) invalidating = null;
+      if (failures.length > 0)
+        rejectInvalidation(
+          new AggregateError(failures, 'Learning teardown failed.'),
         );
-        if (invalidating === currentInvalidation) invalidating = null;
-        if (failures.length > 0)
-          rejectInvalidation(
-            new AggregateError(failures, 'Learning teardown failed.'),
-          );
-        else {
-          controller = new AbortController();
-          resolveInvalidation();
-        }
-      },
-    );
+      else {
+        controller = new AbortController();
+        resolveInvalidation();
+      }
+    });
     return currentInvalidation;
   };
 
@@ -207,7 +214,7 @@ export const createLearningLifecycle = (): LearningLifecycleRuntime => {
     registerOperation: (key, operationId, operation) => {
       if (!key.trim() || !operationId.trim())
         throw new Error('Learning operations need a scope and identifier.');
-      if (invalidating || controller.signal.aborted)
+      if (invalidating || quiescing || controller.signal.aborted)
         throw new Error('Learning work is being cancelled.');
       const scopedOperations = operations.get(key) ?? new Map();
       if (scopedOperations.has(operationId))
@@ -231,10 +238,36 @@ export const createLearningLifecycle = (): LearningLifecycleRuntime => {
     cancelOperations,
     cancelOperationsAndWait,
     invalidate,
+    withOperationsQuiesced: async (
+      excludedOperationId,
+      stopExternal,
+      action,
+    ) => {
+      if (quiescing || invalidating || controller.signal.aborted)
+        throw new Error('Learning work is being cancelled.');
+      quiescing = true;
+      cancellationCount += 1;
+      try {
+        cancelOperations();
+        const results = await Promise.allSettled([
+          stopExternal(),
+          waitForOperations(excludedOperationId),
+        ]);
+        const failures = results.flatMap((result) =>
+          result.status === 'rejected' ? [result.reason] : [],
+        );
+        if (failures.length > 0)
+          throw new AggregateError(failures, 'Learning quiescence failed.');
+        return await action();
+      } finally {
+        cancellationCount -= 1;
+        quiescing = false;
+      }
+    },
     trackOperation: (operationId, operation) => {
       if (!operationId.trim())
         throw new Error('Learning operations need an identifier.');
-      if (invalidating || controller.signal.aborted)
+      if (invalidating || quiescing || controller.signal.aborted)
         throw new Error('Learning work is being cancelled.');
       if (pendingOperations.has(operationId))
         throw new Error('This learning request is already active.');

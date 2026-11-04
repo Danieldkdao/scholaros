@@ -1,8 +1,24 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
+import Database from 'better-sqlite3';
+import { drizzle } from 'drizzle-orm/better-sqlite3';
+import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
+import { rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import * as databaseSchema from '../src/db/schema';
 import { academicTasks } from '../src/features/onboarding/services/academic-tasks';
 import {
   createLearningLifecycle,
   registerLearningActions,
+  loadLearningActionModules,
   type LearningActionModule,
 } from '../src/services/academic/learning-actions';
 import {
@@ -113,29 +129,42 @@ const mocks = vi.hoisted(() => ({
   offlineWorkspace: null as { verifiedAt: string } | null,
   offlineReadIndex: 0,
   databaseWrite: vi.fn(),
+  realDb: null as ReturnType<typeof drizzle<typeof databaseSchema>> | null,
+  directory: '',
+  closeWorkspace: vi.fn<() => Promise<void>>(async () => undefined),
+  waitForWorkspaceStops: vi.fn(async () => undefined),
+  publish: vi.fn(),
   state: { settings: { consent: true, localSetupCompletedAt: null } },
 }));
-vi.mock('electron', () => ({
-  net: { fetch: mocks.authFetch },
-  app: {
-    on: (
-      name: string,
-      listener: (event: { preventDefault: () => void }) => void,
-    ) => mocks.appListeners.set(name, listener),
-    quit: mocks.appQuit,
-  },
-  powerMonitor: {
-    on: (name: string, listener: () => void) =>
-      mocks.powerListeners.set(name, listener),
-  },
-  BrowserWindow: { fromWebContents: () => ({}), getAllWindows: () => [] },
-  ipcMain: {
-    handle: (
-      channel: string,
-      callback: (event: unknown, input: unknown) => Promise<unknown>,
-    ) => mocks.handlers.set(channel, callback),
-  },
-}));
+vi.mock('electron', async () => {
+  const { mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  mocks.directory = mkdtempSync(join(tmpdir(), 'scholaros-ipc-cleanup-'));
+  return {
+    net: { fetch: mocks.authFetch },
+    app: {
+      getPath: () => mocks.directory,
+      getAppPath: () => process.cwd(),
+      on: (
+        name: string,
+        listener: (event: { preventDefault: () => void }) => void,
+      ) => mocks.appListeners.set(name, listener),
+      quit: mocks.appQuit,
+    },
+    powerMonitor: {
+      on: (name: string, listener: () => void) =>
+        mocks.powerListeners.set(name, listener),
+    },
+    BrowserWindow: { fromWebContents: () => ({}), getAllWindows: () => [] },
+    ipcMain: {
+      handle: (
+        channel: string,
+        callback: (event: unknown, input: unknown) => Promise<unknown>,
+      ) => mocks.handlers.set(channel, callback),
+    },
+  };
+});
 vi.mock('../src/lib/auth/client', () => ({
   authClient: {
     signOut: mocks.clientSignOut,
@@ -156,8 +185,8 @@ vi.mock('../src/lib/offline-account', () => ({
   readOfflineAccountGrant: mocks.readGrant,
   saveOfflineAccountGrant: mocks.saveGrant,
 }));
-vi.mock('../src/db', () => ({
-  db: {
+vi.mock('../src/db', () => {
+  const fakeDb = {
     select: () => {
       const index = mocks.offlineReadIndex++;
       return {
@@ -171,8 +200,13 @@ vi.mock('../src/db', () => ({
     },
     insert: mocks.databaseWrite,
     update: mocks.databaseWrite,
-  },
-}));
+  };
+  return {
+    get db() {
+      return mocks.realDb ?? fakeDb;
+    },
+  };
+});
 vi.mock('../src/features/onboarding/services/store', () => ({
   getOnboardingState: mocks.getOnboardingState,
   removeAcademicConnection: vi.fn(() => mocks.state),
@@ -217,13 +251,13 @@ vi.mock('../src/features/onboarding/services/browser-discovery', () => ({
   findBrowsers: vi.fn(),
 }));
 vi.mock('../src/features/onboarding/services/browser-workspace', () => ({
-  closeWorkspace: vi.fn(async () => undefined),
+  closeWorkspace: mocks.closeWorkspace,
   stageWorkspaceReplacement: mocks.stageReplacement,
   commitWorkspaceReplacement: mocks.commitReplacement,
   cancelWorkspaceReplacement: mocks.cancelReplacement,
   createWorkspace: vi.fn(),
   openAcademicPage: vi.fn(),
-  waitForWorkspaceStops: vi.fn(),
+  waitForWorkspaceStops: mocks.waitForWorkspaceStops,
   getWorkspace: mocks.workspace,
 }));
 vi.mock('../src/features/onboarding/services/connections', () => ({
@@ -350,9 +384,358 @@ const registerTestAcademicActions = async (
       mocks.handlers.set(`scholar:${method}`, async (_event, input) =>
         action(input),
       ),
-    publish: () => undefined,
+    publish: mocks.publish,
     learningModules,
   });
+
+describe('real account-local cleanup composition', () => {
+  let sqlite: Database.Database;
+  let readEpoch = () => -1;
+
+  beforeEach(async () => {
+    sqlite = new Database(':memory:');
+    sqlite.pragma('foreign_keys = ON');
+    mocks.realDb = drizzle({ client: sqlite, schema: databaseSchema });
+    migrate(mocks.realDb, {
+      migrationsFolder: join(process.cwd(), 'src/db/migrations'),
+    });
+    const timestamp = new Date().toISOString();
+    for (const suffix of ['a', 'b'])
+      mocks.realDb
+        .insert(databaseSchema.CourseTable)
+        .values({
+          id: `cleanup-course-${suffix}`,
+          userId: `student-${suffix}`,
+          connectionId: null,
+          sourceKey: `manual:cleanup-${suffix}`,
+          sourceName: 'Manual',
+          sourceHost: '',
+          name: 'Fixture physics',
+          url: '',
+          firstSeenAt: timestamp,
+          lastSeenAt: timestamp,
+        })
+        .run();
+    mocks.state = readyState();
+    mocks.getCurrentUser.mockResolvedValue({ id: 'student-a' });
+    await registerTestAcademicActions([
+      ...(await loadLearningActionModules()),
+      (registrar) => {
+        readEpoch = () => registrar.lifecycle.epoch;
+      },
+    ]);
+    await invoke('getCurrentUser');
+    mocks.publish.mockClear();
+  });
+
+  afterEach(async () => {
+    await registerTestAcademicActions();
+    await invoke('signOut');
+    mocks.realDb = null;
+    sqlite.close();
+  });
+
+  it('holds account admission until actual tutor and replacement work settle without waiting on its own delete invoke', async () => {
+    expect(mocks.handlers.has('scholar:deleteLocalAcademicData')).toBe(true);
+    let finishFetch!: (response: Response) => void;
+    mocks.authFetch.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishFetch = resolve;
+        }),
+    );
+    const session = (await invoke('createStudySession', {
+      requestId: randomUUID(),
+      courseId: 'cleanup-course-a',
+      activity: 'understand-topic',
+      targetAssignmentId: null,
+      contextItemIds: [],
+      durationMinutes: null,
+      title: 'Pending fixture',
+    })) as { id: string };
+    await invoke('sendStudyTurn', {
+      sessionId: session.id,
+      requestId: randomUUID(),
+      expectedDraftRevision: 0,
+      text: 'Explain waves conceptually.',
+      attachmentIds: [],
+    });
+    await vi.waitFor(() => expect(finishFetch).toBeTypeOf('function'));
+    let finishReplacement!: () => void;
+    let replacementIsCurrent!: () => boolean;
+    mocks.stageReplacement.mockImplementationOnce(
+      async (_userId, input, isCurrent) => {
+        replacementIsCurrent = isCurrent;
+        await new Promise<void>((resolve) => {
+          finishReplacement = resolve;
+        });
+        return {
+          operationId: input.requestId,
+          state: 'cancelled',
+          browserId: input.browserId,
+          errorCode: 'cancelled',
+          revision: 1,
+        };
+      },
+    );
+    const replacement = invoke('stageWorkspaceReplacement', {
+      requestId: randomUUID(),
+      browserId: 'fixture-browser',
+    }).catch((error) => error);
+    await vi.waitFor(() => expect(finishReplacement).toBeTypeOf('function'));
+    let settled = false;
+    const deletion = invoke('deleteLocalAcademicData', {
+      requestId: randomUUID(),
+      scope: 'account-local',
+    }).then(() => {
+      settled = true;
+    });
+    try {
+      await vi.waitFor(() =>
+        expect(mocks.authFetch.mock.calls.at(-1)![1].signal.aborted).toBe(true),
+      );
+      expect(replacementIsCurrent()).toBe(false);
+      await expect(
+        invoke('createContextNote', {
+          requestId: randomUUID(),
+          title: 'Late note',
+          text: 'Must not be admitted.',
+          kind: 'note',
+          courseId: 'cleanup-course-a',
+        }),
+      ).rejects.toMatchObject({ code: 'busy' });
+      await expect(
+        invoke('releaseActivityRun', { requestId: randomUUID() }),
+      ).resolves.toBeUndefined();
+      expect(
+        sqlite
+          .prepare('SELECT COUNT(*) AS count FROM courses WHERE user_id = ?')
+          .get('student-a'),
+      ).toEqual({ count: 1 });
+      expect(settled).toBe(false);
+      finishReplacement();
+      await expect(replacement).resolves.toBeInstanceOf(Error);
+      expect(settled).toBe(false);
+    } finally {
+      finishReplacement();
+      finishFetch(Response.json({}));
+      await deletion;
+    }
+    expect(settled).toBe(true);
+    expect(sqlite.prepare('SELECT user_id FROM courses').all()).toEqual([
+      { user_id: 'student-b' },
+    ]);
+    expect(
+      sqlite
+        .prepare(
+          'SELECT COUNT(*) AS count FROM study_messages WHERE user_id = ?',
+        )
+        .get('student-a'),
+    ).toEqual({ count: 0 });
+  });
+
+  it('rejects a newly detected account replacement before the pending deletion can commit', async () => {
+    let finishClose!: () => void;
+    mocks.closeWorkspace.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishClose = resolve;
+        }),
+    );
+    const deletion = invoke('deleteLocalAcademicData', {
+      requestId: randomUUID(),
+      scope: 'account-local',
+    }).catch((error) => error);
+    await vi.waitFor(() => expect(finishClose).toBeTypeOf('function'));
+    mocks.getCurrentUser.mockResolvedValue({ id: 'student-b' });
+    const replacement = invoke('getCurrentUser');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    finishClose();
+    expect(await deletion).toBeInstanceOf(Error);
+    await expect(replacement).resolves.toMatchObject({ id: 'student-b' });
+    expect(
+      sqlite.prepare('SELECT user_id FROM courses ORDER BY user_id').all(),
+    ).toEqual([{ user_id: 'student-a' }, { user_id: 'student-b' }]);
+    expect(
+      mocks.publish.mock.calls.some(
+        ([channel, value]) =>
+          channel === 'scholar:productEvent' && value.resource === 'device',
+      ),
+    ).toBe(false);
+  });
+
+  it('rolls back a failed SQLite cleanup without invalidation and permits a real retry', async () => {
+    const epoch = readEpoch();
+    sqlite.exec(
+      "CREATE TEMP TRIGGER fail_fixture_cleanup BEFORE DELETE ON courses WHEN OLD.user_id = 'student-a' BEGIN SELECT RAISE(ABORT, 'fixture storage failure'); END;",
+    );
+    await expect(
+      invoke('deleteLocalAcademicData', {
+        requestId: randomUUID(),
+        scope: 'account-local',
+      }),
+    ).rejects.toMatchObject({ code: 'storage-failed' });
+    expect(readEpoch()).toBe(epoch);
+    expect(
+      sqlite.prepare('SELECT user_id FROM courses ORDER BY user_id').all(),
+    ).toEqual([{ user_id: 'student-a' }, { user_id: 'student-b' }]);
+    expect(
+      mocks.publish.mock.calls.some(
+        ([channel, value]) =>
+          channel === 'scholar:productEvent' && value.resource === 'device',
+      ),
+    ).toBe(false);
+    sqlite.exec('DROP TRIGGER fail_fixture_cleanup;');
+    await expect(
+      invoke('deleteLocalAcademicData', {
+        requestId: randomUUID(),
+        scope: 'account-local',
+      }),
+    ).resolves.toBeUndefined();
+    expect(readEpoch()).toBe(epoch + 1);
+  });
+
+  it('rejects caller-selected cleanup accounts and offline deletion before touching stores', async () => {
+    mocks.closeWorkspace.mockClear();
+    await expect(
+      invoke('deleteLocalAcademicData', {
+        requestId: randomUUID(),
+        scope: 'account-local',
+        userId: 'student-b',
+      }),
+    ).rejects.toMatchObject({ code: 'invalid-input' });
+    mocks.getCurrentUser.mockResolvedValue({
+      id: 'student-a',
+      authMode: 'offline-local',
+    });
+    await expect(
+      invoke('deleteLocalAcademicData', {
+        requestId: randomUUID(),
+        scope: 'account-local',
+      }),
+    ).rejects.toThrow('Reconnect');
+    expect(mocks.closeWorkspace).not.toHaveBeenCalled();
+    expect(
+      sqlite.prepare('SELECT user_id FROM courses ORDER BY user_id').all(),
+    ).toHaveLength(2);
+  });
+
+  it('routes typed notification commands to the actual registered leaf and rejects cross-account authority', async () => {
+    await expect(
+      invoke('claimDueNotifications', {
+        operation: 'set-permission',
+        userId: 'student-a',
+        permission: 'granted',
+      }),
+    ).resolves.toBeUndefined();
+    await expect(
+      invoke('claimDueNotifications', {
+        operation: 'get-permission',
+        userId: 'student-a',
+      }),
+    ).resolves.toBe('granted');
+    await expect(
+      invoke('claimDueNotifications', {
+        operation: 'set-focus',
+        userId: 'student-b',
+        isFocused: true,
+      }),
+    ).rejects.toMatchObject({ code: 'session-changed' });
+    await expect(
+      invoke('claimDueNotifications', {
+        operation: 'set-focus',
+        userId: 'student-a',
+        isFocused: true,
+        path: '/untrusted',
+      }),
+    ).rejects.toMatchObject({ code: 'invalid-input' });
+  });
+
+  it('fences an action still authenticating when local cleanup removes its account data', async () => {
+    let finishAuthentication!: (value: unknown) => void;
+    mocks.getCurrentUser.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishAuthentication = resolve;
+        }),
+    );
+    const lateAction = invoke('createContextNote', {
+      requestId: randomUUID(),
+      title: 'Late personal note',
+      text: 'Must not resurrect deleted data.',
+      kind: 'note',
+    }).catch((error) => error);
+    await vi.waitFor(() => expect(finishAuthentication).toBeTypeOf('function'));
+    await invoke('deleteLocalAcademicData', {
+      requestId: randomUUID(),
+      scope: 'account-local',
+    });
+    finishAuthentication({ id: 'student-a' });
+    expect(await lateAction).toBeInstanceOf(Error);
+    expect(
+      sqlite
+        .prepare(
+          'SELECT COUNT(*) AS count FROM context_items WHERE user_id = ?',
+        )
+        .get('student-a'),
+    ).toEqual({ count: 0 });
+  });
+
+  it('deletes actual SQLite and original data for only the authenticated account and then invalidates', async () => {
+    expect(mocks.handlers.has('scholar:deleteLocalAcademicData')).toBe(true);
+    const { createOriginalStore } =
+      await import('../src/features/context/services/original-store');
+    const originals = createOriginalStore();
+    const removed = await originals.write(
+      'student-a',
+      Buffer.from('fixture A'),
+    );
+    const retained = await originals.write(
+      'student-b',
+      Buffer.from('fixture B'),
+    );
+    await invoke('createContextNote', {
+      requestId: randomUUID(),
+      title: 'Fixture note',
+      text: 'Test-owned course note.',
+      kind: 'note',
+      courseId: 'cleanup-course-a',
+    });
+    mocks.publish.mockClear();
+    await expect(
+      invoke('deleteLocalAcademicData', {
+        requestId: randomUUID(),
+        scope: 'account-local',
+      }),
+    ).resolves.toBeUndefined();
+    expect(sqlite.prepare('SELECT user_id FROM courses').all()).toEqual([
+      { user_id: 'student-b' },
+    ]);
+    expect(
+      sqlite
+        .prepare(
+          'SELECT COUNT(*) AS count FROM context_items WHERE user_id = ?',
+        )
+        .get('student-a'),
+    ).toEqual({ count: 0 });
+    expect(await originals.has('student-a', removed.storageKey)).toBe(false);
+    expect(await originals.read('student-b', retained.storageKey)).toEqual(
+      Buffer.from('fixture B'),
+    );
+    expect(mocks.closeWorkspace).toHaveBeenCalled();
+    expect(mocks.waitForWorkspaceStops).toHaveBeenCalled();
+    expect(mocks.publish).toHaveBeenCalledWith('scholar:coursesChange', {
+      accountId: 'student-a',
+      courseId: null,
+    });
+    expect(mocks.publish).toHaveBeenCalledWith(
+      'scholar:productEvent',
+      expect.objectContaining({ accountId: 'student-a', resource: 'device' }),
+    );
+  });
+});
+
+afterAll(() => rmSync(mocks.directory, { recursive: true, force: true }));
 
 beforeEach(async () => {
   vi.clearAllMocks();

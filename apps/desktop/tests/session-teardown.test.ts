@@ -497,6 +497,51 @@ describe('session teardown', () => {
     expect(second.signal.aborted).toBe(false);
   });
 
+  it('keeps admission closed until all work settles even if external quiescence fails', async () => {
+    const lifecycle = createLearningLifecycle();
+    const epoch = lifecycle.epoch;
+    let finishRequest!: () => void;
+    const pending = lifecycle.trackOperation(
+      'active-request',
+      () =>
+        new Promise<void>((resolve) => {
+          finishRequest = resolve;
+        }),
+    );
+    await Promise.resolve();
+    let settled = false;
+    const deletion = lifecycle
+      .trackOperation('delete-request', () =>
+        lifecycle.withOperationsQuiesced(
+          'delete-request',
+          async () => {
+            throw new Error('Browser did not close.');
+          },
+          async () => 'deleted',
+        ),
+      )
+      .catch((error) => {
+        settled = true;
+        throw error;
+      });
+    void deletion.catch(() => undefined);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(settled).toBe(false);
+      expect(() =>
+        lifecycle.trackOperation('new-request', async () => undefined),
+      ).toThrow('cancelled');
+    } finally {
+      finishRequest();
+      await pending;
+      await expect(deletion).rejects.toThrow();
+    }
+    expect(lifecycle.epoch).toBe(epoch);
+    await expect(
+      lifecycle.trackOperation('recovered-request', async () => 'ready'),
+    ).resolves.toBe('ready');
+  });
+
   it('cleans up registered feature actions in reverse order', async () => {
     const calls: string[] = [];
     const registrar = {

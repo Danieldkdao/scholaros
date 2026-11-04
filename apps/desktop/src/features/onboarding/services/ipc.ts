@@ -34,6 +34,13 @@ import {
   type LearningActionModule,
 } from '../../../services/academic/learning-actions';
 import { ArtifactStoreError } from '../../study/services/artifact-store';
+import { createOriginalStore } from '../../context/services/original-store';
+import {
+  createLocalDataCleanup,
+  LocalDataCleanupError,
+} from '../../../services/academic/local-data-cleanup';
+import type { ActionCleanup } from '@scholaros/services/learning/product-contracts';
+import { productEventResources } from '@scholaros/services/learning/product-contracts';
 import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
 import { authClient } from '../../../lib/auth/client';
@@ -154,6 +161,8 @@ let manualCourseRefresh: {
   completion: Promise<CoursesSnapshot>;
 } | null = null;
 let boundAccountId: string | null = null;
+let accountAccessRevision = 0;
+let cleanupAdmissionRevision = 0;
 let boundAuthMode: AuthMode | null = null;
 let boundCookie: string | null = null;
 let boundOnboardingComplete = false;
@@ -161,18 +170,41 @@ let learningActionRegistrar: LearningActionRegistrar | null = null;
 let learningActionModules: readonly LearningActionModule[] = [];
 let learningActionRebind: Promise<void> = Promise.resolve();
 let learningRequestSequence = 0;
+let learningActionsCleanup: ActionCleanup | null = null;
+const accountCleanupGates = new Map<
+  string,
+  { operationId: string; completion: Promise<void> }
+>();
+const accountRequests = new Map<
+  string,
+  { userId: string; controller: AbortController }
+>();
+const pendingPreviews = new Map<string, Promise<void>>();
+
+const assertAccountAdmission = (userId: string) => {
+  if (accountCleanupGates.has(userId))
+    throw Object.assign(
+      new Error('Local data is being removed; try again shortly.'),
+      { code: 'busy' },
+    );
+};
 
 const registerLearningActionModules = async () => {
   if (learningActionRegistrar)
-    await registerLearningActions(
+    learningActionsCleanup = await registerLearningActions(
       learningActionRegistrar,
       learningActionModules,
     );
 };
 
-const rebindLearningActionModules = () => {
+const rebindLearningActionModules = async (excludedOperationId?: string) => {
+  await Promise.all(
+    [...accountCleanupGates.values()]
+      .filter((gate) => gate.operationId !== excludedOperationId)
+      .map((gate) => gate.completion),
+  );
   const rebinding = learningActionRebind.then(async () => {
-    await learningLifecycle.invalidate();
+    await learningLifecycle.invalidate(excludedOperationId);
     await registerLearningActionModules();
   });
   learningActionRebind = rebinding.catch(() => undefined);
@@ -198,11 +230,19 @@ const watchRuntime = createWatchRuntime({
 // protections, bounds and persistence rules covers both.
 const backgroundSync = createBackgroundSyncController<CourseRefreshResult>({
   runDiscovery: async (userId, isCurrent, signal) => {
+    assertAccountAdmission(userId);
     if (!isCurrent()) throw new Error('Your session changed; sign in again.');
-    const user = await getCurrentUser(isOfflineDeviceReady);
-    if (!isCurrent() || user?.id !== userId)
-      throw new Error('Please sign in again to resume background sync.');
-    return startCourseRefresh(userId, isCurrent, signal);
+    return learningLifecycle.trackOperation(
+      `background-${++learningRequestSequence}`,
+      async () => {
+        const user = await getCurrentUser(isOfflineDeviceReady);
+        const accountIsCurrent = () =>
+          !accountCleanupGates.has(userId) && isCurrent();
+        if (signal.aborted || !accountIsCurrent() || user?.id !== userId)
+          throw new Error('Please sign in again to resume background sync.');
+        return startCourseRefresh(userId, accountIsCurrent, signal);
+      },
+    );
   },
   syncFailure: (refreshed) =>
     courseRefreshFailureMessage({
@@ -230,6 +270,8 @@ const prepareState = (
   launchAtLogin?: LaunchAtLoginPreference,
   isCurrent: () => boolean = () => true,
 ) => {
+  if (!isCurrent()) throw new Error('Your session changed; sign in again.');
+  assertAccountAdmission(state.accountId);
   const settled = settleLocalSetup(state, {
     accountCompleted: boundOnboardingComplete,
   });
@@ -366,6 +408,7 @@ const bindAccount = async (
   const accessChanged =
     accountChanged || boundAuthMode !== authMode || boundCookie !== cookie;
   if (accessChanged) {
+    accountAccessRevision += 1;
     await rebindLearningActionModules();
     if (boundAccountId && accountChanged) {
       resolutionEpoch += 1;
@@ -478,14 +521,24 @@ export const registerAcademicActions = async (service: {
         );
       const cookie = authClient.getCookie();
       const operationId = String(++learningRequestSequence);
+      const admissionRevision = cleanupAdmissionRevision;
+      const authenticationAccessRevision = accountAccessRevision;
       return runSessionAction(sessionGuard, async (sessionIsCurrent) => {
         const authIsCurrent = () =>
           sessionIsCurrent() && isAccountSessionCurrent(cookie);
         const user = await getCurrentUser(isOfflineDeviceReady);
-        if (!authIsCurrent())
+        if (
+          !authIsCurrent() ||
+          cleanupAdmissionRevision !== admissionRevision ||
+          accountAccessRevision !== authenticationAccessRevision
+        )
           throw new Error('Your session changed; sign in again.');
         if (!user) throw new Error('Please sign in to ScholarOS.');
+        assertAccountAdmission(user.id);
         await bindAccount(user.id, user.authMode ?? 'online', cookie);
+        if (!authIsCurrent())
+          throw new Error('Your session changed; sign in again.');
+        assertAccountAdmission(user.id);
         boundOnboardingComplete = user.hasCompletedOnboarding === true;
         if (
           user.authMode === 'offline-local' &&
@@ -498,30 +551,58 @@ export const registerAcademicActions = async (service: {
         )
           throw new Error('Reconnect to use this feature.');
         const epoch = learningLifecycle.epoch;
-        const signal = learningLifecycle.signal;
+        const accessRevision = accountAccessRevision;
+        const requestController = new AbortController();
+        const signal = AbortSignal.any([
+          learningLifecycle.signal,
+          requestController.signal,
+        ]);
         const accountIsCurrent = () =>
           authIsCurrent() &&
+          !signal.aborted &&
           learningLifecycle.isCurrent(epoch) &&
-          boundAccountId === user.id;
-        return learningLifecycle.trackOperation(operationId, async () => {
-          // Authentication may dispose and re-register a module during binding.
-          const currentAction = registeredActions.get(method);
-          if (!currentAction)
-            throw new Error('The academic action is unavailable.');
-          const result = await currentAction(
-            {
-              userId: user.id,
-              operationId,
-              epoch,
-              signal,
-              isCurrent: accountIsCurrent,
-            },
-            input,
-          );
-          if (!accountIsCurrent())
-            throw new Error('Your session changed; sign in again.');
-          return result;
+          accountAccessRevision === accessRevision &&
+          boundAccountId === user.id &&
+          (!accountCleanupGates.has(user.id) ||
+            accountCleanupGates.get(user.id)?.operationId === operationId);
+        accountRequests.set(operationId, {
+          userId: user.id,
+          controller: requestController,
         });
+        try {
+          return await learningLifecycle.trackOperation(
+            operationId,
+            async () => {
+              // Authentication may dispose and re-register a module during binding.
+              const currentAction = registeredActions.get(method);
+              if (!currentAction)
+                throw new Error('The academic action is unavailable.');
+              const result = await currentAction(
+                {
+                  userId: user.id,
+                  operationId,
+                  epoch,
+                  signal,
+                  isCurrent: accountIsCurrent,
+                },
+                input,
+              );
+              // Successful deletion deliberately retires this request's learning epoch.
+              const current =
+                method === 'deleteLocalAcademicData'
+                  ? authIsCurrent() &&
+                    boundAccountId === user.id &&
+                    accountAccessRevision === accessRevision &&
+                    learningLifecycle.epoch === epoch + 1
+                  : accountIsCurrent();
+              if (!current)
+                throw new Error('Your session changed; sign in again.');
+              return result;
+            },
+          );
+        } finally {
+          accountRequests.delete(operationId);
+        }
       });
     };
     service.register(method, invoke);
@@ -530,16 +611,108 @@ export const registerAcademicActions = async (service: {
     handle: (method, action) =>
       handle(method, (context, input) => action(context, input as never)),
     handleInternal: (method, action) =>
-      handle(method, (context, input) => {
-        const parsed = internalLearningInputSchemas[method].safeParse(input);
-        if (!parsed.success) throw new ArtifactStoreError('invalid-input');
-        return action(context, parsed.data);
-      }),
+      handle(
+        method,
+        (context, input) => {
+          const parsed = internalLearningInputSchemas[method].safeParse(input);
+          if (!parsed.success) throw new ArtifactStoreError('invalid-input');
+          return action(context, parsed.data);
+        },
+        // Private token-authenticated release must unwind old runs without rebinding.
+        { requiresUser: method !== 'releaseActivityRun' },
+      ),
     publish: (event) => publish('scholar:productEvent', event),
     lifecycle: learningLifecycle,
   };
   learningActionRegistrar = learningRegistrar;
   learningActionModules = service.learningModules ?? [];
+  const localDataCleanup = createLocalDataCleanup({
+    database: db,
+    originalStore: createOriginalStore(),
+    userDataPath: app.getPath('userData'),
+    withAccountOperationsQuiesced: async (context, action) => {
+      assertAccountAdmission(context.userId);
+      cleanupAdmissionRevision += 1;
+      let releaseGate!: () => void;
+      const completion = new Promise<void>((resolve) => {
+        releaseGate = resolve;
+      });
+      accountCleanupGates.set(context.userId, {
+        operationId: context.operationId,
+        completion,
+      });
+      for (const [operationId, request] of accountRequests)
+        if (
+          request.userId === context.userId &&
+          operationId !== context.operationId
+        )
+          request.controller.abort();
+      let modulesDisposed = false;
+      let rebound = false;
+      try {
+        return await learningLifecycle.withOperationsQuiesced(
+          context.operationId,
+          async () => {
+            resolutionEpoch += 1;
+            connectionApprovals.reset();
+            backgroundSync.stop();
+            academicTasks.cancel(context.userId);
+            const stops = await Promise.allSettled([
+              watchRuntime.stop(),
+              cancelPreview(context.userId),
+              connectRuntime.cancel(context.userId),
+              closeWorkspace(),
+              pendingPreviews.get(context.userId),
+            ]);
+            await waitForWorkspaceStops();
+            if (stops.some((result) => result.status === 'rejected'))
+              throw new LocalDataCleanupError('storage-failed');
+            connectRuntime.reset();
+          },
+          async () => {
+            if (context.signal.aborted || !context.isCurrent())
+              throw new LocalDataCleanupError('session-changed');
+            if (!learningActionsCleanup)
+              throw new LocalDataCleanupError('storage-failed');
+            await learningActionsCleanup();
+            modulesDisposed = true;
+            const result = await action();
+            if (context.signal.aborted || !context.isCurrent())
+              throw new LocalDataCleanupError('session-changed');
+            await clearOfflineAccountGrant();
+            if (context.signal.aborted || !context.isCurrent())
+              throw new LocalDataCleanupError('session-changed');
+            await rebindLearningActionModules(context.operationId);
+            rebound = true;
+            publish('scholar:coursesChange', {
+              accountId: context.userId,
+              courseId: null,
+            });
+            for (const resource of productEventResources)
+              publish('scholar:productEvent', {
+                version: 1,
+                accountId: context.userId,
+                revision: learningLifecycle.epoch,
+                resource,
+                targetId: null,
+              });
+            return result;
+          },
+        );
+      } finally {
+        try {
+          if (modulesDisposed && !rebound && !learningLifecycle.signal.aborted)
+            await registerLearningActionModules();
+        } finally {
+          accountCleanupGates.delete(context.userId);
+          releaseGate();
+        }
+      }
+    },
+  });
+  handle('deleteLocalAcademicData', async (context, input) => {
+    await localDataCleanup.deleteLocalAcademicData(context, input);
+  });
   if (!broadcastingPreview) {
     academicTasks.subscribe((accountId) =>
       publish('scholar:coursesChange', { accountId, courseId: null }),
@@ -996,14 +1169,25 @@ export const registerAcademicActions = async (service: {
       releaseBackgroundSync();
       void releaseWatch?.().catch(() => undefined);
     };
+    let settlePreview!: () => void;
+    const completion = new Promise<void>((resolve) => {
+      settlePreview = resolve;
+    });
+    pendingPreviews.set(userId, completion);
+    const finishPreview = () => {
+      release();
+      if (pendingPreviews.get(userId) === completion)
+        pendingPreviews.delete(userId);
+      settlePreview();
+    };
     try {
       releaseWatch = await watchRuntime.suspend();
       await cancelBrowserWork();
       if (!isCurrent()) throw new Error('Your session changed; sign in again.');
       // Starting acknowledges immediately; cleanup releases the browser later.
-      await startPreview(userId, prompt, release);
+      await startPreview(userId, prompt, finishPreview);
     } catch (cause) {
-      release();
+      finishPreview();
       await releaseWatch?.().catch(() => undefined);
       throw cause;
     }
@@ -1014,6 +1198,7 @@ export const registerAcademicActions = async (service: {
       const accountId = idSchema.parse(input);
       if (!boundAccountId || accountId !== boundAccountId)
         throw new Error('Your session changed; sign in again.');
+      assertAccountAdmission(boundAccountId);
       return getPreview(boundAccountId);
     },
     {
