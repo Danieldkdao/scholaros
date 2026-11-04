@@ -85,6 +85,34 @@ export const formatSettingsSaveGroup = (group: SettingsSaveGroup) => {
   }
 };
 
+export const normalizeWorkspaceReplacementErrorCode = (
+  code: SafeErrorCode | null,
+): WorkspaceReplacementErrorCode | null => {
+  switch (code) {
+    case 'provider-failed':
+    case 'revision-conflict':
+    case 'session-changed':
+      return code;
+    case null:
+    case 'invalid-input':
+    case 'not-found':
+    case 'scope-denied':
+    case 'permission-revoked':
+    case 'busy':
+    case 'cancelled':
+    case 'offline':
+    case 'needs-sign-in':
+    case 'rate-limited':
+    case 'capability-changed':
+    case 'feature-unavailable':
+    case 'unsupported':
+    case 'unreadable':
+    case 'limit-exceeded':
+    case 'storage-failed':
+      return null;
+  }
+};
+
 export const formatWorkspaceReplacementError = (
   code: WorkspaceReplacementErrorCode,
 ) => {

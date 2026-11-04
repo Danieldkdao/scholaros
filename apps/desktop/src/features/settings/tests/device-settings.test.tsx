@@ -5,6 +5,7 @@ import { expect, it, vi } from 'vitest';
 import type { OnboardingState } from '../../onboarding/types';
 import { DeviceSettings } from '../components/device-settings';
 import type { DeviceReplacementActions } from '../components/device-settings';
+import { normalizeWorkspaceReplacementErrorCode } from '../lib/formatters';
 
 vi.mock('@tanstack/react-router', () => ({
   Link: ({ to, children, ...props }: Record<string, unknown>) =>
@@ -397,4 +398,12 @@ it('refreshes device settings when cancellation reports an already committed rep
   );
 
   await act(async () => root.unmount());
+});
+
+it('normalizes broader bridge errors before the settings UI handles them', () => {
+  expect(normalizeWorkspaceReplacementErrorCode('provider-failed')).toBe(
+    'provider-failed',
+  );
+  expect(normalizeWorkspaceReplacementErrorCode('storage-failed')).toBeNull();
+  expect(normalizeWorkspaceReplacementErrorCode(null)).toBeNull();
 });

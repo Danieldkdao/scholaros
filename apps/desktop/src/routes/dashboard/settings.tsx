@@ -7,6 +7,7 @@ import {
 } from '@scholaros/services/learning/notification-contracts';
 import type { SettingsUpdateSchema } from '../../features/onboarding/schemas';
 import type {
+  DeviceReplacementDTO,
   ScholarBridge,
   WatchRuntimeState,
   WatchSettings,
@@ -18,6 +19,7 @@ import type { WatchHealthSummary } from '../../features/watch/types';
 import { watchSettingsSchema } from '../../features/watch/schemas';
 import { settingsSections } from '../../db/shared';
 import { ProductSettings } from '../../features/settings/components/product-settings';
+import { normalizeWorkspaceReplacementErrorCode } from '../../features/settings/lib/formatters';
 import type { DeviceReplacementActions } from '../../features/settings/components/device-settings';
 import { NotificationSettings } from '../../features/notifications/components/notification-settings';
 import { notificationPermissionStates } from '../../features/notifications/services/notification-policy';
@@ -29,11 +31,14 @@ import {
   settingsUpdateFromSaveDraft,
 } from '../../features/dashboard/settings-save-queue';
 
-type DeviceReplacementBridge = {
-  stageWorkspaceReplacement?: DeviceReplacementActions['stage'];
-  commitWorkspaceReplacement?: DeviceReplacementActions['commit'];
-  cancelWorkspaceReplacement?: DeviceReplacementActions['cancel'];
-};
+type DeviceReplacementBridge = Partial<
+  Pick<
+    ScholarBridge,
+    | 'stageWorkspaceReplacement'
+    | 'commitWorkspaceReplacement'
+    | 'cancelWorkspaceReplacement'
+  >
+>;
 
 type WatchHealthBridge = {
   getWatchHealthSummary?: () => Promise<WatchHealthSummary | null>;
@@ -100,19 +105,37 @@ const normalizeNotificationPermission = (value: unknown) => {
   return 'unknown';
 };
 
+type DeviceReplacementActionResult = Awaited<
+  ReturnType<DeviceReplacementActions['stage']>
+>;
+
+const toDeviceReplacementActionResult = (
+  result: DeviceReplacementDTO,
+): DeviceReplacementActionResult => ({
+  ...result,
+  errorCode: normalizeWorkspaceReplacementErrorCode(result.errorCode),
+});
+
 const getReplacementActions = (
   bridge: SettingsBridge,
 ): DeviceReplacementActions | null => {
+  const stageWorkspaceReplacement = bridge.stageWorkspaceReplacement;
+  const commitWorkspaceReplacement = bridge.commitWorkspaceReplacement;
+  const cancelWorkspaceReplacement = bridge.cancelWorkspaceReplacement;
   if (
-    !bridge.stageWorkspaceReplacement ||
-    !bridge.commitWorkspaceReplacement ||
-    !bridge.cancelWorkspaceReplacement
+    !stageWorkspaceReplacement ||
+    !commitWorkspaceReplacement ||
+    !cancelWorkspaceReplacement
   )
     return null;
+
   return {
-    stage: (input) => bridge.stageWorkspaceReplacement!(input),
-    commit: (input) => bridge.commitWorkspaceReplacement!(input),
-    cancel: (input) => bridge.cancelWorkspaceReplacement!(input),
+    stage: async (input) =>
+      toDeviceReplacementActionResult(await stageWorkspaceReplacement(input)),
+    commit: async (input) =>
+      toDeviceReplacementActionResult(await commitWorkspaceReplacement(input)),
+    cancel: async (input) =>
+      toDeviceReplacementActionResult(await cancelWorkspaceReplacement(input)),
   };
 };
 
