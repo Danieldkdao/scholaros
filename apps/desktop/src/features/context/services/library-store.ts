@@ -32,7 +32,7 @@ import {
   StudySessionTable,
   StudySourceReferenceTable,
 } from '../../../db/schema';
-import { createOriginalStore } from './original-store';
+import { ContextStorageError, createOriginalStore } from './original-store';
 
 export type ContextStoreErrorCode =
   | 'cancelled'
@@ -109,6 +109,26 @@ export type GetContextItemInputSchema = z.infer<
   typeof getContextItemInputSchema
 >;
 
+const readContextIngestionItemInputSchema = z.strictObject({
+  itemId: idSchema,
+  sessionId: idSchema.optional(),
+  courseId: idSchema.optional(),
+});
+const readContextIngestionVersionInputSchema = z
+  .strictObject({
+    itemId: idSchema,
+    versionId: idSchema.optional(),
+    attemptId: idSchema.optional(),
+    storageKey: z.string().min(1).max(160).optional(),
+  })
+  .refine(
+    ({ versionId, attemptId, storageKey }) =>
+      Number(versionId !== undefined) +
+        Number(attemptId !== undefined) +
+        Number(storageKey !== undefined) <=
+      1,
+  );
+
 const createUploadedContextItemInputSchema = z.strictObject({
   itemId: idSchema,
   title: z.string().trim().min(1).max(160),
@@ -176,6 +196,33 @@ const cursorSchema = z.strictObject({
 
 type ContextItemRow = typeof ContextItemTable.$inferSelect;
 type ContextVersionRow = typeof ContextVersionTable.$inferSelect;
+export type ContextIngestionStoreItem = {
+  id: string;
+  title: string;
+  kind: ContextItemRow['kind'];
+  revision: number;
+  removed: false;
+  currentVersionId: string | null;
+  status: ContextItemRow['status'];
+  usable: boolean;
+};
+export type ContextIngestionStoreVersion = Pick<
+  ContextVersionRow,
+  | 'id'
+  | 'itemId'
+  | 'attemptId'
+  | 'contentHash'
+  | 'mimeType'
+  | 'byteLength'
+  | 'extractionStatus'
+  | 'interpretedPages'
+  | 'uncertainty'
+  | 'pageCount'
+  | 'locators'
+  | 'extractedText'
+  | 'originalHash'
+  | 'originalStorageKey'
+>;
 type ContextTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type ContextQueryable = typeof db | ContextTransaction;
 
@@ -780,6 +827,27 @@ const removeOriginalKeysIfUnreferenced = async (
   }
 };
 
+export const removeUnreferencedContextOriginals = async (
+  context: AuthorizedContext,
+  rawStorageKeys: unknown,
+): Promise<void> => {
+  assertAuthorized(context);
+  const parsed = z
+    .array(z.string().min(1).max(160))
+    .max(100)
+    .safeParse(rawStorageKeys);
+  if (!parsed.success) throw new ContextStoreError('invalid-input');
+  try {
+    await removeOriginalKeysIfUnreferenced(context.userId, parsed.data);
+    assertAuthorized(context);
+  } catch (error) {
+    if (error instanceof ContextStoreError) throw error;
+    if (error instanceof ContextStorageError)
+      throw new ContextStoreError(error.code);
+    throw new ContextStoreError('storage-failed');
+  }
+};
+
 export const listContextItems = (
   context: AuthorizedContext,
   input: unknown,
@@ -1003,6 +1071,155 @@ export const getContextItem = async (
       versions,
       preview: previewForVersion(selectedVersion),
     };
+  } catch {
+    return null;
+  }
+};
+
+const contextIngestionStoreVersion = (
+  version: ContextVersionRow,
+): ContextIngestionStoreVersion => ({
+  id: version.id,
+  itemId: version.itemId,
+  attemptId: version.attemptId,
+  contentHash: version.contentHash,
+  mimeType: version.mimeType,
+  byteLength: version.byteLength,
+  extractionStatus: version.extractionStatus,
+  interpretedPages: version.interpretedPages,
+  uncertainty: version.uncertainty,
+  pageCount: version.pageCount,
+  locators: version.locators,
+  extractedText: version.extractedText,
+  originalHash: version.originalHash,
+  originalStorageKey: version.originalStorageKey,
+});
+
+export const readContextIngestionItem = (
+  context: AuthorizedContext,
+  rawInput: unknown,
+): ContextIngestionStoreItem | null => {
+  const parsed = readContextIngestionItemInputSchema.safeParse(rawInput);
+  if (!parsed.success) return null;
+  try {
+    assertAuthorized(context);
+    const item = db
+      .select()
+      .from(ContextItemTable)
+      .where(
+        and(
+          eq(ContextItemTable.userId, context.userId),
+          eq(ContextItemTable.id, parsed.data.itemId),
+          isNull(ContextItemTable.removedAt),
+        ),
+      )
+      .get();
+    if (!item) return null;
+    const itemDto = contextItemDto(db, context.userId, item);
+    if (!itemDto) return null;
+    const links = db
+      .select()
+      .from(ContextLinkTable)
+      .where(
+        and(
+          eq(ContextLinkTable.userId, context.userId),
+          eq(ContextLinkTable.itemId, item.id),
+        ),
+      )
+      .all();
+    if (parsed.data.sessionId) {
+      const session = getOwnedSession(
+        db,
+        context.userId,
+        parsed.data.sessionId,
+      );
+      if (
+        (parsed.data.courseId && session.courseId !== parsed.data.courseId) ||
+        !links.some(
+          (link) =>
+            link.sessionId === session.id &&
+            (link.courseId === null || link.courseId === session.courseId),
+        )
+      )
+        return null;
+    } else if (parsed.data.courseId) {
+      getOwnedCourse(db, context.userId, parsed.data.courseId);
+      const linkedToCourse = links.some((link) => {
+        if (link.courseId === parsed.data.courseId) return true;
+        if (!link.sessionId) return false;
+        const linkedSession = getOwnedSession(
+          db,
+          context.userId,
+          link.sessionId,
+        );
+        return linkedSession.courseId === parsed.data.courseId;
+      });
+      if (!linkedToCourse) return null;
+    }
+    return {
+      id: item.id,
+      title: item.title,
+      kind: item.kind,
+      revision: item.revision,
+      removed: false,
+      currentVersionId: itemDto.currentVersionId,
+      status: item.status,
+      usable: itemDto.usable,
+    };
+  } catch {
+    return null;
+  }
+};
+
+export const readContextIngestionVersion = (
+  context: AuthorizedContext,
+  rawInput: unknown,
+): ContextIngestionStoreVersion | null => {
+  const parsed = readContextIngestionVersionInputSchema.safeParse(rawInput);
+  if (!parsed.success) return null;
+  try {
+    assertAuthorized(context);
+    const item = getOwnedItem(db, context.userId, parsed.data.itemId);
+    const base = and(
+      eq(ContextVersionTable.userId, context.userId),
+      eq(ContextVersionTable.itemId, item.id),
+    );
+    let selectedVersion: ContextVersionRow | undefined;
+    if (parsed.data.versionId) {
+      selectedVersion = db
+        .select()
+        .from(ContextVersionTable)
+        .where(and(base, eq(ContextVersionTable.id, parsed.data.versionId)))
+        .get();
+    } else if (parsed.data.attemptId) {
+      selectedVersion = db
+        .select()
+        .from(ContextVersionTable)
+        .where(
+          and(base, eq(ContextVersionTable.attemptId, parsed.data.attemptId)),
+        )
+        .get();
+    } else {
+      const storageKey = parsed.data.storageKey;
+      const latest = db.$client
+        .prepare(
+          storageKey
+            ? `SELECT id FROM context_versions WHERE user_id = ? AND item_id = ? AND original_storage_key = ? ORDER BY rowid DESC LIMIT 1`
+            : `SELECT id FROM context_versions WHERE user_id = ? AND item_id = ? ORDER BY rowid DESC LIMIT 1`,
+        )
+        .get(context.userId, item.id, ...(storageKey ? [storageKey] : [])) as
+        | { id: string }
+        | undefined;
+      if (latest)
+        selectedVersion = db
+          .select()
+          .from(ContextVersionTable)
+          .where(and(base, eq(ContextVersionTable.id, latest.id)))
+          .get();
+    }
+    return selectedVersion
+      ? contextIngestionStoreVersion(selectedVersion)
+      : null;
   } catch {
     return null;
   }
@@ -1631,18 +1848,24 @@ export const saveContextIngestionResult = async (
   input: unknown,
 ): Promise<ContextItemDTO> => {
   assertAuthorized(context);
-  const parsed = parseOrThrow(contextVersionWriteInputSchema, input);
-  if (
-    parsed.extractedText !== null &&
-    hashText(parsed.extractedText) !== parsed.contentHash
-  )
+  const result = contextVersionWriteInputSchema.safeParse(input);
+  if (!result.success) {
+    // Only a syntactically valid, explicitly transferred key may be cleaned up.
+    // The original store checks its account scope and the reference check keeps
+    // any version-owned bytes, including historical checkpoints.
+    const ownership = z
+      .object({
+        originalIsNew: z.literal(true),
+        originalStorageKey: z.string().min(1).max(160),
+      })
+      .safeParse(input);
+    if (ownership.success)
+      await removeOriginalKeysIfUnreferenced(context.userId, [
+        ownership.data.originalStorageKey,
+      ]).catch(() => {});
     throw new ContextStoreError('invalid-input');
-  if (
-    (parsed.extractionStatus === 'complete' ||
-      parsed.extractionStatus === 'partial') &&
-    !parsed.extractedText?.trim()
-  )
-    throw new ContextStoreError('invalid-input');
+  }
+  const parsed = result.data;
   const cleanupNewOriginal = async () => {
     if (parsed.originalIsNew && parsed.originalStorageKey)
       await removeOriginalKeysIfUnreferenced(context.userId, [
@@ -1650,6 +1873,18 @@ export const saveContextIngestionResult = async (
       ]).catch(() => {});
   };
   try {
+    if (
+      parsed.extractedText !== null &&
+      hashText(parsed.extractedText) !== parsed.contentHash
+    )
+      throw new ContextStoreError('invalid-input');
+    if (
+      (parsed.extractionStatus === 'complete' ||
+        parsed.extractionStatus === 'partial') &&
+      !parsed.extractedText?.trim() &&
+      !parsed.originalStorageKey
+    )
+      throw new ContextStoreError('invalid-input');
     if (parsed.originalStorageKey) {
       const originalBytes = await originalStore.read(
         context.userId,
@@ -1727,7 +1962,11 @@ export const saveContextIngestionResult = async (
         (parsed.extractionStatus === 'complete' ||
           parsed.extractionStatus === 'partial') &&
         Boolean(parsed.extractedText?.trim());
-      if (usable) {
+      const promote =
+        usable ||
+        (parsed.extractionStatus === 'complete' &&
+          parsed.extractedText !== null);
+      if (promote) {
         const chunks = chunkText(parsed.extractedText ?? '');
         if (chunks.length)
           transaction
@@ -1763,7 +2002,7 @@ export const saveContextIngestionResult = async (
         .update(ContextItemTable)
         .set({
           status: parsed.extractionStatus,
-          ...(usable ? { currentVersionId: versionId } : {}),
+          ...(promote ? { currentVersionId: versionId } : {}),
           revision: item.revision + 1,
           updatedAt: now,
         })

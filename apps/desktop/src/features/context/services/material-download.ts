@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { Page } from '@browserbasehq/stagehand';
 import {
   academicPageIdentity,
@@ -7,18 +8,30 @@ import type { ObservedPage } from '../../onboarding/lib/academic-discovery';
 
 const maxPdfBytes = 10 * 1024 * 1024;
 
-type InPagePdfRequest = {
-  sourceOrigin: string;
-  targetUrl: string;
-  maxBytes: number;
-};
+type InPagePdfRequest =
+  | { action: 'abort'; requestId: string }
+  | {
+      action?: 'fetch';
+      requestId?: string;
+      sourceOrigin?: string;
+      targetUrl: string;
+      maxBytes: number;
+      timeoutMs?: number;
+    };
 
 type InPagePdfResult = {
   status?: number;
   contentType?: string;
   finalUrl?: string;
   base64?: string;
-  reason?: 'cross-origin' | 'too-large' | 'fetch-failed';
+  reason?:
+    | 'cross-origin'
+    | 'too-large'
+    | 'timeout'
+    | 'redirect'
+    | 'aborted'
+    | 'fetch-failed';
+  aborted?: boolean;
 };
 
 type PdfDownloadReason =
@@ -27,6 +40,7 @@ type PdfDownloadReason =
   | 'page-changed'
   | 'cross-origin'
   | 'too-large'
+  | 'timeout'
   | 'http-error'
   | 'wrong-type'
   | 'redirect'
@@ -42,11 +56,56 @@ const unreadable = (reason: PdfDownloadReason): PdfDownloadResult => ({
   reason,
 });
 
+const inPageFailureReason = (result: unknown): PdfDownloadReason => {
+  if (!result || typeof result !== 'object' || !('reason' in result))
+    return 'fetch-failed';
+  switch (result.reason) {
+    case 'cross-origin':
+      return 'cross-origin';
+    case 'too-large':
+      return 'too-large';
+    case 'timeout':
+      return 'timeout';
+    case 'redirect':
+      return 'redirect';
+    default:
+      return 'fetch-failed';
+  }
+};
+
+const isSamePdfTarget = (firstUrl: string, secondUrl: string) => {
+  const firstIdentity = academicPageIdentity(firstUrl);
+  const secondIdentity = academicPageIdentity(secondUrl);
+  if (!firstIdentity || !secondIdentity) return false;
+  try {
+    const first = new URL(firstIdentity);
+    const second = new URL(secondIdentity);
+    first.hash = '';
+    second.hash = '';
+    return first.href === second.href;
+  } catch {
+    return false;
+  }
+};
+
 // This function is serialized by Stagehand, so it only uses arguments and page globals.
 export const readPdfInPage = async (
   request: InPagePdfRequest,
   fetcher: typeof fetch = fetch,
 ): Promise<InPagePdfResult> => {
+  const pageGlobal = globalThis as typeof globalThis & {
+    __scholarosPdfFetchControllers?: Map<string, AbortController>;
+  };
+  const controllers =
+    pageGlobal.__scholarosPdfFetchControllers ??
+    (pageGlobal.__scholarosPdfFetchControllers = new Map());
+  const requestId =
+    request.requestId ?? `pdf-fetch-${Date.now()}-${Math.random()}`;
+  if (request.action === 'abort') {
+    const controller = controllers.get(requestId);
+    controller?.abort();
+    return { aborted: controller !== undefined };
+  }
   let target: URL;
   try {
     target = new URL(request.targetUrl);
@@ -54,20 +113,58 @@ export const readPdfInPage = async (
     return { reason: 'fetch-failed' };
   }
   const byteLimit = 10 * 1024 * 1024;
-  if (target.origin !== request.sourceOrigin) return { reason: 'cross-origin' };
+  if (target.protocol !== 'https:' || !target.hostname)
+    return { reason: 'fetch-failed' };
+  if (!Number.isFinite(request.maxBytes) || request.maxBytes < 1)
+    return { reason: 'too-large' };
   const maxBytes = Math.max(
     1,
     Math.min(byteLimit, Math.floor(request.maxBytes)),
   );
+  const timeoutMs = Number.isFinite(request.timeoutMs)
+    ? Math.max(1, Math.min(15000, Math.floor(request.timeoutMs!)))
+    : 15000;
+  const controller = new AbortController();
+  let timedOut = false;
+  controllers.set(requestId, controller);
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
   try {
+    const sourceOrigin = request.sourceOrigin
+      ? new URL(request.sourceOrigin).origin
+      : target.origin;
     const response = await fetcher(target.href, {
-      credentials: 'same-origin',
-      redirect: 'follow',
+      credentials: sourceOrigin === target.origin ? 'same-origin' : 'include',
+      redirect: 'manual',
       cache: 'no-store',
+      signal: controller.signal,
     });
+    const responseContentType = (response: Response) =>
+      (response.headers.get('content-type') ?? '')
+        .split(';', 1)[0]!
+        .trim()
+        .toLowerCase();
+    if (
+      response.type === 'opaqueredirect' ||
+      (response.status >= 300 && response.status < 400)
+    ) {
+      await response.body?.cancel();
+      return { reason: 'redirect' };
+    }
+    if (response.status < 200 || response.status >= 300) {
+      await response.body?.cancel();
+      return {
+        status: response.status,
+        contentType: responseContentType(response),
+        finalUrl: response.url || target.href,
+      };
+    }
     const contentLength = Number(response.headers.get('content-length'));
     if (Number.isFinite(contentLength) && contentLength > maxBytes) {
       await response.body?.cancel();
+      controller.abort();
       return { reason: 'too-large' };
     }
     if (!response.body) return { reason: 'fetch-failed' };
@@ -80,6 +177,7 @@ export const readPdfInPage = async (
       byteLength += value.byteLength;
       if (byteLength > maxBytes) {
         await reader.cancel().catch(() => undefined);
+        controller.abort();
         return { reason: 'too-large' };
       }
       chunks.push(value);
@@ -103,7 +201,16 @@ export const readPdfInPage = async (
       base64: btoa(binary),
     };
   } catch {
-    return { reason: 'fetch-failed' };
+    return {
+      reason: timedOut
+        ? 'timeout'
+        : controller.signal.aborted
+          ? 'aborted'
+          : 'fetch-failed',
+    };
+  } finally {
+    clearTimeout(timeout);
+    controllers.delete(requestId);
   }
 };
 
@@ -167,10 +274,6 @@ export const downloadPdfFromObservedLink = async ({
   )
     return unreadable('page-changed');
 
-  const current = new URL(currentUrl);
-  const target = new URL(targetIdentity);
-  if (current.origin !== target.origin) return unreadable('cross-origin');
-
   await beforeFetch?.(targetIdentity);
   signal?.throwIfAborted();
   const latestUrl = await page.url();
@@ -180,17 +283,35 @@ export const downloadPdfFromObservedLink = async ({
     !isReadNavigation(latestUrl, allowedHosts)
   )
     return unreadable('page-changed');
-  if (new URL(latestUrl).origin !== target.origin)
-    return unreadable('cross-origin');
 
-  const raw = await waitForEvaluation(
-    page.evaluate(readPdfInPage, {
-      sourceOrigin: current.origin,
-      targetUrl: targetIdentity,
-      maxBytes: maxPdfBytes,
-    }),
-    signal,
-  );
+  const requestId = randomUUID();
+  const request: InPagePdfRequest = {
+    action: 'fetch',
+    requestId,
+    sourceOrigin: new URL(latestUrl).origin,
+    targetUrl: targetIdentity,
+    maxBytes: maxPdfBytes,
+    timeoutMs: 15000,
+  };
+  const abortInPage = () => {
+    void page
+      .evaluate(readPdfInPage, {
+        action: 'abort',
+        requestId,
+      })
+      .catch(() => undefined);
+  };
+  signal?.addEventListener('abort', abortInPage, { once: true });
+  let raw: InPagePdfResult;
+  try {
+    signal?.throwIfAborted();
+    raw = await waitForEvaluation(
+      page.evaluate(readPdfInPage, request),
+      signal,
+    );
+  } finally {
+    signal?.removeEventListener('abort', abortInPage);
+  }
   if (
     !raw ||
     typeof raw !== 'object' ||
@@ -199,19 +320,7 @@ export const downloadPdfFromObservedLink = async ({
     !('finalUrl' in raw) ||
     !('base64' in raw)
   )
-    return unreadable(
-      raw &&
-        typeof raw === 'object' &&
-        'reason' in raw &&
-        raw.reason === 'cross-origin'
-        ? 'cross-origin'
-        : raw &&
-            typeof raw === 'object' &&
-            'reason' in raw &&
-            raw.reason === 'too-large'
-          ? 'too-large'
-          : 'fetch-failed',
-    );
+    return unreadable(inPageFailureReason(raw));
 
   const result = raw as InPagePdfResult;
   if (
@@ -228,7 +337,8 @@ export const downloadPdfFromObservedLink = async ({
     return unreadable('wrong-type');
   if (
     typeof result.finalUrl !== 'string' ||
-    !isReadNavigation(result.finalUrl, allowedHosts)
+    !isReadNavigation(result.finalUrl, allowedHosts) ||
+    !isSamePdfTarget(result.finalUrl, targetIdentity)
   )
     return unreadable('redirect');
   if (

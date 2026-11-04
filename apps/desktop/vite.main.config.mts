@@ -111,5 +111,9 @@ export default defineConfig({
     'process.env.STAGEHAND_EXTENSION_DIRECTORY_PATH': `(require('electron').app.isPackaged ? ${packagedPath('extension')} : ${JSON.stringify(stagehandExtensionDirectory)})`,
     'process.env.STAGEHAND_EXTENSION_ARCHIVE_PATH': `(require('electron').app.isPackaged ? ${packagedPath('stagehand-extension.zip')} : ${JSON.stringify(stagehandExtensionArchive)})`,
   },
-  build: { rolldownOptions: { external: ['better-sqlite3'] } },
+  build: {
+    rolldownOptions: {
+      external: ['better-sqlite3', '@napi-rs/canvas'],
+    },
+  },
 });

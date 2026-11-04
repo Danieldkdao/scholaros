@@ -1,6 +1,12 @@
 import { and, eq } from 'drizzle-orm';
+import { z } from 'zod';
 import { extractedAnnouncementSchema } from '@scholaros/services/ai/resources/announcement';
 import { extractedAssignmentSchema } from '@scholaros/services/ai/resources/assignment';
+import {
+  sourceReferenceSchema,
+  type SourcePassage,
+  type SourceReference,
+} from '@scholaros/services/learning/context-contracts';
 import {
   resourceIdentityKeys,
   type ResourceIdentityRecord,
@@ -40,6 +46,14 @@ import { isReadNavigation } from '../../onboarding/lib/browser-policy';
 const maxFtsTerms = 12;
 const maxFtsScannedPassages = 40;
 
+const historicalMaterialCitationInputSchema = z.strictObject({
+  userId: z.string().trim().min(1).max(200),
+  reference: sourceReferenceSchema,
+});
+export type HistoricalMaterialCitationInputSchema = z.infer<
+  typeof historicalMaterialCitationInputSchema
+>;
+
 const materialReadHosts = (userId: string) =>
   db
     .select({ host: AcademicConnectionTable.host })
@@ -48,6 +62,7 @@ const materialReadHosts = (userId: string) =>
       and(
         eq(AcademicConnectionTable.userId, userId),
         eq(AcademicConnectionTable.isCourseResource, true),
+        eq(AcademicConnectionTable.status, 'verified'),
       ),
     )
     .all()
@@ -256,7 +271,7 @@ export const searchCourseMaterialPassages = (
           chunks.source_url AS sourceUrl,
           materials.title AS title,
           materials.source_type AS sourceType,
-          materials.extraction_status AS extractionStatus,
+          versions.extraction_status AS extractionStatus,
           materials.retrieved_at AS retrievedAt,
           materials.verified_at AS verifiedAt,
           materials.content_changed_at AS contentChangedAt,
@@ -267,6 +282,9 @@ export const searchCourseMaterialPassages = (
           ON chunks.rowid = course_material_chunks_fts.rowid
         JOIN course_materials AS materials
           ON materials.id = chunks.material_id
+        JOIN course_material_versions AS versions
+          ON versions.material_id = materials.id
+          AND versions.content_hash = materials.current_usable_version
         JOIN courses
           ON courses.id = materials.course_id
         JOIN academic_connections AS connections
@@ -276,13 +294,18 @@ export const searchCourseMaterialPassages = (
           AND materials.connection_id = ?
           AND materials.course_id = ?
           AND materials.active = 1
-          AND materials.content_hash = chunks.version
-          AND materials.extraction_status IN ('complete', 'partial')
+          AND materials.suppression_id IS NULL
+          AND materials.suppressed_at IS NULL
+          AND materials.current_usable_version = chunks.version
+          AND versions.extraction_status IN ('complete', 'partial')
           AND courses.user_id = ?
           AND courses.connection_id = ?
           AND courses.active = 1
+          AND courses.suppression_id IS NULL
+          AND courses.suppressed_at IS NULL
           AND connections.user_id = ?
           AND connections.is_course_resource = 1
+          AND connections.status = 'verified'
         ORDER BY score ASC, chunks.ordinal ASC
         LIMIT ?`,
       )
@@ -377,7 +400,7 @@ export const readCourseMaterialPassages = (
           chunks.source_url AS sourceUrl,
           materials.title AS title,
           materials.source_type AS sourceType,
-          materials.extraction_status AS extractionStatus,
+          versions.extraction_status AS extractionStatus,
           materials.retrieved_at AS retrievedAt,
           materials.verified_at AS verifiedAt,
           materials.content_changed_at AS contentChangedAt,
@@ -385,21 +408,30 @@ export const readCourseMaterialPassages = (
         FROM course_material_chunks AS chunks
         JOIN course_materials AS materials
           ON materials.id = chunks.material_id
+        JOIN course_material_versions AS versions
+          ON versions.material_id = materials.id
+          AND versions.content_hash = materials.current_usable_version
         JOIN courses
           ON courses.id = materials.course_id
         JOIN academic_connections AS connections
           ON connections.id = materials.connection_id
         WHERE chunks.id IN (${placeholders})
-          AND chunks.version = materials.content_hash
+          AND chunks.version = materials.current_usable_version
+          AND versions.extraction_status IN ('complete', 'partial')
           AND materials.user_id = ?
           AND materials.connection_id = ?
           AND materials.course_id = ?
           AND materials.active = 1
+          AND materials.suppression_id IS NULL
+          AND materials.suppressed_at IS NULL
           AND courses.user_id = ?
           AND courses.connection_id = ?
           AND courses.active = 1
+          AND courses.suppression_id IS NULL
+          AND courses.suppressed_at IS NULL
           AND connections.user_id = ?
-          AND connections.is_course_resource = 1`,
+          AND connections.is_course_resource = 1
+          AND connections.status = 'verified'`,
       )
       .all(
         ...selections.map(({ id }) => id),
@@ -423,6 +455,150 @@ export const readCourseMaterialPassages = (
       if (passage.success) readPassages.push(passage.data);
     }
     return readPassages;
+  } catch {
+    return null;
+  }
+};
+
+export const readHistoricalMaterialCitation = (
+  context: Pick<HistoricalMaterialCitationInputSchema, 'userId'>,
+  citationReference: SourceReference,
+): SourcePassage | null => {
+  const parsed = historicalMaterialCitationInputSchema.safeParse({
+    userId: context?.userId,
+    reference: citationReference,
+  });
+  if (!parsed.success || parsed.data.reference.sourceKind !== 'course-material')
+    return null;
+  const { userId, reference } = parsed.data;
+  const versionId = reference.versionId;
+  const courseId = reference.courseId;
+  if (!versionId || !courseId) return null;
+  const normalizedLocator = reference.locator
+    ? reference.locator.kind === 'page'
+      ? { kind: 'page' as const, page: reference.locator.page }
+      : reference.locator.kind === 'heading'
+        ? { kind: 'heading' as const, heading: reference.locator.heading }
+        : { kind: 'paragraph' as const, ordinal: reference.locator.ordinal }
+    : null;
+  const locatorJson = normalizedLocator
+    ? JSON.stringify(normalizedLocator)
+    : null;
+  try {
+    const savedReference = db.$client
+      .prepare(
+        `SELECT
+          materials.course_id AS courseId,
+          materials.current_usable_version AS currentUsableVersion,
+          materials.active AS materialActive,
+          materials.suppression_id AS materialSuppressionId,
+          materials.suppressed_at AS materialSuppressedAt,
+          materials.url AS materialUrl,
+          materials.title AS materialTitle,
+          courses.active AS courseActive,
+          courses.suppression_id AS courseSuppressionId,
+          courses.suppressed_at AS courseSuppressedAt,
+          connections.status AS connectionStatus,
+          connections.is_course_resource AS isCourseResource,
+          versions.title AS versionTitle,
+          versions.source_url AS sourceUrl,
+          versions.retrieved_at AS retrievedAt,
+          versions.verified_at AS verifiedAt
+        FROM study_source_references AS saved
+        JOIN course_materials AS materials
+          ON materials.id = saved.source_id
+        JOIN course_material_versions AS versions
+          ON versions.material_id = materials.id
+          AND versions.content_hash = saved.version_id
+        LEFT JOIN courses
+          ON courses.id = materials.course_id
+          AND courses.user_id = materials.user_id
+        LEFT JOIN academic_connections AS connections
+          ON connections.id = materials.connection_id
+          AND connections.user_id = materials.user_id
+        WHERE saved.user_id = ?
+          AND saved.source_kind = 'course-material'
+          AND saved.source_id = ?
+          AND saved.version_id = ?
+          AND saved.locator IS ?
+          AND materials.user_id = ?
+          AND materials.course_id = ?
+        LIMIT 1`,
+      )
+      .get(
+        userId,
+        reference.sourceId,
+        versionId,
+        locatorJson,
+        userId,
+        courseId,
+      ) as Record<string, unknown> | undefined;
+    if (!savedReference) return null;
+    let locatorClause = '';
+    const chunkParameters: Array<string | number> = [
+      reference.sourceId,
+      versionId,
+    ];
+    if (normalizedLocator?.kind === 'page') {
+      locatorClause = 'AND locator = ?';
+      chunkParameters.push(`Page ${normalizedLocator.page}`);
+    } else if (normalizedLocator?.kind === 'heading') {
+      locatorClause = 'AND heading = ?';
+      chunkParameters.push(normalizedLocator.heading);
+    } else if (normalizedLocator?.kind === 'paragraph') {
+      locatorClause = 'AND ordinal = ?';
+      chunkParameters.push(normalizedLocator.ordinal - 1);
+    }
+    const chunks = db.$client
+      .prepare(
+        `SELECT text
+        FROM course_material_chunks
+        WHERE material_id = ? AND version = ? ${locatorClause}
+        ORDER BY ordinal
+        LIMIT 20`,
+      )
+      .all(...chunkParameters) as Array<{ text: string }>;
+    const text = chunks
+      .map((chunk) => chunk.text)
+      .join('\n\n')
+      .slice(0, 2000);
+    if (!text.trim()) return null;
+    const sourceUrl = String(
+      savedReference.sourceUrl ?? savedReference.materialUrl,
+    );
+    const allowedHosts = materialReadHosts(userId);
+    const stillAuthorized =
+      savedReference.materialActive === 1 &&
+      savedReference.materialSuppressionId === null &&
+      savedReference.materialSuppressedAt === null &&
+      savedReference.courseActive === 1 &&
+      savedReference.courseSuppressionId === null &&
+      savedReference.courseSuppressedAt === null &&
+      savedReference.connectionStatus === 'verified' &&
+      savedReference.isCourseResource === 1 &&
+      isReadNavigation(sourceUrl, allowedHosts);
+    const referenceState = !stillAuthorized
+      ? 'removed'
+      : savedReference.currentUsableVersion === versionId
+        ? 'current'
+        : 'historical';
+    const resolvedReference: SourceReference = {
+      sourceKind: 'course-material',
+      sourceId: reference.sourceId,
+      versionId,
+      courseId: String(savedReference.courseId),
+      locator: normalizedLocator,
+      title: String(
+        savedReference.versionTitle ?? savedReference.materialTitle,
+      ),
+      provenance: 'connected-source',
+      observedAt:
+        (savedReference.verifiedAt ?? savedReference.retrievedAt) === null
+          ? null
+          : String(savedReference.verifiedAt ?? savedReference.retrievedAt),
+      state: referenceState,
+    };
+    return { reference: resolvedReference, text, score: null };
   } catch {
     return null;
   }

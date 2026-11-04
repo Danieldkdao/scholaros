@@ -128,10 +128,14 @@ const summaryIsSupported = (summary: string | null, evidence: string[]) => {
 export const validateMaterialExtraction = (
   input: AgentRequestSchema,
   raw: unknown,
+  options: { courseMembershipVerified?: boolean } = {},
 ): ExtractedMaterialsSchema => {
   const envelope = extractedMaterialsSchema.safeParse(raw);
   if (!envelope.success) return { materials: [], coverage: 'partial' };
-  let invalid = envelope.data.materials.length >= 30;
+  let invalid =
+    envelope.data.materials.length >= 30 ||
+    (envelope.data.materials.length === 0 &&
+      envelope.data.coverage === 'complete');
   const materials: ExtractedMaterialSchema[] = [];
   const seen = new Map<string, ExtractedMaterialSchema>();
   const targets = input.targets ?? [];
@@ -178,7 +182,7 @@ export const validateMaterialExtraction = (
     const inCourseScope =
       !courseUrl ||
       isWithinCourseScope(pageIdentity, courseUrl) ||
-      targets.some((target) => safeMaterialUrl(target.url) === pageIdentity);
+      options.courseMembershipVerified === true;
     const evidenceValid =
       material.evidence.targetIds.every((id) =>
         targets.some((target) => target.id === id),

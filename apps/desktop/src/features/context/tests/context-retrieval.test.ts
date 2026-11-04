@@ -1,3 +1,4 @@
+import { eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('electron', async () => {
@@ -21,8 +22,10 @@ const {
   CourseAssignmentTable,
   CourseMaterialChunkTable,
   CourseMaterialTable,
+  CourseMaterialVersionTable,
   CourseTable,
   NavigationLocationTable,
+  StudySourceReferenceTable,
 } = await import('../../../db/schema');
 const { buildMaterialContent } = await import('../lib/material-content');
 const { createAcademicContextPackage } = await import('../lib/context-package');
@@ -30,6 +33,7 @@ const {
   getExistingResourceIdentities,
   getNavigationContextForTask,
   readCourseMaterialPassages,
+  readHistoricalMaterialCitation,
   searchCourseMaterialPassages,
 } = await import('../services/read-actions');
 const { saveCourseMaterial } = await import('../services/material-store');
@@ -119,7 +123,9 @@ const writeMaterial = (
   });
 
 beforeEach(() => {
+  db.delete(StudySourceReferenceTable).run();
   db.delete(CourseMaterialChunkTable).run();
+  db.delete(CourseMaterialVersionTable).run();
   db.delete(CourseMaterialTable).run();
   db.delete(CourseAssignmentTable).run();
   db.delete(NavigationLocationTable).run();
@@ -312,6 +318,126 @@ describe('local academic context retrieval', () => {
         ],
       }),
     ).toEqual([]);
+  });
+
+  it('keeps historical passages explicit and requires an owned saved citation', () => {
+    const first = writeMaterial(
+      undefined,
+      '# Mitochondria\nMitochondria power the cell.',
+    )!;
+    const reference = {
+      sourceKind: 'course-material' as const,
+      sourceId: first.material.id,
+      versionId: first.material.contentHash,
+      courseId: `${courseId}-1`,
+      locator: null,
+      title: first.material.title,
+      provenance: 'connected-source' as const,
+      observedAt: timestamp,
+      state: 'historical' as const,
+    };
+    writeMaterial(
+      undefined,
+      '# Cellular Energy\nCellular energy is stored as ATP.',
+    );
+    db.insert(StudySourceReferenceTable)
+      .values({
+        id: 'saved-material-reference',
+        userId,
+        sessionId: 'study-session',
+        messageId: 'study-message',
+        sourceKind: 'course-material',
+        sourceId: reference.sourceId,
+        versionId: reference.versionId,
+        locator: null,
+        state: 'historical',
+      })
+      .run();
+
+    expect(
+      searchCourseMaterialPassages({
+        userId,
+        connectionId: `${connectionId}-1`,
+        courseId: `${courseId}-1`,
+        query: 'mitochondria',
+      })?.passages.map(({ version }) => version),
+    ).toEqual([]);
+    expect(readHistoricalMaterialCitation({ userId }, reference)).toMatchObject(
+      {
+        reference: { sourceId: reference.sourceId, state: 'historical' },
+        text: expect.stringContaining('Mitochondria power the cell.'),
+        score: null,
+      },
+    );
+    expect(
+      readHistoricalMaterialCitation({ userId: otherUserId }, reference),
+    ).toBeNull();
+
+    db.$client
+      .prepare(
+        'UPDATE academic_connections SET is_course_resource = 0 WHERE id = ?',
+      )
+      .run(`${connectionId}-1`);
+
+    expect(readHistoricalMaterialCitation({ userId }, reference)).toMatchObject(
+      { reference: { state: 'removed' } },
+    );
+
+    db.$client
+      .prepare(
+        'UPDATE academic_connections SET is_course_resource = 1 WHERE id = ?',
+      )
+      .run(`${connectionId}-1`);
+    db.update(CourseTable)
+      .set({ suppressionId: 'suppressed-course', suppressedAt: timestamp })
+      .where(eq(CourseTable.id, `${courseId}-1`))
+      .run();
+    expect(readHistoricalMaterialCitation({ userId }, reference)).toMatchObject(
+      { reference: { state: 'removed' } },
+    );
+    db.update(CourseTable)
+      .set({ suppressionId: null, suppressedAt: null })
+      .where(eq(CourseTable.id, `${courseId}-1`))
+      .run();
+    db.update(CourseMaterialTable)
+      .set({ suppressionId: 'suppressed-material', suppressedAt: timestamp })
+      .where(eq(CourseMaterialTable.id, reference.sourceId))
+      .run();
+    expect(readHistoricalMaterialCitation({ userId }, reference)).toMatchObject(
+      { reference: { state: 'removed' } },
+    );
+  });
+
+  it('bounds FTS result count and passage characters at their schema limits', () => {
+    writeMaterial();
+    expect(
+      searchCourseMaterialPassages({
+        userId,
+        connectionId: `${connectionId}-1`,
+        courseId: `${courseId}-1`,
+        query: 'mitochondria',
+        limit: 1,
+        maxCharacters: 5,
+      }),
+    ).toMatchObject({ characters: 5, truncated: true });
+    expect(
+      searchCourseMaterialPassages({
+        userId,
+        connectionId: `${connectionId}-1`,
+        courseId: `${courseId}-1`,
+        query: 'mitochondria',
+        maxCharacters: 0,
+      }),
+    ).toMatchObject({ passages: [], characters: 0, truncated: true });
+    expect(
+      searchCourseMaterialPassages({
+        userId,
+        connectionId: `${connectionId}-1`,
+        courseId: `${courseId}-1`,
+        query: 'mitochondria',
+        limit: 9,
+      }),
+    ).toBeNull();
   });
 
   it('returns existing assignment identity aliases under the authenticated course', () => {

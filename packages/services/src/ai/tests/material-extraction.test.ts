@@ -119,6 +119,67 @@ describe('material extraction validation', () => {
     expect(conflict.coverage).toBe('partial');
   });
 
+  it('keeps model-declared empty material output partial without host empty evidence', () => {
+    expect(
+      validateMaterialExtraction(input, {
+        materials: [],
+        coverage: 'complete',
+      }),
+    ).toEqual({ materials: [], coverage: 'partial' });
+  });
+
+  it('does not treat a synthetic parent target as course-membership proof', () => {
+    const externalUrl = 'https://files.example.edu/biology/reading.pdf';
+    const externalInput: AgentRequestSchema = {
+      ...input,
+      pages: [{ url: externalUrl, title: 'Week 1 Reading', text: sourceText }],
+      targets: [{ id: 'parent', label: 'Reading', url: externalUrl }],
+    };
+
+    const result = validateMaterialExtraction(externalInput, {
+      materials: [
+        {
+          ...material,
+          url: externalUrl,
+          sourceType: 'pdf',
+          evidence: {
+            ...material.evidence,
+            sourceUrl: externalUrl,
+            targetIds: ['parent'],
+          },
+        },
+      ],
+      coverage: 'complete',
+    });
+
+    expect(result).toEqual({ materials: [], coverage: 'partial' });
+  });
+
+  it('accepts an external resource linked from the observed course page', () => {
+    const externalUrl = 'https://files.example.edu/biology/reading.pdf';
+    const externalInput: AgentRequestSchema = {
+      ...input,
+      targets: [{ id: '1', label: 'Week 1 Reading', url: externalUrl }],
+    };
+
+    expect(
+      validateMaterialExtraction(externalInput, {
+        materials: [
+          {
+            ...material,
+            url: externalUrl,
+            sourceType: 'pdf',
+            evidence: { ...material.evidence, targetIds: ['1'] },
+          },
+        ],
+        coverage: 'complete',
+      }),
+    ).toMatchObject({
+      coverage: 'complete',
+      materials: [{ url: externalUrl }],
+    });
+  });
+
   it('keeps truncated sources partial and unreadable items free of summaries', () => {
     const truncated = validateMaterialExtraction(
       {
