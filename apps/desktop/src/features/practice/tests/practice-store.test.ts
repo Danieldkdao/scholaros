@@ -16,6 +16,8 @@ import {
 } from 'vitest';
 import type { JsonValue } from '@scholaros/services/learning/product-contracts';
 import type { PracticeQuestionDTO } from '@scholaros/services/learning/practice-contracts';
+import type { MessagePart } from '@scholaros/services/learning/study-contracts';
+import { createSessionStore } from '../../study/services/session-store';
 import type {
   PracticeActionDependencies,
   PracticeAttemptCreationInput,
@@ -25,6 +27,8 @@ import {
   createPracticeAttempt as createAuthorizedPracticeAttempt,
 } from '../services/practice-actions';
 import { createPracticeStore } from '../services/practice-store';
+
+vi.mock('../../../db', () => ({ db: {} }));
 
 const timestamp = '2026-11-03T12:00:00.000Z';
 const question: PracticeQuestionDTO = {
@@ -81,7 +85,11 @@ const insertCourse = (userId = 'user-a', courseId = 'course-a') => {
     );
 };
 
-const insertSession = () => {
+const insertSession = (
+  sessionId = 'session-a',
+  userId = 'user-a',
+  courseId = 'course-a',
+) => {
   sqlite
     .prepare(
       `INSERT INTO study_sessions (
@@ -90,9 +98,9 @@ const insertSession = () => {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
-      'session-a',
-      'user-a',
-      'course-a',
+      sessionId,
+      userId,
+      courseId,
       'Biology practice',
       'practice-knowledge',
       'saved',
@@ -118,12 +126,47 @@ const createAttempt = (overrides: Record<string, unknown> = {}) =>
     ...overrides,
   });
 
+const insertMessage = (
+  id: string,
+  sequence: number,
+  parts: MessagePart[],
+  overrides: Partial<typeof schema.StudyMessageTable.$inferInsert> = {},
+) =>
+  db
+    .insert(schema.StudyMessageTable)
+    .values({
+      id,
+      userId: 'user-a',
+      sessionId: 'session-a',
+      sequence,
+      role: 'tutor',
+      status: 'accepted',
+      parts,
+      createdAt: timestamp,
+      ...overrides,
+    })
+    .run();
+
 const authorizedContext = () => ({
   userId: 'user-a',
   epoch: 1,
   isCurrent: () => true,
   signal: new AbortController().signal,
 });
+
+const createSubmittedSessionPractice = () => {
+  insertSession();
+  const attempt = createAttempt({ sessionId: 'session-a' });
+  const submitted = store.submitPracticeAttempt('user-a', {
+    attemptId: attempt.id,
+    expectedRevision: attempt.revision,
+    requestId: ids.submit,
+  });
+  insertMessage('practice-message', 0, [
+    { kind: 'practice', practiceAttemptId: attempt.id },
+  ]);
+  return submitted;
+};
 
 const createInternalAttemptInput = (
   overrides: Record<string, unknown> = {},
@@ -155,6 +198,7 @@ describe('practice store', () => {
   beforeEach(() => {
     sqlite.prepare('DELETE FROM practice_answers').run();
     sqlite.prepare('DELETE FROM practice_attempts').run();
+    sqlite.prepare('DELETE FROM study_messages').run();
     sqlite.prepare('DELETE FROM study_sessions').run();
     sqlite.prepare('DELETE FROM courses').run();
     insertCourse();
@@ -380,6 +424,572 @@ describe('practice store', () => {
       store.getPracticeAttempt('user-a', { attemptId: submitted.id })?.status,
     ).toBe('submitted');
   });
+
+  it('reopens persisted practice parts on the retry while retaining earlier answers and messages', async () => {
+    insertSession();
+    const attempt = createAttempt({ sessionId: 'session-a' });
+    const saved = store.savePracticeAnswer('user-a', {
+      attemptId: attempt.id,
+      questionId: question.id,
+      expectedRevision: attempt.revision,
+      value: 'option-1',
+      requestId: ids.answer,
+    });
+    const revised = store.savePracticeAnswer('user-a', {
+      attemptId: attempt.id,
+      questionId: question.id,
+      expectedRevision: saved.revision,
+      value: 'option-2',
+      requestId: '00000000-0000-4000-8000-000000000005',
+    });
+    store.submitPracticeAttempt('user-a', {
+      attemptId: attempt.id,
+      expectedRevision: revised.revision,
+      requestId: ids.submit,
+    });
+    const evaluated = store.savePracticeEvaluations('user-a', {
+      attemptId: attempt.id,
+      final: true,
+      evaluations: [
+        {
+          questionId: question.id,
+          answerRevision: 1,
+          evaluation: {
+            questionId: question.id,
+            outcome: 'incorrect',
+            explanation:
+              'Chromosomes move toward opposite poles rather than disappearing.',
+            acceptedAlternatives: [],
+            sourceReferences: [],
+            rubricVersion: 'rubric-v1',
+            assisted: false,
+          },
+        },
+      ],
+    });
+    const text = {
+      kind: 'text',
+      text: 'Try the chromosome exercise.',
+    } as const;
+    const unrelated = {
+      kind: 'practice',
+      practiceAttemptId: 'another-attempt',
+    } as const;
+    insertMessage('practice-message', 0, [
+      text,
+      { kind: 'practice', practiceAttemptId: attempt.id },
+      unrelated,
+      { kind: 'practice', practiceAttemptId: attempt.id },
+    ]);
+    insertMessage('second-practice-message', 1, [
+      { kind: 'practice', practiceAttemptId: attempt.id },
+    ]);
+    insertMessage(
+      'student-message',
+      2,
+      [{ kind: 'text', text: 'I want another try.' }],
+      { role: 'student' },
+    );
+    const retryTimestamp = '2026-11-03T12:05:00.000Z';
+    const retry = createPracticeStore({
+      db,
+      now: () => retryTimestamp,
+    }).retryPracticeAttempt('user-a', {
+      attemptId: attempt.id,
+      requestId: ids.retry,
+    });
+
+    sqlite.close();
+    sqlite = new Database(join(directory, 'fixture.sqlite'));
+    sqlite.pragma('foreign_keys = ON');
+    db = drizzle({ client: sqlite, schema });
+    store = createPracticeStore({ db, now: () => timestamp });
+    const reopened = await createSessionStore({
+      database: db,
+      now: () => Date.parse(retryTimestamp),
+    }).getStudySession(authorizedContext(), { sessionId: 'session-a' });
+
+    expect(reopened?.messages.map(({ id, parts }) => ({ id, parts }))).toEqual([
+      {
+        id: 'practice-message',
+        parts: [
+          text,
+          { kind: 'practice', practiceAttemptId: retry.id },
+          unrelated,
+          { kind: 'practice', practiceAttemptId: retry.id },
+        ],
+      },
+      {
+        id: 'second-practice-message',
+        parts: [{ kind: 'practice', practiceAttemptId: retry.id }],
+      },
+      {
+        id: 'student-message',
+        parts: [{ kind: 'text', text: 'I want another try.' }],
+      },
+    ]);
+    expect(reopened?.session).toMatchObject({
+      revision: 1,
+      updatedAt: retryTimestamp,
+      status: 'saved',
+      generationEpoch: 0,
+    });
+    expect(reopened?.revision).toBe(1);
+    expect(store.getPracticeAttempt('user-a', { attemptId: retry.id })).toEqual(
+      retry,
+    );
+    expect(
+      store.getPracticeAttempt('user-a', { attemptId: attempt.id }),
+    ).toEqual(evaluated);
+    expect(
+      sqlite
+        .prepare(
+          'SELECT COUNT(*) AS count FROM practice_answers WHERE attempt_id = ?',
+        )
+        .get(attempt.id),
+    ).toEqual({ count: 2 });
+    expect(retry.priorAttemptId).toBe(attempt.id);
+    expect(retry.answers).toEqual([]);
+  });
+
+  it('replays a retry after guided and submitted changes without rolling back a newer retry link', async () => {
+    insertSession();
+    const attempt = createAttempt({ sessionId: 'session-a' });
+    store.submitPracticeAttempt('user-a', {
+      attemptId: attempt.id,
+      expectedRevision: attempt.revision,
+      requestId: ids.submit,
+    });
+    insertMessage('practice-message', 0, [
+      { kind: 'practice', practiceAttemptId: attempt.id },
+    ]);
+    const retryInput = { attemptId: attempt.id, requestId: ids.retry };
+    const retry = store.retryPracticeAttempt('user-a', retryInput);
+    const sessionStore = createSessionStore({
+      database: db,
+      now: () => Date.parse(timestamp),
+    });
+    const afterRetry = await sessionStore.getStudySession(authorizedContext(), {
+      sessionId: 'session-a',
+    });
+    expect(store.retryPracticeAttempt('user-a', retryInput)).toEqual(retry);
+    expect(
+      await sessionStore.getStudySession(authorizedContext(), {
+        sessionId: 'session-a',
+      }),
+    ).toEqual(afterRetry);
+
+    const guided = store.switchPracticeToGuided('user-a', {
+      attemptId: retry.id,
+      expectedRevision: retry.revision,
+      requestId: ids.answer,
+    });
+    expect(store.retryPracticeAttempt('user-a', retryInput)).toEqual(guided);
+    const submitted = store.submitPracticeAttempt('user-a', {
+      attemptId: retry.id,
+      expectedRevision: guided.revision,
+      requestId: ids.submit,
+    });
+    const latest = store.retryPracticeAttempt('user-a', {
+      attemptId: retry.id,
+      requestId: '00000000-0000-4000-8000-000000000005',
+    });
+    const beforeReplay = await sessionStore.getStudySession(
+      authorizedContext(),
+      { sessionId: 'session-a' },
+    );
+
+    expect(latest.priorAttemptId).toBe(retry.id);
+    expect(latest.assisted).toBe(true);
+    expect(store.retryPracticeAttempt('user-a', retryInput)).toEqual(submitted);
+    const afterReplay = await sessionStore.getStudySession(
+      authorizedContext(),
+      { sessionId: 'session-a' },
+    );
+    expect(afterReplay).toEqual(beforeReplay);
+    expect(afterReplay?.messages[0]?.parts).toEqual([
+      { kind: 'practice', practiceAttemptId: latest.id },
+    ]);
+    expect(afterReplay?.revision).toBe(2);
+    expect(
+      sqlite.prepare('SELECT COUNT(*) AS count FROM practice_attempts').get(),
+    ).toEqual({ count: 3 });
+  });
+
+  it('relinks only matching parts in the account and owning session', () => {
+    const attempt = createSubmittedSessionPractice();
+    insertCourse('user-a', 'course-b');
+    insertCourse('user-b', 'course-c');
+    insertSession('session-b');
+    insertSession('session-c', 'user-a', 'course-b');
+    insertSession('session-d', 'user-b', 'course-c');
+    const originalParts: MessagePart[] = [
+      { kind: 'practice', practiceAttemptId: attempt.id },
+    ];
+    insertMessage('same-course-other-session', 0, originalParts, {
+      sessionId: 'session-b',
+    });
+    insertMessage('other-course', 0, originalParts, { sessionId: 'session-c' });
+    insertMessage('other-account', 0, originalParts, {
+      userId: 'user-b',
+      sessionId: 'session-d',
+    });
+    insertMessage('foreign-message-owner', 1, originalParts, {
+      userId: 'user-b',
+    });
+    expect(() =>
+      store.retryPracticeAttempt('user-b', {
+        attemptId: attempt.id,
+        requestId: ids.retry,
+      }),
+    ).toThrow(expect.objectContaining({ code: 'not-found' }));
+
+    const retry = store.retryPracticeAttempt('user-a', {
+      attemptId: attempt.id,
+      requestId: ids.retry,
+    });
+    expect(
+      sqlite.prepare('SELECT id, parts FROM study_messages ORDER BY id').all(),
+    ).toEqual([
+      { id: 'foreign-message-owner', parts: JSON.stringify(originalParts) },
+      { id: 'other-account', parts: JSON.stringify(originalParts) },
+      { id: 'other-course', parts: JSON.stringify(originalParts) },
+      {
+        id: 'practice-message',
+        parts: JSON.stringify([
+          { kind: 'practice', practiceAttemptId: retry.id },
+        ]),
+      },
+      { id: 'same-course-other-session', parts: JSON.stringify(originalParts) },
+    ]);
+    expect(
+      sqlite
+        .prepare('SELECT id, revision FROM study_sessions ORDER BY id')
+        .all(),
+    ).toEqual([
+      { id: 'session-a', revision: 1 },
+      { id: 'session-b', revision: 0 },
+      { id: 'session-c', revision: 0 },
+      { id: 'session-d', revision: 0 },
+    ]);
+  });
+
+  it.each([
+    [
+      'session owner',
+      "UPDATE study_sessions SET user_id = 'user-b'",
+      'scope-denied',
+    ],
+    [
+      'session course',
+      "UPDATE study_sessions SET course_id = 'course-b'",
+      'scope-denied',
+    ],
+    ['course owner', "UPDATE courses SET user_id = 'user-b'", 'not-found'],
+    [
+      'deleted session',
+      `UPDATE study_sessions SET deleted_at = '${timestamp}', generation_epoch = 1`,
+      'scope-denied',
+    ],
+    ['missing session', 'DELETE FROM study_sessions', 'scope-denied'],
+  ])(
+    'fences new retries and idempotent replay after a changed %s',
+    (_label, mutation, code) => {
+      const attempt = createSubmittedSessionPractice();
+      const retryInput = { attemptId: attempt.id, requestId: ids.retry };
+      store.retryPracticeAttempt('user-a', retryInput);
+      sqlite.prepare(mutation).run();
+      const sessionsBefore = sqlite
+        .prepare('SELECT * FROM study_sessions')
+        .all();
+      const messagesBefore = sqlite
+        .prepare('SELECT * FROM study_messages')
+        .all();
+      const attemptsBefore = sqlite
+        .prepare('SELECT * FROM practice_attempts')
+        .all();
+
+      for (const requestId of [
+        ids.retry,
+        '00000000-0000-4000-8000-000000000005',
+      ])
+        expect(() =>
+          store.retryPracticeAttempt('user-a', { ...retryInput, requestId }),
+        ).toThrow(expect.objectContaining({ code }));
+
+      expect(sqlite.prepare('SELECT * FROM study_sessions').all()).toEqual(
+        sessionsBefore,
+      );
+      expect(sqlite.prepare('SELECT * FROM study_messages').all()).toEqual(
+        messagesBefore,
+      );
+      expect(sqlite.prepare('SELECT * FROM practice_attempts').all()).toEqual(
+        attemptsBefore,
+      );
+    },
+  );
+
+  it('rejects a replay request id used for a different predecessor without relinking either attempt', () => {
+    const attempt = createSubmittedSessionPractice();
+    const retryInput = { attemptId: attempt.id, requestId: ids.retry };
+    store.retryPracticeAttempt('user-a', retryInput);
+    const other = createAttempt({
+      requestId: '00000000-0000-4000-8000-000000000005',
+    });
+    store.submitPracticeAttempt('user-a', {
+      attemptId: other.id,
+      expectedRevision: other.revision,
+      requestId: ids.submit,
+    });
+    const messagesBefore = sqlite.prepare('SELECT * FROM study_messages').all();
+    expect(() =>
+      store.retryPracticeAttempt('user-a', {
+        ...retryInput,
+        attemptId: other.id,
+      }),
+    ).toThrow(expect.objectContaining({ code: 'revision-conflict' }));
+    expect(sqlite.prepare('SELECT * FROM study_messages').all()).toEqual(
+      messagesBefore,
+    );
+    expect(
+      sqlite.prepare('SELECT COUNT(*) AS count FROM practice_attempts').get(),
+    ).toEqual({ count: 3 });
+  });
+
+  it.each([
+    ['message relink', 'study_messages', 'parts'],
+    ['session revision', 'study_sessions', 'revision'],
+  ])(
+    'rolls back retry creation and all links if %s fails',
+    async (_label, table, column) => {
+      const attempt = createSubmittedSessionPractice();
+      const before = await createSessionStore({
+        database: db,
+        now: () => Date.parse(timestamp),
+      }).getStudySession(authorizedContext(), { sessionId: 'session-a' });
+      sqlite.exec(`CREATE TRIGGER fail_retry BEFORE UPDATE OF ${column} ON ${table}
+      BEGIN SELECT RAISE(ABORT, 'test retry failure'); END`);
+      try {
+        expect(() =>
+          store.retryPracticeAttempt('user-a', {
+            attemptId: attempt.id,
+            requestId: ids.retry,
+          }),
+        ).toThrow(expect.objectContaining({ code: 'storage-failed' }));
+      } finally {
+        sqlite.exec('DROP TRIGGER fail_retry');
+      }
+      const after = await createSessionStore({
+        database: db,
+        now: () => Date.parse(timestamp),
+      }).getStudySession(authorizedContext(), { sessionId: 'session-a' });
+      expect(after).toEqual(before);
+      expect(
+        store.getPracticeAttempt('user-a', { attemptId: ids.retry }),
+      ).toBeNull();
+      expect(
+        store.getPracticeAttempt('user-a', { attemptId: attempt.id }),
+      ).toEqual(attempt);
+    },
+  );
+
+  it('leaves the session revision unchanged when no matching part is persisted', async () => {
+    insertSession();
+    const attempt = createAttempt({ sessionId: 'session-a' });
+    store.submitPracticeAttempt('user-a', {
+      attemptId: attempt.id,
+      expectedRevision: attempt.revision,
+      requestId: ids.submit,
+    });
+    insertMessage('other-practice', 0, [
+      { kind: 'practice', practiceAttemptId: 'another-attempt' },
+    ]);
+    const sessionStore = createSessionStore({
+      database: db,
+      now: () => Date.parse(timestamp),
+    });
+    const before = await sessionStore.getStudySession(authorizedContext(), {
+      sessionId: 'session-a',
+    });
+    const retry = store.retryPracticeAttempt('user-a', {
+      attemptId: attempt.id,
+      requestId: ids.retry,
+    });
+    expect(retry.priorAttemptId).toBe(attempt.id);
+    expect(
+      await sessionStore.getStudySession(authorizedContext(), {
+        sessionId: 'session-a',
+      }),
+    ).toEqual(before);
+  });
+
+  it('rejects a late retry when candidate approval races with session deletion', async () => {
+    const attempt = createSubmittedSessionPractice();
+    const publish = vi.fn();
+    const actions = createPracticeActions({
+      store,
+      assessCandidate: async () => {
+        sqlite
+          .prepare(
+            'UPDATE study_sessions SET deleted_at = ?, generation_epoch = 1',
+          )
+          .run(timestamp);
+        sqlite.prepare('DELETE FROM study_messages').run();
+        return { allowed: true };
+      },
+      canPublishFeedback: async () => true,
+      evaluateAnswer: vi.fn(),
+      publish,
+    });
+    await expect(
+      actions.retryPracticeAttempt(authorizedContext(), {
+        attemptId: attempt.id,
+        requestId: ids.retry,
+      }),
+    ).rejects.toMatchObject({ code: 'scope-denied' });
+    expect(
+      store.getPracticeAttempt('user-a', { attemptId: ids.retry }),
+    ).toBeNull();
+    expect(
+      sqlite.prepare('SELECT COUNT(*) AS count FROM study_messages').get(),
+    ).toEqual({ count: 0 });
+    expect(
+      sqlite
+        .prepare(
+          'SELECT deleted_at, generation_epoch, revision FROM study_sessions',
+        )
+        .get(),
+    ).toEqual({ deleted_at: timestamp, generation_epoch: 1, revision: 0 });
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it('publishes one owning-session invalidation after relinking commits and none for replay or unmatched parts', async () => {
+    const attempt = createSubmittedSessionPractice();
+    const observations: unknown[] = [];
+    const publish = vi.fn((event: unknown) => {
+      observations.push({
+        event,
+        inTransaction: sqlite.inTransaction,
+        parts: sqlite
+          .prepare('SELECT parts FROM study_messages WHERE id = ?')
+          .get('practice-message'),
+        retry: store.getPracticeAttempt('user-a', { attemptId: ids.retry }),
+      });
+    });
+    const actions = createPracticeActions({
+      store,
+      assessCandidate: async () => ({ allowed: true }),
+      canPublishFeedback: async () => true,
+      evaluateAnswer: vi.fn(),
+      publish,
+    });
+    const input = { attemptId: attempt.id, requestId: ids.retry };
+    const retry = await actions.retryPracticeAttempt(
+      authorizedContext(),
+      input,
+    );
+    expect(observations).toEqual([
+      {
+        event: {
+          version: 1,
+          accountId: 'user-a',
+          resource: 'study',
+          targetId: 'session-a',
+          revision: 1,
+          operationId: ids.retry,
+        },
+        inTransaction: false,
+        parts: {
+          parts: JSON.stringify([
+            { kind: 'practice', practiceAttemptId: retry.id },
+          ]),
+        },
+        retry,
+      },
+    ]);
+    await actions.retryPracticeAttempt(authorizedContext(), input);
+    await actions.retryPracticeAttempt(authorizedContext(), {
+      ...input,
+      requestId: '00000000-0000-4000-8000-000000000005',
+    });
+    expect(publish).toHaveBeenCalledOnce();
+  });
+
+  it('preserves the committed retry and relink when the invalidation subscriber fails', async () => {
+    const attempt = createSubmittedSessionPractice();
+    const publish = vi.fn(() => {
+      throw new Error('subscriber unavailable');
+    });
+    const actions = createPracticeActions({
+      store,
+      assessCandidate: async () => ({ allowed: true }),
+      canPublishFeedback: async () => true,
+      evaluateAnswer: vi.fn(),
+      publish,
+    });
+    const input = { attemptId: attempt.id, requestId: ids.retry };
+    const retry = await actions.retryPracticeAttempt(
+      authorizedContext(),
+      input,
+    );
+    expect(retry.id).toBe(ids.retry);
+    const reopened = await createSessionStore({
+      database: db,
+      now: () => Date.parse(timestamp),
+    }).getStudySession(authorizedContext(), { sessionId: 'session-a' });
+    expect(reopened?.messages[0]?.parts).toEqual([
+      { kind: 'practice', practiceAttemptId: retry.id },
+    ]);
+    expect(reopened?.revision).toBe(1);
+    expect(
+      await actions.retryPracticeAttempt(authorizedContext(), input),
+    ).toEqual(retry);
+    expect(publish).toHaveBeenCalledOnce();
+  });
+
+  it.each(['scope-denied', 'session-changed', 'cancelled'] as const)(
+    'rejects retry with no durable mutation when approval settles as %s',
+    async (code) => {
+      const attempt = createSubmittedSessionPractice();
+      let current = true;
+      const controller = new AbortController();
+      const context = {
+        ...authorizedContext(),
+        signal: controller.signal,
+        isCurrent: () => current,
+      };
+      const publish = vi.fn();
+      const actions = createPracticeActions({
+        store,
+        assessCandidate: async () => {
+          if (code === 'session-changed') current = false;
+          if (code === 'cancelled') controller.abort();
+          return { allowed: code !== 'scope-denied' };
+        },
+        canPublishFeedback: async () => true,
+        evaluateAnswer: vi.fn(),
+        publish,
+      });
+      await expect(
+        actions.retryPracticeAttempt(context, {
+          attemptId: attempt.id,
+          requestId: ids.retry,
+        }),
+      ).rejects.toMatchObject({ code });
+      expect(
+        store.getPracticeAttempt('user-a', { attemptId: ids.retry }),
+      ).toBeNull();
+      expect(
+        sqlite.prepare('SELECT revision FROM study_sessions').get(),
+      ).toEqual({ revision: 0 });
+      expect(sqlite.prepare('SELECT parts FROM study_messages').get()).toEqual({
+        parts: JSON.stringify([
+          { kind: 'practice', practiceAttemptId: attempt.id },
+        ]),
+      });
+      expect(publish).not.toHaveBeenCalled();
+    },
+  );
 
   it('scopes attempts to their account and detaches retained work by deleting session practice', () => {
     insertSession();

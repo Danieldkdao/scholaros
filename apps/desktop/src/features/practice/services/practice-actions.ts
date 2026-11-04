@@ -20,7 +20,10 @@ import {
 } from '@scholaros/services/learning/product-contracts';
 import { PracticeStoreError, type PracticeStore } from './practice-store';
 import { validatePracticeEvaluation } from './practice-evaluation';
-import { registerStudySessionOperation } from '../../study/services/session-events';
+import {
+  createStudySessionEvent,
+  registerStudySessionOperation,
+} from '../../study/services/session-events';
 
 export const practiceAttemptCreationInputSchema = z
   .strictObject({
@@ -565,7 +568,21 @@ export const createPracticeActions = (
       dependencies,
     );
     try {
-      return dependencies.store.retryPracticeAttempt(context.userId, input);
+      return dependencies.store.retryPracticeAttempt(
+        context.userId,
+        input,
+        ({ sessionId, revision }) => {
+          if (!context.isCurrent() || context.signal.aborted) return;
+          publishAfterCommit(
+            dependencies.publish,
+            createStudySessionEvent(context, {
+              sessionId,
+              revision,
+              operationId: input.requestId,
+            }),
+          );
+        },
+      );
     } catch (error) {
       return storeError(error);
     }

@@ -18,12 +18,14 @@ import {
   revisionSchema,
   type JsonValue,
 } from '@scholaros/services/learning/product-contracts';
+import { studyMessagePartSchema } from '@scholaros/services/learning/study-contracts';
 import {
   ArtifactTable,
   ArtifactVersionTable,
   CourseTable,
   PracticeAnswerTable,
   PracticeAttemptTable,
+  StudyMessageTable,
   StudySessionTable,
 } from '../../../db/schema';
 import { validatePracticeEvaluation } from './practice-evaluation';
@@ -1036,47 +1038,193 @@ export const createPracticeStore = ({
     }
   };
 
-  const retryPracticeAttempt = (userId: string, input: unknown) => {
+  const retryPracticeAttempt = (
+    userId: string,
+    input: unknown,
+    onSessionChange?: (change: { sessionId: string; revision: number }) => void,
+  ) => {
     const parsed = retryPracticeAttemptInputSchema.safeParse(input);
     if (!parsed.success || !idSchema.safeParse(userId).success)
       throw new PracticeStoreError('invalid-input');
-    const priorAttempt = db
-      .select()
-      .from(PracticeAttemptTable)
-      .where(
-        and(
-          eq(PracticeAttemptTable.userId, userId),
-          eq(PracticeAttemptTable.id, parsed.data.attemptId),
-        ),
-      )
-      .get();
-    if (!priorAttempt) throw new PracticeStoreError('not-found');
-    if (priorAttempt.status === 'in-progress')
-      throw new PracticeStoreError('revision-conflict');
-    const questions = z
-      .array(practiceQuestionSchema)
-      .safeParse(priorAttempt.questionSet);
-    const answerKeys = practiceAnswerKeySchema.safeParse(
-      priorAttempt.hostAnswerKey,
-    );
-    if (!questions.success || !answerKeys.success)
+    const updatedAt = now();
+    if (!instantSchema.safeParse(updatedAt).success)
       throw new PracticeStoreError('storage-failed');
-    return createPracticeAttempt(userId, {
-      requestId: parsed.data.requestId,
-      courseId: priorAttempt.courseId,
-      sessionId: priorAttempt.sessionId,
-      artifactId: priorAttempt.artifactId,
-      versionId: priorAttempt.versionId,
-      objectiveIds: priorAttempt.objectiveIds,
-      mode: priorAttempt.mode,
-      feedbackMode:
-        priorAttempt.mode === 'guided' ? 'end' : priorAttempt.feedbackMode,
-      rubricVersion: priorAttempt.rubricVersion,
-      questions: questions.data,
-      hostAnswerKey: answerKeys.data,
-      priorAttemptId: priorAttempt.id,
-      initialAssisted: priorAttempt.assisted,
-    });
+
+    try {
+      const result = db.transaction((tx) => {
+        const priorAttempt = tx
+          .select()
+          .from(PracticeAttemptTable)
+          .where(
+            and(
+              eq(PracticeAttemptTable.userId, userId),
+              eq(PracticeAttemptTable.id, parsed.data.attemptId),
+            ),
+          )
+          .get();
+        if (!priorAttempt) throw new PracticeStoreError('not-found');
+        if (priorAttempt.status === 'in-progress')
+          throw new PracticeStoreError('revision-conflict');
+        const course = tx
+          .select({ id: CourseTable.id })
+          .from(CourseTable)
+          .where(
+            and(
+              eq(CourseTable.userId, userId),
+              eq(CourseTable.id, priorAttempt.courseId),
+            ),
+          )
+          .get();
+        if (!course) throw new PracticeStoreError('not-found');
+        const session = priorAttempt.sessionId
+          ? tx
+              .select()
+              .from(StudySessionTable)
+              .where(
+                and(
+                  eq(StudySessionTable.id, priorAttempt.sessionId),
+                  eq(StudySessionTable.userId, userId),
+                  eq(StudySessionTable.courseId, priorAttempt.courseId),
+                  isNull(StudySessionTable.deletedAt),
+                ),
+              )
+              .get()
+          : null;
+        if (priorAttempt.sessionId && !session)
+          throw new PracticeStoreError('scope-denied');
+        const existingRetry = tx
+          .select()
+          .from(PracticeAttemptTable)
+          .where(eq(PracticeAttemptTable.id, parsed.data.requestId))
+          .get();
+        if (existingRetry) {
+          if (existingRetry.userId !== userId)
+            throw new PracticeStoreError('not-found');
+          if (
+            existingRetry.priorAttemptId !== priorAttempt.id ||
+            existingRetry.courseId !== priorAttempt.courseId ||
+            existingRetry.sessionId !== priorAttempt.sessionId ||
+            existingRetry.artifactId !== priorAttempt.artifactId ||
+            existingRetry.versionId !== priorAttempt.versionId ||
+            existingRetry.rubricVersion !== priorAttempt.rubricVersion
+          )
+            throw new PracticeStoreError('revision-conflict');
+          const snapshot = readAttempt(userId, existingRetry.id);
+          if (!snapshot) throw new PracticeStoreError('storage-failed');
+          // Replay returns current attempt state without rewinding any transcript link.
+          return { snapshot, sessionChange: null };
+        }
+        const questions = z
+          .array(practiceQuestionSchema)
+          .safeParse(priorAttempt.questionSet);
+        const answerKeys = practiceAnswerKeySchema.safeParse(
+          priorAttempt.hostAnswerKey,
+        );
+        if (!questions.success || !answerKeys.success)
+          throw new PracticeStoreError('storage-failed');
+
+        // The nested creation savepoint and transcript updates share this transaction.
+        const retry = createPracticeAttempt(userId, {
+          requestId: parsed.data.requestId,
+          courseId: priorAttempt.courseId,
+          sessionId: priorAttempt.sessionId,
+          artifactId: priorAttempt.artifactId,
+          versionId: priorAttempt.versionId,
+          objectiveIds: priorAttempt.objectiveIds,
+          mode: priorAttempt.mode,
+          feedbackMode:
+            priorAttempt.mode === 'guided' ? 'end' : priorAttempt.feedbackMode,
+          rubricVersion: priorAttempt.rubricVersion,
+          questions: questions.data,
+          hostAnswerKey: answerKeys.data,
+          priorAttemptId: priorAttempt.id,
+          initialAssisted: priorAttempt.assisted,
+        });
+        if (!session) return { snapshot: retry, sessionChange: null };
+        const messages = tx
+          .select({ id: StudyMessageTable.id, parts: StudyMessageTable.parts })
+          .from(StudyMessageTable)
+          .where(
+            and(
+              eq(StudyMessageTable.userId, userId),
+              eq(StudyMessageTable.sessionId, session.id),
+            ),
+          )
+          .all();
+        let relinked = false;
+        for (const message of messages) {
+          const parts = z
+            .array(studyMessagePartSchema)
+            .max(100)
+            .safeParse(message.parts);
+          if (!parts.success) throw new PracticeStoreError('storage-failed');
+          if (
+            !parts.data.some(
+              (part) =>
+                part.kind === 'practice' &&
+                part.practiceAttemptId === priorAttempt.id,
+            )
+          )
+            continue;
+          const updatedMessage = tx
+            .update(StudyMessageTable)
+            .set({
+              parts: parts.data.map((part) =>
+                part.kind === 'practice' &&
+                part.practiceAttemptId === priorAttempt.id
+                  ? { ...part, practiceAttemptId: retry.id }
+                  : part,
+              ),
+            })
+            .where(
+              and(
+                eq(StudyMessageTable.id, message.id),
+                eq(StudyMessageTable.userId, userId),
+                eq(StudyMessageTable.sessionId, session.id),
+              ),
+            )
+            .run();
+          if (updatedMessage.changes !== 1)
+            throw new PracticeStoreError('revision-conflict');
+          relinked = true;
+        }
+        if (relinked) {
+          const updatedSession = tx
+            .update(StudySessionTable)
+            .set({ revision: session.revision + 1, updatedAt })
+            .where(
+              and(
+                eq(StudySessionTable.id, session.id),
+                eq(StudySessionTable.userId, userId),
+                eq(StudySessionTable.courseId, priorAttempt.courseId),
+                eq(StudySessionTable.revision, session.revision),
+                eq(StudySessionTable.generationEpoch, session.generationEpoch),
+                isNull(StudySessionTable.deletedAt),
+              ),
+            )
+            .run();
+          if (updatedSession.changes !== 1)
+            throw new PracticeStoreError('revision-conflict');
+        }
+        return {
+          snapshot: retry,
+          sessionChange: relinked
+            ? { sessionId: session.id, revision: session.revision + 1 }
+            : null,
+        };
+      });
+      if (result.sessionChange) {
+        try {
+          onSessionChange?.(result.sessionChange);
+        } catch {
+          // Invalidation failure cannot undo the committed retry and transcript.
+        }
+      }
+      return result.snapshot;
+    } catch (error) {
+      if (error instanceof PracticeStoreError) throw error;
+      throw new PracticeStoreError('storage-failed');
+    }
   };
 
   const deletePracticeAttemptsForSession = (
