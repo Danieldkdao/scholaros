@@ -232,6 +232,7 @@ let authorizingActivityScope: ActivityScope | null = null;
 let activityMountQueue: Promise<void> = Promise.resolve();
 let activityDisposal: Promise<void> = Promise.resolve();
 const activityScopes = new Map<string, ActivityScope>();
+const pendingActivitySessions = new Map<string, number>();
 const closingActivityWindows = new WeakSet<BrowserWindow>();
 
 const disposeActivityManager = () => {
@@ -522,6 +523,10 @@ const registerActivityIpc = () => {
       const epoch = activityEpoch;
       const frame = event.senderFrame;
       const cookie = authClient.getCookie();
+      pendingActivitySessions.set(
+        selection.sessionId,
+        (pendingActivitySessions.get(selection.sessionId) ?? 0) + 1,
+      );
       const operation = activityMountQueue.then(async () => {
         await activityDisposal;
         const user = await getActivityUser(event);
@@ -569,7 +574,15 @@ const registerActivityIpc = () => {
         () => undefined,
         () => undefined,
       );
-      return operation;
+      try {
+        return await operation;
+      } finally {
+        const remaining =
+          (pendingActivitySessions.get(selection.sessionId) ?? 1) - 1;
+        if (remaining === 0)
+          pendingActivitySessions.delete(selection.sessionId);
+        else pendingActivitySessions.set(selection.sessionId, remaining);
+      }
     },
   );
   ipcMain.handle(
@@ -776,8 +789,14 @@ app
     }
     await registerAcademicClient({
       onIdentityChange: disposeActivityManager,
-      beforeSessionDelete: async () => {
-        await disposeActivityManager();
+      beforeSessionDelete: async (sessionId) => {
+        if (
+          pendingActivitySessions.has(sessionId) ||
+          [...activityScopes.values()].some(
+            (scope) => scope.input.sessionId === sessionId,
+          )
+        )
+          await disposeActivityManager();
       },
       beforeDisconnect: disposeActivityManager,
     });

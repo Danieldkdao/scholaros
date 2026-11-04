@@ -974,6 +974,20 @@ it('settles the scoped closed event before removing its run and returning native
     }),
   );
 });
+it('does not close another session activity when unrelated session history is deleted', async () => {
+  mockActivityService();
+  await import('../src/main');
+  await vi.waitFor(() => expect(mocks.windows).toBe(1));
+  await mocks.ipcHandlers.get('scholar:native:mountActivity')!(
+    activityEvent(),
+    activityInput(),
+  );
+  const lifecycle = mocks.register.mock.calls[0]![0] as {
+    beforeSessionDelete: (sessionId: string) => Promise<void>;
+  };
+  await lifecycle.beforeSessionDelete('other-session');
+  expect(mocks.disposeActivities).not.toHaveBeenCalled();
+});
 it('runs the service without a desktop window or renderer authentication bridges', async () => {
   mocks.serviceMode = true;
   await import('../src/main');
