@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import {
   practiceFeedbackModes,
@@ -20,6 +20,7 @@ import {
 } from '@scholaros/services/learning/product-contracts';
 import { PracticeStoreError, type PracticeStore } from './practice-store';
 import { validatePracticeEvaluation } from './practice-evaluation';
+import { registerStudySessionOperation } from '../../study/services/session-events';
 
 export const practiceAttemptCreationInputSchema = z
   .strictObject({
@@ -57,6 +58,7 @@ export type PracticeAttemptCreationInput = z.infer<
 export type PracticeCandidateForAssessment = {
   courseId: string;
   sessionId: string | null;
+  rubricVersion: string;
   mode: (typeof practiceModes)[number];
   questions: PracticeQuestionDTO[];
   hostAnswerKey: JsonValue;
@@ -139,6 +141,7 @@ const candidateForAssessment = (
 ): PracticeCandidateForAssessment => ({
   courseId: input.courseId,
   sessionId: input.sessionId,
+  rubricVersion: input.rubricVersion,
   mode: input.mode,
   questions: input.questions,
   hostAnswerKey: input.hostAnswerKey,
@@ -244,9 +247,10 @@ const candidateForWork = (
 ): PracticeCandidateForAssessment => ({
   courseId: work.attempt.courseId,
   sessionId: work.attempt.sessionId,
+  rubricVersion: work.attempt.rubricVersion,
   mode: work.attempt.mode,
   questions: work.questions,
-  hostAnswerKey: work.answerKeys as unknown as JsonValue,
+  hostAnswerKey: jsonValueSchema.parse(work.answerKeys),
 });
 
 const requireCurrentFeedbackPermission = async (
@@ -302,7 +306,7 @@ const evaluateAnswer = async (
         mode: work.attempt.mode,
         question,
         answer: answerRow.answer,
-        answerKey: answerKey as unknown as JsonValue,
+        answerKey: jsonValueSchema.parse(answerKey),
         rubricVersion: work.attempt.rubricVersion,
         assisted: answerRow.assisted,
       },
@@ -316,7 +320,7 @@ const evaluateAnswer = async (
   const evaluation = validatePracticeEvaluation(
     {
       question,
-      answerKey: [answerKey] as unknown as JsonValue,
+      answerKey: jsonValueSchema.parse([answerKey]),
       rubricVersion: work.attempt.rubricVersion,
       assisted: answerRow.assisted,
     },
@@ -402,7 +406,7 @@ export const createPracticeActions = (
       const existingEvaluation = validatePracticeEvaluation(
         {
           question,
-          answerKey: [answerKey] as unknown as JsonValue,
+          answerKey: jsonValueSchema.parse([answerKey]),
           rubricVersion: work.attempt.rubricVersion,
           assisted: answer.assisted,
         },
@@ -486,7 +490,7 @@ export const createPracticeActions = (
         ? validatePracticeEvaluation(
             {
               question,
-              answerKey: [answerKey] as unknown as JsonValue,
+              answerKey: jsonValueSchema.parse([answerKey]),
               rubricVersion: work.attempt.rubricVersion,
               assisted: answer.assisted,
             },
@@ -584,10 +588,76 @@ export const registerPracticeActions = (
     ...dependencies,
     publish: (event) => registrar.publish(event),
   });
-  registrar.handle('getPracticeAttempt', actions.getPracticeAttempt);
-  registrar.handle('savePracticeAnswer', actions.savePracticeAnswer);
-  registrar.handle('submitPracticeAttempt', actions.submitPracticeAttempt);
-  registrar.handle('switchPracticeToGuided', actions.switchPracticeToGuided);
-  registrar.handle('retryPracticeAttempt', actions.retryPracticeAttempt);
-  return async () => undefined;
+  let disposed = false;
+  const active = new Set<{
+    controller: AbortController;
+    promise: Promise<unknown>;
+  }>();
+  const protect =
+    <Input extends { attemptId: string }, Result>(
+      handler: (context: AuthorizedContext, input: Input) => Promise<Result>,
+    ) =>
+    async (context: AuthorizedContext, input: Input): Promise<Result> => {
+      assertCurrent(context);
+      if (disposed) throw new PracticeActionError('session-changed');
+      const controller = new AbortController();
+      const abort = () => controller.abort();
+      context.signal.addEventListener('abort', abort, { once: true });
+      const operationId = randomUUID();
+      const unregister = registrar.lifecycle.registerOperation(
+        `${context.userId}:practice:${input.attemptId}`,
+        operationId,
+        controller,
+      );
+      let unregisterSession: (() => void) | undefined;
+      let execution:
+        | { controller: AbortController; promise: Promise<unknown> }
+        | undefined;
+      try {
+        const sessionId = dependencies.store.getPracticeAttempt(
+          context.userId,
+          { attemptId: input.attemptId },
+        )?.sessionId;
+        if (sessionId)
+          unregisterSession = registerStudySessionOperation(
+            context,
+            sessionId,
+            operationId,
+            controller,
+          );
+        const promise = Promise.resolve().then(() =>
+          handler({ ...context, signal: controller.signal }, input),
+        );
+        execution = { controller, promise };
+        active.add(execution);
+        return await promise;
+      } finally {
+        context.signal.removeEventListener('abort', abort);
+        unregisterSession?.();
+        unregister();
+        if (execution) active.delete(execution);
+      }
+    };
+  const cleanup = async () => {
+    disposed = true;
+    const pending = [...active];
+    for (const { controller } of pending) controller.abort();
+    await Promise.allSettled(pending.map(({ promise }) => promise));
+  };
+  registrar.handle('getPracticeAttempt', protect(actions.getPracticeAttempt));
+  registrar.handle('savePracticeAnswer', protect(actions.savePracticeAnswer));
+  registrar.handle(
+    'submitPracticeAttempt',
+    protect(actions.submitPracticeAttempt),
+  );
+  registrar.handle(
+    'switchPracticeToGuided',
+    protect(actions.switchPracticeToGuided),
+  );
+  registrar.handle(
+    'retryPracticeAttempt',
+    protect(actions.retryPracticeAttempt),
+  );
+  registrar.lifecycle.onTeardown(cleanup);
+  return cleanup;
 };

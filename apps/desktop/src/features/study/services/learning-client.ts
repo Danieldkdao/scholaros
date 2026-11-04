@@ -1,7 +1,16 @@
 import { z } from 'zod';
-import { safeErrorCodeSchema, type SafeErrorCode } from '@scholaros/services/learning/product-contracts';
-import { sourceReferenceSchema, type SourceReference } from '@scholaros/services/learning/context-contracts';
-import { preparedStudyContextSchema, type PreparedStudyContext } from '@scholaros/services/learning/study-contracts';
+import {
+  safeErrorCodeSchema,
+  type SafeErrorCode,
+} from '@scholaros/services/learning/product-contracts';
+import {
+  sourceReferenceSchema,
+  type SourceReference,
+} from '@scholaros/services/learning/context-contracts';
+import {
+  preparedStudyContextSchema,
+  type PreparedStudyContext,
+} from '@scholaros/services/learning/study-contracts';
 import { learningEffectSchema } from './learning-tools';
 
 export const tutorGenerationInputSchema = z.strictObject({
@@ -196,6 +205,7 @@ export const createLearningClient = (transport: LearningTransport) => ({
     try {
       response = await transport.requestLearning(request, signal);
     } catch (error) {
+      if (!signal.aborted && error instanceof LearningClientError) throw error;
       const code = signal.aborted
         ? 'cancelled'
         : (getSafeTransportCode(error) ?? 'provider-failed');

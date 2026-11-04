@@ -297,14 +297,24 @@ const createTutorDependencies = (
   ),
   setStudyTurnStatus: vi.fn(async () => undefined),
   settleStudyTurn: vi.fn(async () => undefined),
-  commitStudyTurn: vi.fn(async () => ({ committed: true, revision: 5 })),
+  commitStudyTurn: vi.fn(async (_context, _input, beforePublish) => {
+    beforePublish?.();
+    return { committed: true, revision: 5 };
+  }),
   appendStudyTurnParts: vi.fn(async () => ({ committed: true, revision: 6 })),
-  assessCandidate: vi.fn(async () => ({
-    allowed: true,
-    reasonCode: 'allowed',
-    revision: 2,
-  })),
-  recordAssistance: vi.fn(async () => undefined),
+  assessCandidate: vi.fn<TutorServiceDependencies['assessCandidate']>(
+    async () => ({
+      allowed: true,
+      candidateDigest: 'a'.repeat(64),
+      reasonCode: 'approved',
+      revision: 2,
+    }),
+  ),
+  recordAssistance: vi.fn(() => undefined),
+  reserveStudyTurnAssistance: vi.fn((_context, input, reserve) => {
+    reserve();
+    return input.policyRevision + 1;
+  }),
   studyContext: {
     getStudySession: vi.fn(async () => tutorSessionSnapshot),
     readCourseSources: vi.fn(async () => sourceRead),
@@ -417,7 +427,17 @@ describe('durable tutor turns', () => {
     await vi.waitFor(() =>
       expect(dependencies.commitStudyTurn).toHaveBeenCalledTimes(1),
     );
-    expect(dependencies.settleStudyTurn).toHaveBeenCalledWith(
+    expect(dependencies.setStudyTurnStatus).toHaveBeenNthCalledWith(
+      1,
+      expect.anything(),
+      expect.objectContaining({ status: 'generating' }),
+    );
+    expect(dependencies.setStudyTurnStatus).toHaveBeenNthCalledWith(
+      2,
+      expect.anything(),
+      expect.objectContaining({ status: 'checking' }),
+    );
+    expect(dependencies.settleStudyTurn).not.toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ turnId: 'turn-a', status: 'complete' }),
     );
@@ -546,18 +566,21 @@ describe('durable tutor turns', () => {
           enabled: true,
         })),
       },
-      assessCandidate: vi.fn(async () => ({
-        allowed: false,
-        safeParts: [
-          {
-            kind: 'text' as const,
-            text: 'Review the concept without repeating the answer.',
-          },
-          { kind: 'citation' as const, reference: gradeReference },
-        ],
-        reasonCode: 'policy-rejected',
-        revision: 2,
-      })),
+      assessCandidate: vi.fn<TutorServiceDependencies['assessCandidate']>(
+        async () => ({
+          allowed: false,
+          candidateDigest: 'b'.repeat(64),
+          safeParts: [
+            {
+              kind: 'text' as const,
+              text: 'Review the concept without repeating the answer.',
+            },
+            { kind: 'citation' as const, reference: gradeReference },
+          ],
+          reasonCode: 'answer-risk',
+          revision: 2,
+        }),
+      ),
     });
     const service = createTutorService(dependencies, lifecycle);
 
@@ -573,6 +596,7 @@ describe('durable tutor turns', () => {
         gradeConsentRevision: gradeSettings.revision,
         sourceReferences: [gradeReference],
       }),
+      undefined,
     );
     await service.cleanup();
   });
@@ -657,19 +681,22 @@ describe('durable tutor turns', () => {
 
     await service.sendStudyTurn(authorizedContext(), sendInput);
     await vi.waitFor(() =>
-      expect(dependencies.settleStudyTurn).toHaveBeenCalledTimes(1),
+      expect(dependencies.recordAssistance).toHaveBeenCalledTimes(1),
     );
 
     expect(dependencies.recordAssistance).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
-        sessionId: 'session-a',
         turnId: 'turn-a',
-        generationEpoch: 4,
-        contextRevision: 11,
-        policyRevision: protectedPolicy.policyRevision,
-        gradeConsentRevision: protectedPolicy.consentRevision,
         protectionId: 'protection-a',
+        allowedSupportSummary: {
+          version: 1,
+          operation: 'concept',
+          candidateDigest: 'a'.repeat(64),
+          expectedPolicyRevision: protectedPolicy.policyRevision,
+          expectedConsentRevision: protectedPolicy.consentRevision,
+        },
+        riskTags: [],
       }),
     );
     await service.cleanup();

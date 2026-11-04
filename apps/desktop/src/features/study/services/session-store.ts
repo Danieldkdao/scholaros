@@ -126,6 +126,10 @@ export type CreateSessionStoreOptions = {
     storageKeys: string[],
   ) => void | Promise<void>;
   publish?: (event: ProductEventV1) => void;
+  resolvePolicyRevision?: (
+    context: AuthorizedContext,
+    input: { sessionId: string },
+  ) => number;
 };
 
 type Transaction = BetterSQLiteTransaction<
@@ -390,7 +394,7 @@ const currentGradeSettings = (transaction: Transaction, userId: string) => {
   );
 };
 
-const readStudyRevisions = (
+const readPersistedStudyRevisions = (
   transaction: Transaction,
   context: AuthorizedContext,
   session: StudySessionSelectData,
@@ -937,8 +941,122 @@ export const createSessionStore = ({
   idGenerator = randomUUID,
   cleanupOriginals,
   publish,
+  resolvePolicyRevision,
 }: CreateSessionStoreOptions = {}) => {
   const timer = createStudyTimer({ database, now, publish });
+
+  const readStudyRevisions = (
+    transaction: Transaction,
+    context: AuthorizedContext,
+    session: StudySessionSelectData,
+  ): StudyRevisions => {
+    const revisions = readPersistedStudyRevisions(
+      transaction,
+      context,
+      session,
+    );
+    if (!resolvePolicyRevision) return revisions;
+    const policyRevision = resolvePolicyRevision(context, {
+      sessionId: session.id,
+    });
+    if (!Number.isSafeInteger(policyRevision) || policyRevision < 0)
+      throw new StudySessionError(
+        'permission-revoked',
+        'Study policy is unavailable.',
+      );
+    return { ...revisions, policyRevision };
+  };
+
+  const readStudySessionRevisions = (
+    context: AuthorizedContext,
+    input: { sessionId: string },
+  ): StudyRevisions => {
+    assertCurrent(context);
+    return database.transaction((transaction) => {
+      const session = readSession(transaction, context, input.sessionId);
+      if (!session)
+        throw new StudySessionError('not-found', 'Study session not found.');
+      return readStudyRevisions(transaction, context, session);
+    });
+  };
+
+  const reserveStudyTurnAssistance = (
+    context: AuthorizedContext,
+    input: {
+      sessionId: string;
+      turnId: string;
+      generationEpoch: number;
+      policyRevision: number;
+      contextRevision: number;
+      gradeConsentRevision: number;
+    },
+    reserve: () => void,
+  ): number => {
+    assertCurrent(context);
+    return database.transaction((transaction) => {
+      const session = readSession(transaction, context, input.sessionId);
+      const turn = transaction
+        .select()
+        .from(StudyTurnTable)
+        .where(
+          and(
+            eq(StudyTurnTable.userId, context.userId),
+            eq(StudyTurnTable.sessionId, input.sessionId),
+            eq(StudyTurnTable.id, input.turnId),
+          ),
+        )
+        .get();
+      if (
+        !session ||
+        !turn ||
+        session.generationEpoch !== input.generationEpoch ||
+        turn.generationEpoch !== input.generationEpoch ||
+        turn.status !== 'checking'
+      )
+        throw new StudySessionError(
+          'session-changed',
+          'The study turn changed.',
+        );
+      const revisions = readStudyRevisions(transaction, context, session);
+      if (
+        revisions.policyRevision !== input.policyRevision ||
+        turn.policyRevision !== input.policyRevision ||
+        revisions.contextRevision !== input.contextRevision ||
+        turn.contextRevision !== input.contextRevision ||
+        revisions.gradeConsentRevision !== input.gradeConsentRevision
+      )
+        throw new StudySessionError(
+          'permission-revoked',
+          'Study permissions changed.',
+        );
+      reserve();
+      assertCurrent(context);
+      const policyRevision = readStudyRevisions(
+        transaction,
+        context,
+        session,
+      ).policyRevision;
+      if (
+        !Number.isSafeInteger(policyRevision) ||
+        policyRevision !== input.policyRevision + 1
+      )
+        throw new StudySessionError(
+          'permission-revoked',
+          'Assistance reservation changed.',
+        );
+      transaction
+        .update(StudyTurnTable)
+        .set({ policyRevision })
+        .where(
+          and(
+            eq(StudyTurnTable.userId, context.userId),
+            eq(StudyTurnTable.id, input.turnId),
+          ),
+        )
+        .run();
+      return policyRevision;
+    });
+  };
 
   const createStudySession = async (
     context: AuthorizedContext,
@@ -1862,6 +1980,7 @@ export const createSessionStore = ({
   const commitStudyTurn = async (
     context: AuthorizedContext,
     rawInput: CommitStudyTurnInput,
+    beforePublish?: () => void,
   ): Promise<TurnDTO> => {
     const parsedInput = commitTurnInput.safeParse(rawInput);
     if (!parsedInput.success)
@@ -2039,6 +2158,8 @@ export const createSessionStore = ({
           };
         }
 
+        beforePublish?.();
+        assertCurrent(context);
         const nowIso = toIso(now());
         const messageId = idGenerator();
         transaction
@@ -3349,6 +3470,8 @@ export const createSessionStore = ({
     settleStudyTurn,
     reconcileOrphanedStudyTurns,
     retryStudyTurn,
+    readStudySessionRevisions,
+    reserveStudyTurnAssistance,
     purgeGradeDerivedStudyContent,
     timer,
   };

@@ -16,8 +16,11 @@ import type { SourceReference } from '@scholaros/services/learning/context-contr
 import {
   studyMessagePartSchema,
   type MessagePart,
-  type StudyTurnStatus,
 } from '@scholaros/services/learning/study-contracts';
+import type {
+  AllowedSupportSummary,
+  AssistanceRiskTag,
+} from '../../integrity/services/assistance-store';
 import {
   createLearningClient,
   LearningClientError,
@@ -29,7 +32,7 @@ import {
   runApprovedLearningEffects,
   validateLearningEffects,
   type LearningEffectHandlers,
-  type LearningEffectKind,
+  type LearningEffect,
 } from './learning-tools';
 import {
   prepareStudyContext,
@@ -37,6 +40,7 @@ import {
   type StudyContextDependencies,
   type StudyContextPreparation,
 } from './study-context';
+import { registerStudySessionOperation } from './session-events';
 
 export const sendStudyTurnInputSchema = z
   .strictObject({
@@ -85,8 +89,17 @@ export type TurnAdmission = {
 
 export type TutorCandidateAssessment = {
   allowed: boolean;
+  candidateDigest: string | null;
   safeParts?: MessagePart[];
-  reasonCode: string;
+  reasonCode:
+    | 'approved'
+    | 'invalid-input'
+    | 'policy-changed'
+    | 'scope-denied'
+    | 'answer-risk'
+    | 'limit-exceeded'
+    | 'policy-bypass'
+    | 'uninterpretable';
   revision: number;
 };
 
@@ -102,7 +115,7 @@ export type TutorServiceDependencies = {
     input: {
       sessionId: string;
       turnId: string;
-      status: StudyTurnStatus;
+      status: 'generating' | 'checking';
     },
   ) => Promise<void>;
   settleStudyTurn: (
@@ -110,7 +123,7 @@ export type TutorServiceDependencies = {
     input: {
       sessionId: string;
       turnId: string;
-      status: 'complete' | 'failed' | 'cancelled';
+      status: 'failed' | 'cancelled';
       errorCode?: SafeErrorCode;
     },
   ) => Promise<void>;
@@ -127,6 +140,7 @@ export type TutorServiceDependencies = {
       parts: MessagePart[];
       sourceReferences: SourceReference[];
     },
+    beforePublish?: () => void,
   ) => Promise<TutorCommitResult>;
   appendStudyTurnParts: (
     context: AuthorizedContext,
@@ -146,7 +160,7 @@ export type TutorServiceDependencies = {
       candidate: {
         parts: TutorCandidatePart[];
         citations: SourceReference[];
-        proposedEffects: unknown[];
+        proposedEffects: LearningEffect[];
       };
       policy: AssistancePolicy;
       sourceReferences: SourceReference[];
@@ -155,17 +169,25 @@ export type TutorServiceDependencies = {
   recordAssistance: (
     context: AuthorizedContext,
     input: {
-      sessionId: string;
       turnId: string;
-      generationEpoch: number;
-      contextRevision: number;
-      policyRevision: number;
-      gradeConsentRevision: number;
       protectionId: string;
-      allowedSupportSummary: string;
-      riskTags: string[];
+      allowedSupportSummary: AllowedSupportSummary;
+      riskTags: AssistanceRiskTag[];
     },
-  ) => Promise<void>;
+  ) => void;
+  reserveStudyTurnAssistance: (
+    context: AuthorizedContext,
+    input: Pick<
+      TurnAdmission,
+      | 'sessionId'
+      | 'turnId'
+      | 'generationEpoch'
+      | 'policyRevision'
+      | 'contextRevision'
+      | 'gradeConsentRevision'
+    >,
+    reserve: () => void,
+  ) => number;
   studyContext: StudyContextDependencies;
   learningClient: ReturnType<typeof createLearningClient>;
   learningEffectHandlers: LearningEffectHandlers;
@@ -258,6 +280,49 @@ const validateSafeParts = (
 const safeRegenerationReason = (value: string) =>
   /^[a-z0-9-]{1,100}$/i.test(value) ? value : 'policy-rejected';
 
+const supportOperation = (
+  parts: MessagePart[],
+  effects: LearningEffect[],
+  targetAssignmentId: string | null,
+): NonNullable<AllowedSupportSummary['operation']> => {
+  if (
+    effects.some(
+      (effect) =>
+        effect.kind === 'offer-practice' || effect.kind === 'create-activity',
+    )
+  )
+    return 'distinct-practice';
+  if (
+    parts.some(
+      (part) =>
+        part.kind === 'citation' &&
+        part.reference.sourceKind === 'grade-evidence',
+    )
+  )
+    return 'source-feedback-review';
+  return targetAssignmentId ? 'bounded-hint' : 'concept';
+};
+
+const riskTagForAssessment = (
+  reasonCode: TutorCandidateAssessment['reasonCode'],
+): AssistanceRiskTag | null => {
+  switch (reasonCode) {
+    case 'answer-risk':
+      return 'answer-adjacent';
+    case 'limit-exceeded':
+      return 'cumulative-fragment';
+    case 'policy-bypass':
+      return 'policy-bypass';
+    case 'invalid-input':
+    case 'uninterpretable':
+      return 'uninterpretable';
+    case 'approved':
+    case 'policy-changed':
+    case 'scope-denied':
+      return null;
+  }
+};
+
 export const createTutorService = (
   dependencies: TutorServiceDependencies,
   lifecycle: LearningLifecycle,
@@ -337,11 +402,6 @@ export const createTutorService = (
     context: AuthorizedContext,
     admission: TurnAdmission,
   ) => {
-    await dependencies.setStudyTurnStatus(context, {
-      sessionId: admission.sessionId,
-      turnId: admission.turnId,
-      status: 'preparing',
-    });
     const preparation = await prepareStudyContext(
       context,
       {
@@ -365,7 +425,7 @@ export const createTutorService = (
     });
 
     let acceptedParts: MessagePart[] | null = null;
-    let acceptedEffects: unknown[] = [];
+    let acceptedEffects: LearningEffect[] = [];
     let candidateAssessment: TutorCandidateAssessment | null = null;
     let regenerationReason: string | undefined;
 
@@ -393,11 +453,8 @@ export const createTutorService = (
           context.signal,
         );
       } catch (error) {
-        if (
-          error instanceof LearningClientError &&
-          error.candidateInvalid &&
-          attempt === 1
-        ) {
+        if (error instanceof LearningClientError && error.candidateInvalid) {
+          if (attempt === 2) break;
           regenerationReason = 'invalid-candidate';
           continue;
         }
@@ -471,68 +528,94 @@ export const createTutorService = (
       preparation.gradeDerived;
     await assertTurnCurrent(context, admission, preparation);
 
-    const commitResult = await dependencies.commitStudyTurn(context, {
-      sessionId: admission.sessionId,
-      turnId: admission.turnId,
-      generationEpoch: admission.generationEpoch,
-      contextRevision: preparation.context.contextRevision,
-      policyRevision: preparation.context.policy.policyRevision,
-      gradeConsentRevision: gradeDerived
-        ? preparation.gradeConsentRevision
-        : null,
-      gradeDerived,
-      parts: safeParts,
-      sourceReferences: safeParts.flatMap((part) =>
-        part.kind === 'citation' ? [part.reference] : [],
-      ),
-    });
-    if (!commitResult.committed) throw new TutorServiceError('session-changed');
-
-    const policy = preparation.context.policy;
-    if (policy.canonicalProtectionId) {
-      await assertTurnCurrent(context, admission, preparation);
-      await dependencies.recordAssistance(context, {
+    let policy = preparation.context.policy;
+    const operation = candidateAssessment?.allowed
+      ? supportOperation(
+          safeParts,
+          acceptedEffects,
+          preparation.session.targetAssignmentId,
+        )
+      : null;
+    const riskTag =
+      candidateAssessment && !candidateAssessment.allowed
+        ? riskTagForAssessment(candidateAssessment.reasonCode)
+        : null;
+    const riskTags = riskTag ? [riskTag] : [];
+    const reserveAssistance =
+      policy.canonicalProtectionId &&
+      candidateAssessment?.candidateDigest &&
+      (operation || riskTags.length > 0)
+        ? () =>
+            dependencies.recordAssistance(context, {
+              turnId: admission.turnId,
+              protectionId: policy.canonicalProtectionId!,
+              allowedSupportSummary: {
+                version: 1,
+                operation,
+                candidateDigest: candidateAssessment.candidateDigest!,
+                expectedPolicyRevision: policy.policyRevision,
+                expectedConsentRevision: policy.consentRevision,
+              },
+              riskTags,
+            })
+        : undefined;
+    const reservedForEffects =
+      acceptedEffects.length > 0 && !!reserveAssistance;
+    if (reservedForEffects) {
+      // Persist the reservation and adopt only its exact policy increment before effects.
+      const policyRevision = dependencies.reserveStudyTurnAssistance(
+        context,
+        admission,
+        reserveAssistance!,
+      );
+      policy = { ...policy, policyRevision };
+      preparation.context.policy = policy;
+      admission.policyRevision = policyRevision;
+    }
+    const effectResult =
+      acceptedEffects.length > 0
+        ? await runApprovedLearningEffects(
+            {
+              authorizedContext: context,
+              sessionId: admission.sessionId,
+              turnId: admission.turnId,
+              generationEpoch: admission.generationEpoch,
+              contextRevision: preparation.context.contextRevision,
+              courseId: preparation.session.courseId,
+              targetAssignmentId: preparation.session.targetAssignmentId,
+              studentMessage: admission.studentMessage,
+              offeredReferences: preparation.offeredReferences,
+              policy,
+              gradeAccessEnabled: preparation.gradeAccessEnabled,
+              gradeConsentRevision: admission.gradeConsentRevision,
+            },
+            acceptedEffects,
+            dependencies.learningEffectHandlers,
+          )
+        : null;
+    await assertTurnCurrent(context, admission, preparation);
+    const commitResult = await dependencies.commitStudyTurn(
+      context,
+      {
         sessionId: admission.sessionId,
         turnId: admission.turnId,
         generationEpoch: admission.generationEpoch,
-        contextRevision: admission.contextRevision,
-        policyRevision: admission.policyRevision,
-        gradeConsentRevision: admission.gradeConsentRevision,
-        protectionId: policy.canonicalProtectionId,
-        allowedSupportSummary: JSON.stringify({
-          textPartCount: safeParts.filter((part) => part.kind === 'text')
-            .length,
-          citationCount: safeParts.filter((part) => part.kind === 'citation')
-            .length,
-          effectKinds: acceptedEffects.map(
-            (effect) => (effect as { kind: LearningEffectKind }).kind,
-          ),
-        }),
-        riskTags: acceptedEffects.map(
-          (effect) => (effect as { kind: LearningEffectKind }).kind,
+        contextRevision: preparation.context.contextRevision,
+        policyRevision: preparation.context.policy.policyRevision,
+        gradeConsentRevision: gradeDerived
+          ? preparation.gradeConsentRevision
+          : null,
+        gradeDerived,
+        parts: safeParts,
+        sourceReferences: safeParts.flatMap((part) =>
+          part.kind === 'citation' ? [part.reference] : [],
         ),
-      });
-    }
+      },
+      reservedForEffects ? undefined : reserveAssistance,
+    );
+    if (!commitResult.committed) throw new TutorServiceError('session-changed');
 
-    if (acceptedEffects.length > 0) {
-      const effectResult = await runApprovedLearningEffects(
-        {
-          authorizedContext: context,
-          sessionId: admission.sessionId,
-          turnId: admission.turnId,
-          generationEpoch: admission.generationEpoch,
-          contextRevision: preparation.context.contextRevision,
-          courseId: preparation.session.courseId,
-          targetAssignmentId: preparation.session.targetAssignmentId,
-          studentMessage: admission.studentMessage,
-          offeredReferences: preparation.offeredReferences,
-          policy: preparation.context.policy,
-          gradeAccessEnabled: preparation.gradeAccessEnabled,
-          gradeConsentRevision: admission.gradeConsentRevision,
-        },
-        acceptedEffects,
-        dependencies.learningEffectHandlers,
-      );
+    if (effectResult) {
       for (const effect of effectResult.effects) {
         const appended = await dependencies.appendStudyTurnParts(context, {
           sessionId: admission.sessionId,
@@ -561,12 +644,6 @@ export const createTutorService = (
         if (!appended.committed) throw new TutorServiceError('session-changed');
       }
     }
-
-    await dependencies.settleStudyTurn(context, {
-      sessionId: admission.sessionId,
-      turnId: admission.turnId,
-      status: 'complete',
-    });
   };
 
   const launchTurn = (
@@ -588,6 +665,12 @@ export const createTutorService = (
       admission.turnId,
       controller,
     );
+    const unregisterSession = registerStudySessionOperation(
+      authorizedContext,
+      admission.sessionId,
+      admission.turnId,
+      controller,
+    );
     let execution: ActiveTurnExecution;
     const promise = Promise.resolve()
       .then(() =>
@@ -604,6 +687,7 @@ export const createTutorService = (
       .finally(() => {
         authorizedContext.signal.removeEventListener('abort', abortFromSession);
         unregister();
+        unregisterSession();
         if (activeExecutions.get(key) === execution)
           activeExecutions.delete(key);
       });
