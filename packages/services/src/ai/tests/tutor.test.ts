@@ -588,7 +588,53 @@ describe('Meta practice handlers', () => {
     expect(JSON.parse(String(fetchMock.mock.calls[0]![1].body)).model).toBe(
       'muse-spark-1.3',
     );
+    const guardRequest = JSON.stringify(
+      JSON.parse(String(fetchMock.mock.calls[1]![1].body)),
+    );
+    expect(guardRequest).toContain('VERIFIED GENERATED-PRACTICE FEEDBACK');
+    expect(guardRequest).toContain(
+      'outcome, explanation, and acceptedAlternatives',
+    );
+    expect(guardRequest).toContain('that exact generated practice question');
+    expect(guardRequest).toContain(
+      'Never disclose private rubric/key/proof fields',
+    );
+    expect(guardRequest).toContain(
+      'verified origin does not make the candidate safe by itself',
+    );
   });
+
+  it.each([
+    { riskTags: ['hidden-answer'], containsHiddenAnswer: true },
+    {
+      riskTags: ['source-injection-seen', 'answer-adjacent'],
+      containsHiddenAnswer: false,
+    },
+    { riskTags: ['cumulative-fragment'], containsHiddenAnswer: false },
+  ])(
+    'still rejects unsafe feedback for genuinely verified generated practice: $riskTags',
+    async (risk) => {
+      const fetchMock = vi.fn(async (_url: string, _init: RequestInit) =>
+        metaChatResponse({
+          ...safeIntegrityAssessment,
+          ...risk,
+          verdict: 'unsafe',
+          reconstructionRisk: 'high',
+        }),
+      );
+      vi.stubGlobal('fetch', fetchMock);
+      await expect(
+        evaluateVerifiedPractice(
+          practiceEvaluationRequest,
+          new AbortController().signal,
+        ),
+      ).rejects.toMatchObject({ code: 'scope-denied' });
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(
+        JSON.stringify(JSON.parse(String(fetchMock.mock.calls[0]![1].body))),
+      ).toContain('VERIFIED GENERATED-PRACTICE FEEDBACK');
+    },
+  );
 
   it('maps generation and evaluation provider failures without exposing raw errors', async () => {
     const fetchMock = vi.fn(

@@ -74,6 +74,9 @@ describe('server learning integrity assessment', () => {
     expect(mocks.generateText.mock.calls[0]?.[0]?.instructions).toMatch(
       /External work is always active or unknown/,
     );
+    expect(mocks.generateText.mock.calls[0]?.[0]?.instructions).not.toContain(
+      'VERIFIED GENERATED-PRACTICE FEEDBACK',
+    );
   });
 
   it('uses one bounded structured Meta assessment with server-owned instructions', async () => {
