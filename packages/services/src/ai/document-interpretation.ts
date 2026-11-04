@@ -1,3 +1,9 @@
+import {
+  documentPageStatuses,
+  documentInterpretationStatuses,
+  type DocumentPageStatus,
+  type DocumentInterpretationStatus,
+} from '../learning/context-contracts';
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { generateText, Output } from 'ai';
 import { z } from 'zod';
@@ -24,12 +30,12 @@ export type DocumentInputDescriptor =
 export type MaterialFileInput = { bytes: Uint8Array; declaredMimeType: string };
 export type DocumentPageResult = {
   page: number;
-  status: 'readable' | 'partial' | 'uncertain' | 'unreadable';
+  status: DocumentPageStatus;
   text: string;
   uncertainty: string | null;
 };
 export type DocumentInterpretationResult = {
-  status: 'complete' | 'partial' | 'unreadable';
+  status: DocumentInterpretationStatus;
   interpretedPages: number[];
   pages: DocumentPageResult[];
 };
@@ -260,20 +266,25 @@ export const inspectDocumentInput = async (
 
 const documentPageSchema = z.strictObject({
   page: z.number().int().positive(),
-  status: z.enum(['readable', 'partial', 'uncertain', 'unreadable']),
+  status: z.enum(documentPageStatuses),
   text: z.string().max(8000),
   uncertainty: z.string().max(1000).nullable(),
 });
+export type DocumentPageSchema = z.infer<typeof documentPageSchema>;
 const documentCandidateSchema = z.strictObject({
   pages: z.array(documentPageSchema).max(maximumPdfPagesPerOperation),
 });
+export type DocumentCandidateSchema = z.infer<typeof documentCandidateSchema>;
 export const documentInterpretationResultSchema = z.strictObject({
-  status: z.enum(['complete', 'partial', 'unreadable']),
+  status: z.enum(documentInterpretationStatuses),
   interpretedPages: z
     .array(z.number().int().positive())
     .max(maximumPdfPagesPerOperation),
   pages: z.array(documentPageSchema).max(maximumPdfPagesPerOperation),
 });
+export type DocumentInterpretationResultSchema = z.infer<
+  typeof documentInterpretationResultSchema
+>;
 
 export const validateDocumentInterpretation = (
   offered: { pageNumbers: number[] },

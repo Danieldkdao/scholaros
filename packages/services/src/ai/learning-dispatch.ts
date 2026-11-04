@@ -30,19 +30,24 @@ import {
   safeErrorCodeSchema,
 } from '../learning/product-contracts';
 import {
+  freshnessStatuses,
   studyActivities,
   studyHistoryRoles,
   studyMessagePartSchema,
 } from '../learning/study-contracts';
 
+export const learningCapabilityStatuses = ['available', 'unavailable'] as const;
+export type LearningCapabilityStatus =
+  (typeof learningCapabilityStatuses)[number];
+
 export const learningCapabilitiesSchema = z.strictObject({
   version: z.literal(1),
   configurationRevision: z.string().min(1).max(200),
-  tutor: z.enum(['available', 'unavailable']),
-  imageInterpretation: z.enum(['available', 'unavailable']),
-  pdfInterpretation: z.enum(['available', 'unavailable']),
-  liveDictation: z.enum(['available', 'unavailable']),
-  fileDictation: z.enum(['available', 'unavailable']),
+  tutor: z.enum(learningCapabilityStatuses),
+  imageInterpretation: z.enum(learningCapabilityStatuses),
+  pdfInterpretation: z.enum(learningCapabilityStatuses),
+  liveDictation: z.enum(learningCapabilityStatuses),
+  fileDictation: z.enum(learningCapabilityStatuses),
   limits: z.strictObject({
     inputTextCharacters: z.number().int().positive(),
     materialWireBytes: z.number().int().positive(),
@@ -51,6 +56,9 @@ export const learningCapabilitiesSchema = z.strictObject({
     dictationDurationMs: z.number().int().positive(),
   }),
 });
+export type LearningCapabilitiesSchema = z.infer<
+  typeof learningCapabilitiesSchema
+>;
 export type LearningCapabilities = z.infer<typeof learningCapabilitiesSchema>;
 
 const tutorInputSchema = z.strictObject({
@@ -75,14 +83,16 @@ const tutorInputSchema = z.strictObject({
     })
     .optional(),
   freshness: z.strictObject({
-    status: z.enum(['current', 'stale', 'partial', 'unavailable']),
+    status: z.enum(freshnessStatuses),
     lastSuccessfulAt: instantSchema.nullable(),
   }),
 });
+export type TutorInputSchema = z.infer<typeof tutorInputSchema>;
 const sourceInputSchema = z.strictObject({
   objective: z.string().min(1).max(1000),
   sources: z.array(sourcePassageSchema).max(20),
 });
+export type SourceInputSchema = z.infer<typeof sourceInputSchema>;
 export const practiceAnswerEvaluationInputSchema = z
   .strictObject({
     priorAssistanceSummary: z.string().max(2000).optional(),
@@ -117,6 +127,9 @@ export const practiceAnswerEvaluationInputSchema = z
         message: 'Practice evaluation input exceeds the request limit.',
       });
   });
+export type PracticeAnswerEvaluationInputSchema = z.infer<
+  typeof practiceAnswerEvaluationInputSchema
+>;
 export type PracticeAnswerEvaluationInput = z.infer<
   typeof practiceAnswerEvaluationInputSchema
 >;
@@ -133,6 +146,9 @@ export const practiceGenerateRequestSchema = z.strictObject({
   contextRevision: revisionSchema,
   input: practiceGenerationInputSchema,
 });
+export type PracticeGenerateRequestSchema = z.infer<
+  typeof practiceGenerateRequestSchema
+>;
 export type PracticeGenerateRequest = z.infer<
   typeof practiceGenerateRequestSchema
 >;
@@ -146,6 +162,9 @@ export const practiceEvaluateRequestSchema = z.strictObject({
   contextRevision: revisionSchema,
   input: practiceAnswerEvaluationInputSchema,
 });
+export type PracticeEvaluateRequestSchema = z.infer<
+  typeof practiceEvaluateRequestSchema
+>;
 export type PracticeEvaluateRequest = z.infer<
   typeof practiceEvaluateRequestSchema
 >;
@@ -182,6 +201,9 @@ const operationInputs = [
   }),
 ] as const;
 const learningRequestBaseSchema = z.discriminatedUnion('kind', operationInputs);
+export type LearningRequestBaseSchema = z.infer<
+  typeof learningRequestBaseSchema
+>;
 export const learningRequestSchema = learningRequestBaseSchema.superRefine(
   (request, context) => {
     const serializedBytes = new TextEncoder().encode(
@@ -247,6 +269,7 @@ export const learningRequestSchema = learningRequestBaseSchema.superRefine(
     }
   },
 );
+export type LearningRequestSchema = z.infer<typeof learningRequestSchema>;
 export type LearningRequest = z.infer<typeof learningRequestSchema>;
 export type LearningKind = LearningRequest['kind'];
 
@@ -275,6 +298,7 @@ export const learningEffectSchema = z.discriminatedUnion('kind', [
     evaluation: practiceEvaluationSchema,
   }),
 ]);
+export type LearningEffectSchema = z.infer<typeof learningEffectSchema>;
 export type LearningEffect = z.infer<typeof learningEffectSchema>;
 
 export const learningCandidateSchema = z.strictObject({
@@ -282,6 +306,7 @@ export const learningCandidateSchema = z.strictObject({
   citationIndexes: z.array(z.number().int().min(0).max(19)).max(20),
   proposedEffects: z.array(learningEffectSchema).max(5),
 });
+export type LearningCandidateSchema = z.infer<typeof learningCandidateSchema>;
 export type LearningCandidate = z.infer<typeof learningCandidateSchema>;
 
 export const learningResponseSchema = z
@@ -308,6 +333,7 @@ export const learningResponseSchema = z
         message: 'Learning response exceeds the operation byte limit.',
       });
   });
+export type LearningResponseSchema = z.infer<typeof learningResponseSchema>;
 export type LearningResponse = z.infer<typeof learningResponseSchema>;
 
 export const generatedPracticeCandidateSchema = z
@@ -354,6 +380,7 @@ const learningUsageSchema = z.strictObject({
   inputTokens: z.number().int().nonnegative().nullable(),
   outputTokens: z.number().int().nonnegative().nullable(),
 });
+export type LearningUsageSchema = z.infer<typeof learningUsageSchema>;
 const practiceResponseByteCheck = (response: unknown) =>
   new TextEncoder().encode(JSON.stringify(response)).byteLength <=
   2 * 1024 * 1024;
@@ -374,6 +401,9 @@ export const practiceGenerateResponseSchema = z
         message: 'Practice response exceeds the operation byte limit.',
       });
   });
+export type PracticeGenerateResponseSchema = z.infer<
+  typeof practiceGenerateResponseSchema
+>;
 export type PracticeGenerateResponse = z.infer<
   typeof practiceGenerateResponseSchema
 >;
@@ -394,6 +424,9 @@ export const practiceEvaluateResponseSchema = z
         message: 'Practice response exceeds the operation byte limit.',
       });
   });
+export type PracticeEvaluateResponseSchema = z.infer<
+  typeof practiceEvaluateResponseSchema
+>;
 export type PracticeEvaluateResponse = z.infer<
   typeof practiceEvaluateResponseSchema
 >;
@@ -403,6 +436,9 @@ export const learningOperationResponseSchema = z.union([
   practiceGenerateResponseSchema,
   practiceEvaluateResponseSchema,
 ]);
+export type LearningOperationResponseSchema = z.infer<
+  typeof learningOperationResponseSchema
+>;
 export type LearningOperationResponse = z.infer<
   typeof learningOperationResponseSchema
 >;

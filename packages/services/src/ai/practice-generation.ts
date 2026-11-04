@@ -78,15 +78,20 @@ export const practiceGenerationInputSchema = z
         message: 'Practice generation input exceeds the request limit.',
       });
   });
+export type PracticeGenerationInputSchema = z.infer<
+  typeof practiceGenerationInputSchema
+>;
 export type PracticeGenerationInput = z.infer<
   typeof practiceGenerationInputSchema
 >;
 
 const candidateIndexSchema = z.number().int().min(0).max(19);
+export type CandidateIndexSchema = z.infer<typeof candidateIndexSchema>;
 const indexedReferencesSchema = z
   .array(candidateIndexSchema)
   .max(20)
   .refine((indexes) => new Set(indexes).size === indexes.length);
+export type IndexedReferencesSchema = z.infer<typeof indexedReferencesSchema>;
 const candidateBase = {
   difficulty: z.enum(practiceDifficulties),
   answerability: z.literal('answerable'),
@@ -138,6 +143,9 @@ export const practiceQuestionCandidateSchema = z.discriminatedUnion('kind', [
     }),
   }),
 ]);
+export type PracticeQuestionCandidateSchema = z.infer<
+  typeof practiceQuestionCandidateSchema
+>;
 export type PracticeQuestionCandidate = z.infer<
   typeof practiceQuestionCandidateSchema
 >;
@@ -145,6 +153,7 @@ export type PracticeQuestionCandidate = z.infer<
 export const practiceCandidateSchema = z.strictObject({
   questions: z.array(practiceQuestionCandidateSchema).min(1).max(20),
 });
+export type PracticeCandidateSchema = z.infer<typeof practiceCandidateSchema>;
 export type PracticeCandidate = z.infer<typeof practiceCandidateSchema>;
 
 const answerKeyBase = {
@@ -180,6 +189,9 @@ export const practiceQuestionAnswerKeySchema = z.discriminatedUnion('kind', [
     rubricCriteria: z.array(z.string().trim().min(1).max(500)).min(1).max(10),
   }),
 ]);
+export type PracticeQuestionAnswerKeySchema = z.infer<
+  typeof practiceQuestionAnswerKeySchema
+>;
 export type PracticeQuestionAnswerKey = z.infer<
   typeof practiceQuestionAnswerKeySchema
 >;
@@ -188,6 +200,7 @@ export const practiceAnswerKeySchema = z
   .array(practiceQuestionAnswerKeySchema)
   .min(1)
   .max(20);
+export type PracticeAnswerKeySchema = z.infer<typeof practiceAnswerKeySchema>;
 export type PracticeAnswerKey = z.infer<typeof practiceAnswerKeySchema>;
 
 export type GeneratedPracticeCandidate = {

@@ -48,6 +48,7 @@ const allowedSchemaTypes = new Set([
   'null',
 ]);
 const isoDatePattern = z.toJSONSchema(z.iso.date()).pattern ?? '';
+export type IsoDatePatternSchema = z.infer<typeof isoDatePattern>;
 const backslash = String.fromCharCode(92);
 const stagehandDateTimeNoOffsetPattern = `^${isoDatePattern.slice(1, -1)}T(?:(?:[01]${backslash}d|2[0-3]):[0-5]${backslash}d(?::[0-5]${backslash}d(?:${backslash}.${backslash}d+)?)?(?:Z))$`;
 const stagehandDateTimePrefix = String.raw`${isoDatePattern.slice(1, -1)}T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?)`;
@@ -435,6 +436,9 @@ const stagehandObserveRequestSchema = z.strictObject({
     }),
   ),
 });
+export type StagehandObserveRequestSchema = z.infer<
+  typeof stagehandObserveRequestSchema
+>;
 
 const stagehandMetadataSchema = z.strictObject({
   progress: z
@@ -448,6 +452,7 @@ const stagehandMetadataSchema = z.strictObject({
       'true if the goal is now accomplished. Use this conservatively, only when sure that the goal has been completed.',
     ),
 });
+export type StagehandMetadataSchema = z.infer<typeof stagehandMetadataSchema>;
 
 const stagehandObserveOutputSchema: JsonSchemaNode = {
   type: 'object',

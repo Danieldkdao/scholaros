@@ -1,6 +1,7 @@
 import { generateText, Output, type LanguageModel } from 'ai';
 import { z } from 'zod';
 import {
+  practiceEvaluationOutcomes,
   practiceEvaluationSchema,
   practiceQuestionSchema,
   type PracticeEvaluationDTO,
@@ -37,14 +38,20 @@ const practiceAnswerEvaluationInputSchema = z
         message: 'Practice evaluation input exceeds the request limit.',
       });
   });
+export type PracticeAnswerEvaluationInputSchema = z.infer<
+  typeof practiceAnswerEvaluationInputSchema
+>;
 export type PracticeAnswerEvaluationInput = z.infer<
   typeof practiceAnswerEvaluationInputSchema
 >;
 
 const practiceEvaluationModelOutputSchema = z.strictObject({
-  outcome: z.enum(['correct', 'incorrect', 'uncertain']),
+  outcome: z.enum(practiceEvaluationOutcomes),
   explanation: z.string().trim().min(1).max(4000),
 });
+export type PracticeEvaluationModelOutputSchema = z.infer<
+  typeof practiceEvaluationModelOutputSchema
+>;
 
 export class PracticeEvaluationError extends Error {
   constructor(

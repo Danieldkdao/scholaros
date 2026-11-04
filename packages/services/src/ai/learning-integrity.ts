@@ -1,3 +1,4 @@
+import { studyHistoryRoles } from '../learning/study-contracts';
 import {
   isVerifiedPracticeEvaluationContext,
   type VerifiedPracticeEvaluationContext,
@@ -8,6 +9,12 @@ import { serverEnv } from '@scholaros/env/server';
 import { z } from 'zod';
 import { jsonValueSchema, type JsonValue } from '../learning/product-contracts';
 import { getInferenceModel } from './models/inference';
+
+export const integrityVerdicts = ['safe', 'unsafe', 'uncertain'] as const;
+export type IntegrityVerdict = (typeof integrityVerdicts)[number];
+
+export const answerLeakageRisks = ['none', 'possible', 'high'] as const;
+export type AnswerLeakageRisk = (typeof answerLeakageRisks)[number];
 
 export const learningIntegrityRiskTags = [
   'answer-adjacent',
@@ -31,9 +38,10 @@ const learningKinds = [
   'memory-propose',
 ] as const;
 const recentTurnSchema = z.strictObject({
-  role: z.enum(['student', 'tutor']),
+  role: z.enum(studyHistoryRoles),
   text: z.string().max(8_000),
 });
+export type RecentTurnSchema = z.infer<typeof recentTurnSchema>;
 const learningIntegrityCandidateSchema = z
   .strictObject({
     kind: z.enum(learningKinds),
@@ -60,18 +68,22 @@ const learningIntegrityCandidateSchema = z
         message: 'Integrity context exceeds the assessment budget.',
       });
   });
+export type LearningIntegrityCandidateSchema = z.infer<
+  typeof learningIntegrityCandidateSchema
+>;
 export type LearningIntegrityCandidateInput = z.infer<
   typeof learningIntegrityCandidateSchema
 >;
 
 const assessmentSchema = z.strictObject({
-  verdict: z.enum(['safe', 'unsafe', 'uncertain']),
+  verdict: z.enum(integrityVerdicts),
   riskTags: z.array(z.enum(learningIntegrityRiskTags)).max(8),
-  reconstructionRisk: z.enum(['none', 'possible', 'high']),
+  reconstructionRisk: z.enum(answerLeakageRisks),
   sameSolutionPractice: z.boolean(),
   containsHiddenAnswer: z.boolean(),
   memoryPolicyBypass: z.boolean(),
 });
+export type AssessmentSchema = z.infer<typeof assessmentSchema>;
 export type LearningIntegrityAssessmentSchema = z.infer<
   typeof assessmentSchema
 >;

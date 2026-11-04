@@ -2,16 +2,16 @@ import { z } from 'zod';
 import { browserNavigationModeSchema } from '@scholaros/env/browser-navigation';
 import { configurationRevisionSchema } from './schemas';
 
+export const browserMessageRoles = ['user', 'assistant'] as const;
+export type BrowserMessageRole = (typeof browserMessageRoles)[number];
+
 const textPartSchema = z
   .object({
     type: z.literal('text'),
     text: z.string().max(100_000),
     annotations: z
       .object({
-        audience: z
-          .array(z.enum(['user', 'assistant']))
-          .max(2)
-          .optional(),
+        audience: z.array(z.enum(browserMessageRoles)).max(2).optional(),
         priority: z.number().finite().optional(),
         lastModified: z.string().max(100).optional(),
       })
@@ -19,6 +19,7 @@ const textPartSchema = z
       .optional(),
   })
   .strict();
+export type TextPartSchema = z.infer<typeof textPartSchema>;
 
 export const browserModelRequestSchema = z
   .object({
@@ -29,7 +30,7 @@ export const browserModelRequestSchema = z
       .array(
         z
           .object({
-            role: z.enum(['user', 'assistant']),
+            role: z.enum(browserMessageRoles),
             content: z.union([
               z.string().max(100_000),
               z.array(textPartSchema).max(32),
