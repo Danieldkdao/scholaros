@@ -377,6 +377,25 @@ const handleNotificationDeliveryCommand = async (
   }
 };
 
+export type NotificationDeliveryCommandResult = Awaited<
+  ReturnType<typeof handleNotificationDeliveryCommand>
+>;
+export type NotificationInternalMethodContracts = {
+  claimDueNotifications: {
+    input: NotificationDeliveryCommand;
+    result: NotificationDeliveryCommandResult;
+  };
+};
+export type NotificationActionRegistrar = AuthorizedRegistrar & {
+  handleInternal<Method extends keyof NotificationInternalMethodContracts>(
+    name: Method,
+    handler: (
+      context: AuthorizedContext,
+      input: NotificationInternalMethodContracts[Method]['input'],
+    ) => Promise<NotificationInternalMethodContracts[Method]['result']>,
+  ): void;
+};
+
 export const cancelNotificationsForTarget = async (
   context: AuthorizedContext,
   input?: { targetKind: NotificationTargetKind; targetId: string | null },
@@ -399,7 +418,7 @@ export const cancelNotificationsForTarget = async (
 };
 
 export const registerNotificationActions = (
-  registrar: AuthorizedRegistrar,
+  registrar: NotificationActionRegistrar,
 ): (() => Promise<void>) => {
   registrar.handle('getNotificationSettings', getNotificationSettings);
   registrar.handle('saveNotificationSettings', async (context, input) => {
@@ -414,14 +433,7 @@ export const registerNotificationActions = (
       });
     return updatedSettings;
   });
-  // The queue operation remains internal and is excluded from renderer IPC.
-  const internalRegistrar = registrar as unknown as {
-    handle: (
-      name: 'claimDueNotifications',
-      handler: (context: AuthorizedContext, input: unknown) => Promise<unknown>,
-    ) => void;
-  };
-  internalRegistrar.handle(
+  registrar.handleInternal(
     'claimDueNotifications',
     handleNotificationDeliveryCommand,
   );

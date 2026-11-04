@@ -2,9 +2,9 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import type { NotificationEventSelectData } from '../../../db/schema';
 import type { AuthorizedContext } from '@scholaros/services/learning/product-contracts';
-import type { AuthorizedRegistrar } from '@scholaros/services/learning/product-contracts';
 import type { SafeRoute } from '@scholaros/services/learning/notification-contracts';
 import type { NativeNotificationDisplay } from '../../../features/notifications/services/notification-delivery';
+import type { NotificationActionRegistrar } from '../../../features/notifications/services/notification-actions';
 
 const service = vi.hoisted(() => ({ request: vi.fn() }));
 vi.mock('../client', () => ({ requestAcademicService: service.request }));
@@ -143,6 +143,10 @@ const registerRealService = (contexts: readonly AuthorizedContext[]) => {
     string,
     (context: AuthorizedContext, input: unknown) => Promise<unknown>
   >();
+  const internalHandlers = new Map<
+    string,
+    (context: AuthorizedContext, input: unknown) => Promise<unknown>
+  >();
   unregisterRealActions = registerNotificationActions({
     handle: (name: string, handler: unknown) => {
       handlers.set(
@@ -153,14 +157,23 @@ const registerRealService = (contexts: readonly AuthorizedContext[]) => {
         ) => Promise<unknown>,
       );
     },
+    handleInternal: (name: string, handler: unknown) => {
+      internalHandlers.set(
+        name,
+        handler as (
+          context: AuthorizedContext,
+          input: unknown,
+        ) => Promise<unknown>,
+      );
+    },
     publish: vi.fn(),
-  } as unknown as AuthorizedRegistrar);
+  } as unknown as NotificationActionRegistrar);
   service.request.mockImplementation(async (_method, input) => {
     const command = input as { userId: string };
     const requestContext = contexts.find(
       (candidate) => candidate.userId === command.userId,
     );
-    const handler = handlers.get('claimDueNotifications');
+    const handler = internalHandlers.get('claimDueNotifications');
     if (!requestContext || !handler)
       throw new Error('The notification service context is unavailable.');
     return handler(requestContext, input);

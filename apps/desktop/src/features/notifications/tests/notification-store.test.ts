@@ -1,7 +1,9 @@
 import { eq } from 'drizzle-orm';
 import { beforeEach, expect, it, vi } from 'vitest';
-import type { AuthorizedRegistrar } from '@scholaros/services/learning/product-contracts';
-import type { NotificationOutcome } from '../services/notification-actions';
+import type {
+  NotificationActionRegistrar,
+  NotificationOutcome,
+} from '../services/notification-actions';
 
 vi.mock('electron', async () => {
   const { mkdtempSync } = await import('node:fs');
@@ -202,11 +204,12 @@ it('publishes the committed preference revision for Settings observers', async (
         handler as (context: unknown, input: unknown) => Promise<unknown>,
       );
     },
+    handleInternal: vi.fn(),
     publish,
   };
   setNotificationPermissionState(context, 'granted');
   const unregister = registerNotificationActions(
-    registrar as unknown as AuthorizedRegistrar,
+    registrar as unknown as NotificationActionRegistrar,
   );
   const save = handlers.get('saveNotificationSettings');
   expect(save).toBeDefined();
@@ -238,6 +241,10 @@ it('claims and settles notifications only through its internal service action', 
     string,
     (context: unknown, input: unknown) => Promise<unknown>
   >();
+  const internalHandlers = new Map<
+    string,
+    (context: unknown, input: unknown) => Promise<unknown>
+  >();
   const registrar = {
     handle: (name: string, handler: unknown) => {
       handlers.set(
@@ -245,12 +252,18 @@ it('claims and settles notifications only through its internal service action', 
         handler as (context: unknown, input: unknown) => Promise<unknown>,
       );
     },
+    handleInternal: (name: string, handler: unknown) => {
+      internalHandlers.set(
+        name,
+        handler as (context: unknown, input: unknown) => Promise<unknown>,
+      );
+    },
     publish: vi.fn(),
   };
   const unregister = registerNotificationActions(
-    registrar as unknown as AuthorizedRegistrar,
+    registrar as unknown as NotificationActionRegistrar,
   );
-  const deliveryAction = handlers.get('claimDueNotifications');
+  const deliveryAction = internalHandlers.get('claimDueNotifications');
   expect(deliveryAction).toBeDefined();
   const now = '2026-11-03T12:00:00.000Z';
   const claimed = (await deliveryAction!(context, {

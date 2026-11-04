@@ -1,8 +1,6 @@
 import { expect, it, vi } from 'vitest';
-import type {
-  AuthorizedContext,
-  AuthorizedRegistrar,
-} from '@scholaros/services/learning/product-contracts';
+import type { AuthorizedContext } from '@scholaros/services/learning/product-contracts';
+import type { NotificationActionRegistrar } from '../services/notification-actions';
 
 vi.mock('electron', async () => {
   const { mkdtempSync } = await import('node:fs');
@@ -36,13 +34,26 @@ const context: AuthorizedContext = {
 };
 
 it('keeps delivery commands internal and rejects a mismatched account', async () => {
-  const handlers = new Map<
+  const publicHandlers = new Map<
+    string,
+    (context: AuthorizedContext, input: unknown) => Promise<unknown>
+  >();
+  const internalHandlers = new Map<
     string,
     (context: AuthorizedContext, input: unknown) => Promise<unknown>
   >();
   const registrar = {
     handle: (name: string, handler: unknown) => {
-      handlers.set(
+      publicHandlers.set(
+        name,
+        handler as (
+          context: AuthorizedContext,
+          input: unknown,
+        ) => Promise<unknown>,
+      );
+    },
+    handleInternal: (name: string, handler: unknown) => {
+      internalHandlers.set(
         name,
         handler as (
           context: AuthorizedContext,
@@ -53,12 +64,16 @@ it('keeps delivery commands internal and rejects a mismatched account', async ()
     publish: vi.fn(),
   };
   const unregister = registerNotificationActions(
-    registrar as unknown as AuthorizedRegistrar,
+    registrar as unknown as NotificationActionRegistrar,
   );
-  const commandHandler = handlers.get('claimDueNotifications');
+  const commandHandler = internalHandlers.get('claimDueNotifications');
 
   expect(internalAcademicMethods).toContain('claimDueNotifications');
   expect(rendererAcademicMethods).not.toContain('claimDueNotifications');
+  expect([...publicHandlers.keys()]).toEqual([
+    'getNotificationSettings',
+    'saveNotificationSettings',
+  ]);
   expect(commandHandler).toBeDefined();
   await expect(
     commandHandler!(context, {
