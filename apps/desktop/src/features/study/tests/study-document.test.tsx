@@ -1980,3 +1980,72 @@ it('invalidates attachment readiness when ingestion finishes without a session r
   expect(study!.snapshot!.revision).toBe(sessionRevision);
   expect(study!.attachmentRevision).toBe(originalRevision + 1);
 });
+
+it('keeps expired timer actions beside the composer even without a loaded expiry message', async () => {
+  let currentTimer: StudyTimerDTO = {
+    deadlineAt: '2026-11-03T11:59:00.000Z',
+    revision: 2,
+    expiredRevision: 2,
+    resolvedExpiredRevision: null,
+    finishedAt: null,
+  };
+  const currentBridge = bridge(
+    vi.fn(async () =>
+      snapshot({
+        session: session({
+          timer: currentTimer,
+          draft: { text: 'Explain Python loops', revision: 4 },
+        }),
+        messages: [],
+      }),
+    ),
+  );
+  currentBridge.continueStudyUntimed = vi.fn(async () => {
+    currentTimer = {
+      ...currentTimer,
+      deadlineAt: null,
+      revision: 3,
+      resolvedExpiredRevision: 2,
+    };
+    return currentTimer;
+  });
+  const { container } = await mountDocument({}, currentBridge);
+  const resolution = container.querySelector(
+    '[data-slot="study-timer-expiry-summary"]',
+  );
+  expect(resolution).not.toBeNull();
+  expect(
+    container
+      .querySelector('[aria-label="Study conversation"]')
+      ?.contains(resolution),
+  ).toBe(false);
+  expect(
+    container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Send message"]',
+    )?.disabled,
+  ).toBe(true);
+  expect(container.textContent).toContain(
+    'Extend the session or continue without a timer',
+  );
+  const continueButton = container.querySelector<HTMLButtonElement>(
+    'button[aria-label="Continue indefinitely"]',
+  );
+  await click(continueButton!);
+  await vi.waitFor(() =>
+    expect(currentBridge.continueStudyUntimed).toHaveBeenCalledOnce(),
+  );
+  await vi.waitFor(() =>
+    expect(
+      container.querySelector('[data-slot="study-timer-expiry-summary"]'),
+    ).toBeNull(),
+  );
+  expect(container.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe(
+    'Explain Python loops',
+  );
+  expect(
+    container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Send message"]',
+    )?.disabled,
+  ).toBe(false);
+  expect(currentBridge.sendStudyTurn).not.toHaveBeenCalled();
+});

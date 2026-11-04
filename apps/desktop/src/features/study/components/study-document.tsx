@@ -360,13 +360,11 @@ export const StudyDocument = ({
         message.status === 'failed' &&
         message.turnId,
     );
-  const timerExpiryMessageId = [...messages]
-    .reverse()
-    .find((message) =>
-      message.parts.some(
-        (part) => part.kind === 'status' && part.code === 'study-timer-expired',
-      ),
-    )?.id;
+  const timerExpired = Boolean(
+    session &&
+    session.timer.expiredRevision !== null &&
+    session.timer.resolvedExpiredRevision !== session.timer.expiredRevision,
+  );
   const sessionStatus = session
     ? formatStudySessionStatus(session.status)
     : null;
@@ -384,7 +382,6 @@ export const StudyDocument = ({
     );
   }
 
-  let timerResolutionRendered = false;
   const renderSpecialPart = (part: MessagePart, message: StudyMessageDTO) => {
     if (part.kind === 'activity') {
       const ActivityHost = renderers?.ActivityHost;
@@ -413,22 +410,6 @@ export const StudyDocument = ({
           readOnly={readOnly}
         />
       ) : null;
-    }
-    if (
-      part.kind === 'status' &&
-      part.code === 'study-timer-expired' &&
-      message.id === timerExpiryMessageId &&
-      !timerResolutionRendered
-    ) {
-      timerResolutionRendered = true;
-      return (
-        <StudyTimerResolution
-          timer={session.timer}
-          summary="Your planned study time has ended."
-          actions={study.timerActions}
-          readOnly={readOnly}
-        />
-      );
     }
     return null;
   };
@@ -635,12 +616,23 @@ export const StudyDocument = ({
         </ActivityPanel>
       </section>
       <div className="sticky bottom-0 z-10 shrink-0 border-t border-border bg-background">
+        {timerExpired && (
+          <div className="max-h-[45dvh] overflow-y-auto px-4 pt-3">
+            <StudyTimerResolution
+              timer={session.timer}
+              summary="Your study time ended. Extend the session or continue without a timer to send more messages."
+              actions={study.timerActions}
+              readOnly={readOnly}
+            />
+          </div>
+        )}
         <StudyComposer
           key={`${accountId}:${sessionId}:composer`}
           sessionId={sessionId}
           initialDraft={session.draft}
           offline={study.offline}
           readOnly={readOnly}
+          timerExpired={timerExpired}
           activeTurn={snapshot.activeTurn}
           failedTurnId={failedTurnMessage?.turnId ?? null}
           attachmentRevision={study.attachmentRevision}

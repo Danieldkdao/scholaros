@@ -88,6 +88,7 @@ export type StudyComposerProps = {
   readOnly?: boolean;
   activeTurn: TurnDTO | null;
   failedTurnId: string | null;
+  timerExpired?: boolean;
   attachmentRevision?: number;
   onSend: (input: SendStudyTurnInput) => Promise<SendStudyTurnResult>;
   onStop: () => Promise<void>;
@@ -175,6 +176,7 @@ export const StudyComposer = ({
   readOnly = false,
   activeTurn,
   failedTurnId,
+  timerExpired = false,
   attachmentRevision = 0,
   onSend,
   onStop,
@@ -378,15 +380,17 @@ export const StudyComposer = ({
   const hasPayload = text.trim().length > 0 || readyAttachments.length > 0;
   const sendingDisabledReason = readOnly
     ? 'Reconnect online to change this draft, attach files, or send a message.'
-    : offline || offlineFromService
-      ? 'Connect to send; your text stays here.'
-      : activeTurnStatus?.isWorking
-        ? 'A response is already being prepared.'
-        : hasProcessingAttachment
-          ? 'Wait for selected files to finish processing.'
-          : hasUnavailableAttachment
-            ? 'Remove or replace unreadable files before sending.'
-            : null;
+    : timerExpired
+      ? 'Your study time ended. Extend the session or continue without a timer.'
+      : offline || offlineFromService
+        ? 'Connect to send; your text stays here.'
+        : activeTurnStatus?.isWorking
+          ? 'A response is already being prepared.'
+          : hasProcessingAttachment
+            ? 'Wait for selected files to finish processing.'
+            : hasUnavailableAttachment
+              ? 'Remove or replace unreadable files before sending.'
+              : null;
   const sendDisabled =
     submitting || !hasPayload || Boolean(sendingDisabledReason);
 
@@ -457,7 +461,13 @@ export const StudyComposer = ({
   };
 
   const retry = async () => {
-    if (readOnlyRef.current || !failedTurnId || submittingRef.current) return;
+    if (
+      readOnlyRef.current ||
+      timerExpired ||
+      !failedTurnId ||
+      submittingRef.current
+    )
+      return;
     submittingRef.current = true;
     try {
       setSubmitting(true);
@@ -735,7 +745,11 @@ export const StudyComposer = ({
                     variant="outline"
                     aria-busy={submitting}
                     disabled={
-                      readOnly || submitting || offline || offlineFromService
+                      readOnly ||
+                      timerExpired ||
+                      submitting ||
+                      offline ||
+                      offlineFromService
                     }
                     onClick={() => void retry()}
                   >
