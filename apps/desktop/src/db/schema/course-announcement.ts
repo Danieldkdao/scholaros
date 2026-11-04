@@ -1,4 +1,5 @@
 import type { ExtractedAnnouncementSchema } from '@scholaros/services/ai/resources/announcement';
+import type { ResourceIdentityConflict } from '@scholaros/services/ai/resources/validation';
 import {
   index,
   integer,
@@ -6,6 +7,13 @@ import {
   text,
   uniqueIndex,
 } from 'drizzle-orm/sqlite-core';
+
+export type CourseAnnouncementLocalOverrides = Partial<{
+  title: string;
+  body: string | null;
+  dateText: string | null;
+  dateValue: string | null;
+}>;
 
 export const CourseAnnouncementTable = sqliteTable(
   'course_announcements',
@@ -26,6 +34,16 @@ export const CourseAnnouncementTable = sqliteTable(
     content: text('content', {
       mode: 'json',
     }).$type<ExtractedAnnouncementSchema>(),
+    identityConflicts: text('identity_conflicts', { mode: 'json' })
+      .$type<Extract<ResourceIdentityConflict, { kind: 'announcements' }>[]>()
+      .notNull()
+      .default([]),
+    localOverrides: text('local_overrides', {
+      mode: 'json',
+    }).$type<CourseAnnouncementLocalOverrides>(),
+    localEditedAt: text('local_edited_at'),
+    suppressionId: text('suppression_id'),
+    suppressedAt: text('suppressed_at'),
     contentChangedAt: text('content_changed_at'),
   },
   (table) => [

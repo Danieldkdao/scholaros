@@ -24,11 +24,20 @@ import {
 type BrowserStepProps = {
   state: OnboardingState;
   busy: boolean;
+  browserSelectionDisabled?: boolean;
   run: (action: () => Promise<void>) => Promise<void>;
   update: (state: OnboardingState) => void;
+  onSelectBrowser?: (installationId: string) => Promise<OnboardingState | void>;
 };
 
-export const BrowserStep = ({ state, busy, run, update }: BrowserStepProps) => {
+export const BrowserStep = ({
+  state,
+  busy,
+  browserSelectionDisabled = false,
+  run,
+  update,
+  onSelectBrowser,
+}: BrowserStepProps) => {
   const [browsers, setBrowsers] = useState<BrowserInstallation[]>([]);
   const [searching, setSearching] = useState(true);
   const refresh = async () => {
@@ -45,6 +54,14 @@ export const BrowserStep = ({ state, busy, run, update }: BrowserStepProps) => {
   const workspaceStatus = state.workspace
     ? formatWorkspaceStatus(state.workspace.status)
     : null;
+  const selectBrowser = async (installationId: string) => {
+    if (onSelectBrowser) {
+      const nextState = await onSelectBrowser(installationId);
+      if (nextState) update(nextState);
+      return;
+    }
+    update(await window.scholar.createWorkspace(installationId));
+  };
   return (
     <div className="flex flex-col gap-5">
       <div className="flex items-center justify-between gap-3">
@@ -59,7 +76,9 @@ export const BrowserStep = ({ state, busy, run, update }: BrowserStepProps) => {
             disabled={busy}
             onClick={() => void run(refresh)}
           >
-            <RefreshCw className={cn('size-5', searching && 'animate-spin')} />
+            <RefreshCw
+              className={cn('size-5', searching && 'motion-safe:animate-spin')}
+            />
           </Button>
         </TooltipWrapper>
       </div>
@@ -71,12 +90,13 @@ export const BrowserStep = ({ state, busy, run, update }: BrowserStepProps) => {
             <button
               key={browser.id}
               type="button"
-              disabled={busy}
-              onClick={() =>
-                void run(async () =>
-                  update(await window.scholar.createWorkspace(browser.id)),
-                )
+              aria-pressed={selected}
+              disabled={
+                busy ||
+                browserSelectionDisabled ||
+                (selected && state.workspace?.ready)
               }
+              onClick={() => void run(() => selectBrowser(browser.id))}
               className={cn(
                 'cursor-pointer flex w-full items-center gap-4 rounded-xl border bg-card p-5 text-left transition duration-200 hover:-translate-y-0.5 hover:border-primary/50 hover:shadow-md disabled:pointer-events-none disabled:opacity-60 motion-reduce:transform-none',
                 selected && 'border-primary bg-accent',
@@ -112,7 +132,7 @@ export const BrowserStep = ({ state, busy, run, update }: BrowserStepProps) => {
       <Button
         variant="outline"
         className="self-start text-base"
-        disabled={busy}
+        disabled={busy || browserSelectionDisabled}
         onClick={() =>
           void run(async () => {
             const browser = await window.scholar.chooseBrowser();
@@ -122,7 +142,7 @@ export const BrowserStep = ({ state, busy, run, update }: BrowserStepProps) => {
                 ? previous
                 : [...previous, browser],
             );
-            update(await window.scholar.createWorkspace(browser.id));
+            await selectBrowser(browser.id);
           })
         }
       >
@@ -153,7 +173,7 @@ export const BrowserStep = ({ state, busy, run, update }: BrowserStepProps) => {
           {workspaceStatus.description}
         </p>
       )}
-      <Collapsible className="mt-2 w-full rounded-lg bg-muted/50">
+      <Collapsible className="mt-2 w-full rounded-lg">
         <CollapsibleTrigger className="group/more-info flex w-full cursor-pointer items-center justify-between gap-2 font-medium">
           <span>Why do I need to do this?</span>
           <ChevronDownIcon className="size-4 shrink-0 transition-transform group-data-panel-open/more-info:rotate-180 motion-reduce:transition-none" />

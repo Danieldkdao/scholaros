@@ -1,9 +1,19 @@
 import { app } from 'electron';
 import path from 'node:path';
+import {
+  loadLearningActionModules,
+  type LearningActionModule,
+} from './learning-actions';
 import { createAcademicServer } from './transport';
 import type { AcademicAction } from './contracts';
 
-export const runAcademicService = async () => {
+type AcademicServiceOptions = {
+  learningModules?: readonly LearningActionModule[];
+};
+
+export const runAcademicService = async ({
+  learningModules,
+}: AcademicServiceOptions = {}) => {
   if (!app.hasSingleInstanceLock())
     throw new Error('The academic service requires the single-instance lock.');
   const actions = new Map<string, AcademicAction>();
@@ -15,9 +25,10 @@ export const runAcademicService = async () => {
   try {
     const { registerAcademicActions } =
       await import('../../features/onboarding/services/ipc');
-    registerAcademicActions({
+    await registerAcademicActions({
       register: (method, action) => actions.set(method, action),
       publish: server.publish,
+      learningModules: learningModules ?? (await loadLearningActionModules()),
     });
     actions.set('shutdown', () => {
       setTimeout(() => app.quit(), 20);
@@ -25,7 +36,12 @@ export const runAcademicService = async () => {
     // The existing scheduler is restored from saved consent even without a window.
     const restore = async () => {
       const user = await actions.get('getCurrentUser')?.(undefined);
-      if (user) await actions.get('getState')?.(undefined);
+      if (
+        user &&
+        typeof user === 'object' &&
+        (!('authMode' in user) || user.authMode === 'online')
+      )
+        await actions.get('restoreOnlineState')?.(undefined);
     };
     await restore().catch(() => undefined);
     const timer = setInterval(() => {

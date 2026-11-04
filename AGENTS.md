@@ -120,3 +120,9 @@ Read `docs/README.md` inside that installed package first, then read the relevan
 
 This block is written and re-added by `turbo` before repository-scoped commands when an AI agent is detected. In the Turborepo source repository, its template is defined in `crates/turborepo-cli/src/cli/agent_guidance.rs`. Removing the managed block while updates are enabled means a later qualifying invocation will add it again. Set `"agentGuidance": false` in the root `turbo.json` or `turbo.jsonc` to opt out; this does not remove an existing block. Keep the block committed with your work to avoid an uncommitted change on the next agent invocation.
 <!-- END:turborepo-agent-rules -->
+
+## Shared UI primitive reuse
+
+- Use actual shared shadcn/ui primitives from `@scholaros/ui/components/...` whenever available. For example, use `Card`, `CardHeader` and `CardContent` instead of recreating a card with padding, background, border and radius on a div. The same applies to buttons, form fields, dialogs, dropdowns, switches, message/attachment UI and resizable panels. Layout containers and custom visualizations remain appropriate where no existing primitive fits.
+- Search existing components, variants, helpers and callers before adding equivalents. Prefer composing or narrowly extending the shared primitive over cloning its styling. Use semantic tokens and existing project conventions.
+- Researcher must identify reusable primitives in UI feature handoffs. Coder must use them. Reviewer must inspect imports and rendered behavior for hand-rolled duplicates and require a concrete reason for exceptions. Apply relevant installed UI/motion skills without replacing the product's established design system.

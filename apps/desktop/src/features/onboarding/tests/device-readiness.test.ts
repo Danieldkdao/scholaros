@@ -62,6 +62,26 @@ beforeEach(() => {
 });
 
 describe('device readiness', () => {
+  it('normalizes a legacy navigation delay below half a second', () => {
+    db.insert(SettingTable)
+      .values({
+        userId,
+        decisionTimeSeconds: 0.1,
+        updatedAt: new Date().toISOString(),
+      })
+      .run();
+
+    const state = getOnboardingState(userId);
+    const savedSettings = db
+      .select()
+      .from(SettingTable)
+      .all()
+      .find((settings) => settings.userId === userId);
+
+    expect(state.settings.decisionTimeSeconds).toBe(0.5);
+    expect(savedSettings?.decisionTimeSeconds).toBe(0.5);
+  });
+
   it('reports a missing dedicated profile even when the browser is installed', () => {
     writeFileSync(executable(), '');
     saveWorkspace();

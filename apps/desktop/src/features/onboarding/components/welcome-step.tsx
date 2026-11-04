@@ -57,7 +57,7 @@ export const WelcomeStep = ({
         <div className="flex flex-col gap-2">
           <p className="font-medium">How your academic content is shared</p>
           <p>{academicDisclosure}</p>
-          <Collapsible className="rounded-lg bg-muted/50 w-full mt-2">
+          <Collapsible className="rounded-lg w-full mt-2">
             <CollapsibleTrigger className="cursor-pointer font-medium group/more-info flex items-center gap-2 justify-between w-full">
               <span className="font-medium">
                 More about local storage and cloud processing

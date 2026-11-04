@@ -4,11 +4,16 @@ import { scanConnection } from '../services/connection-scan';
 import type { AcademicConnection } from '../types';
 import type { ActiveWorkspace } from '../services/browser-workspace';
 import { protectMissionPage } from '../services/mission-request-guard';
+import { missionTraffic } from '../services/mission-traffic';
 
 const mocks = vi.hoisted(() => ({
   readPage: vi.fn(),
   navigations: [] as string[],
   release: vi.fn(async () => undefined),
+  browserMode: vi.fn(),
+  withStagehand: vi.fn(),
+  navigation: vi.fn(),
+  accountRequest: vi.fn(),
   page: {
     close: vi.fn(async () => undefined),
     waitForLoadState: vi.fn(async () => undefined),
@@ -33,7 +38,16 @@ vi.mock('../services/mission-request-guard', () => ({
   ),
 }));
 vi.mock('../../../lib/auth/main', () => ({
-  accountRequest: vi.fn(async () => ({ courseTargetIds: ['1'] })),
+  accountRequest: mocks.accountRequest,
+}));
+vi.mock('../services/browser-mode', () => ({
+  getBrowserNavigationMode: mocks.browserMode,
+}));
+vi.mock('../services/browser-workspace', () => ({
+  withMissionStagehand: mocks.withStagehand,
+}));
+vi.mock('../services/browser-navigation', () => ({
+  createBrowserNavigationAdapter: mocks.navigation,
 }));
 
 const host = 'canvas.school.edu';
@@ -99,12 +113,90 @@ beforeEach(() => {
     .mockResolvedValueOnce(listPage)
     .mockResolvedValueOnce(coursePage)
     .mockResolvedValue(coursePage);
+  mocks.accountRequest.mockResolvedValue({ courseTargetIds: ['1'] });
   mocks.page.url.mockResolvedValue(listUrl);
   mocks.page.evaluate.mockReset();
   mocks.page.locator.mockReset();
+  mocks.browserMode.mockResolvedValue('decision');
+  mocks.withStagehand.mockImplementation(async (_workspace, _options, run) =>
+    run({ mission: true }),
+  );
+  mocks.navigation.mockReturnValue({
+    setCourseScope: vi.fn(),
+    discoverCourses: vi.fn(async (request) => {
+      const result = await mocks.accountRequest('/api/agent', {
+        kind: 'discover',
+        ...request,
+      });
+      return result.courseTargetIds;
+    }),
+    choose: vi.fn(),
+    extract: vi.fn(),
+  });
 });
 
 describe('one protected walk of a connected resource', () => {
+  it('paces an observed PDF request through the shared host queue', async () => {
+    const pdfUrl = `https://${host}/files/syllabus.pdf`;
+    const events: string[] = [];
+    mocks.readPage
+      .mockReset()
+      .mockResolvedValueOnce({
+        ...listPage,
+        links: [...listPage.links, { label: 'Syllabus PDF', url: pdfUrl }],
+      })
+      .mockResolvedValueOnce(coursePage)
+      .mockResolvedValue(coursePage);
+    mocks.page.evaluate.mockImplementation(async () => {
+      events.push('fetch-pdf');
+      return {
+        status: 200,
+        contentType: 'application/pdf',
+        finalUrl: pdfUrl,
+        base64: Buffer.from('%PDF-1.4\nsynthetic').toString('base64'),
+      };
+    });
+    const waitForTurn = vi
+      .spyOn(missionTraffic, 'waitForTurn')
+      .mockImplementation(async (url) => {
+        expect(url).toBe(pdfUrl);
+        events.push('wait-for-turn');
+      });
+
+    try {
+      await scan(async (context) => {
+        expect(context.observed).not.toBeNull();
+        return context.downloadPdf(context.observed!, pdfUrl);
+      });
+
+      expect(waitForTurn).toHaveBeenCalledOnce();
+      expect(events).toEqual(['wait-for-turn', 'fetch-pdf']);
+    } finally {
+      waitForTurn.mockRestore();
+    }
+  });
+
+  it('uses the server capability and scopes inout Stagehand to the scan mission', async () => {
+    mocks.browserMode.mockResolvedValue('inout');
+    const result = await scan();
+
+    expect(result.outcome).toBe('courses');
+    expect(mocks.withStagehand).toHaveBeenCalledOnce();
+    expect(mocks.navigation).toHaveBeenCalledWith(
+      'inout',
+      expect.objectContaining({ stagehand: { mission: true } }),
+    );
+  });
+
+  it('does not start browsing when the authenticated mode capability fails', async () => {
+    mocks.browserMode.mockRejectedValueOnce(
+      new Error('Capability unavailable'),
+    );
+
+    await expect(scan()).rejects.toThrow('Capability unavailable');
+    expect(mocks.readPage).not.toHaveBeenCalled();
+  });
+
   it('uses resource notes to continue an account picker before classifying the course list', async () => {
     mocks.page.url.mockResolvedValue(
       'https://accounts.google.com/v3/signin/accountchooser',
@@ -249,6 +341,7 @@ describe('one protected walk of a connected resource', () => {
     mocks.readPage.mockReset().mockRejectedValue(new Error('page crashed'));
     const result = await scan();
     expect(result.outcome).toBe('blocked');
+    expect(result.message).toBe('page crashed');
     expect(mocks.release).toHaveBeenCalledOnce();
   });
 
@@ -324,4 +417,100 @@ it('returns to the saved course after account selection lands on the course list
   });
   expect(result.followed).toBe(courseUrl);
   expect(navigatePage).toHaveBeenCalledTimes(2);
+});
+
+it('rejects a cached location outside the active course URL before navigation', async () => {
+  const outsideCourseUrl = 'https://school.edu/courses/2/assignments';
+  const location = {
+    id: 'location-other-course',
+    userId: 'student-1',
+    connectionId: connection.id,
+    courseId: 'course-1',
+    purpose: 'assignments' as const,
+    destinationUrl: outsideCourseUrl,
+    parentUrl: courseUrl,
+    recipe: null,
+    label: 'Assignments',
+    evidence: {
+      sourceUrl: courseUrl,
+      excerpts: ['Assignments'],
+      targetIds: [],
+    },
+    status: 'verified' as const,
+    destinationKind: 'collection' as const,
+    observedAt: '2026-11-01T12:00:00.000Z',
+    verifiedAt: '2026-11-01T12:00:00.000Z',
+    failureCount: 0,
+    lastFailureClass: null,
+  };
+  mocks.readPage.mockReset().mockResolvedValue(coursePage);
+
+  await expect(
+    scanConnection({
+      connection,
+      workspace,
+      hosts: [host],
+      notes: '',
+      navigatePage: async (_page, url) => void mocks.navigations.push(url),
+      isCurrent: () => true,
+      signal: new AbortController().signal,
+      courseUrl,
+      locationScope: { userId: 'student-1', courseId: 'course-1' },
+      withCourseList: async (context) => context.visitKnownLocation!(location),
+    }),
+  ).rejects.toMatchObject({ failureClass: 'wrong-course' });
+
+  expect(mocks.navigations).not.toContain(outsideCourseUrl);
+});
+
+it('visits a scoped saved destination even when the current course root no longer links it', async () => {
+  const destinationUrl = `${courseUrl}/assignments`;
+  const location = {
+    id: 'location-1',
+    userId: 'student-1',
+    connectionId: connection.id,
+    courseId: 'course-1',
+    purpose: 'assignments' as const,
+    destinationUrl,
+    parentUrl: courseUrl,
+    recipe: null,
+    label: 'Assignments',
+    evidence: {
+      sourceUrl: courseUrl,
+      excerpts: ['Assignments'],
+      targetIds: [],
+    },
+    status: 'verified' as const,
+    destinationKind: 'collection' as const,
+    observedAt: '2026-11-01T12:00:00.000Z',
+    verifiedAt: '2026-11-01T12:00:00.000Z',
+    failureCount: 0,
+    lastFailureClass: null,
+  };
+  const cachedPage = {
+    ...coursePage,
+    url: destinationUrl,
+    title: 'Assignments',
+    text: 'Assignments',
+  };
+  mocks.readPage
+    .mockReset()
+    .mockResolvedValueOnce(coursePage)
+    .mockResolvedValueOnce(cachedPage);
+
+  const result = await scanConnection({
+    connection,
+    workspace,
+    hosts: [host],
+    notes: '',
+    navigatePage: async (_page, url) => void mocks.navigations.push(url),
+    isCurrent: () => true,
+    signal: new AbortController().signal,
+    courseUrl,
+    locationScope: { userId: 'student-1', courseId: 'course-1' },
+    withCourseList: async (context) => context.visitKnownLocation!(location),
+  });
+
+  expect(result.followed).toMatchObject({ url: destinationUrl });
+  expect(mocks.navigations).toContain(destinationUrl);
 });

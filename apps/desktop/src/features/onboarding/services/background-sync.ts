@@ -1,4 +1,5 @@
 import { errorMessage } from '../../../lib/error-message';
+import { isAcademicTaskDeferred } from './academic-tasks';
 import type { BackgroundSyncState } from '../types';
 
 type BackgroundSyncConfiguration = {
@@ -15,23 +16,40 @@ type BackgroundSyncDependencies<TResult> = {
   ) => Promise<TResult>;
   // A run that resolved without reading anything must not count as a sync.
   syncFailure?: (result: TResult) => string | null;
+  isPartial?: (result: TResult) => boolean;
   schedule?: (callback: () => void, delayMs: number) => unknown;
   cancelSchedule?: (handle: unknown) => void;
   now?: () => string;
   intervalMs?: number;
   initialDelayMs?: number;
+  deferredDelayMs?: number;
   onChange?: (state: BackgroundSyncState, result: TResult | null) => void;
+};
+
+const refreshStatusFrom = (
+  result: unknown,
+): 'complete' | 'partial' | 'sign-in-required' | null => {
+  if (typeof result !== 'object' || result === null || !('status' in result))
+    return null;
+  const status = result.status;
+  return status === 'complete' ||
+    status === 'partial' ||
+    status === 'sign-in-required'
+    ? status
+    : null;
 };
 
 export const createBackgroundSyncController = <TResult>({
   runDiscovery,
   syncFailure,
+  isPartial,
   schedule = (callback, delayMs) => setTimeout(callback, delayMs),
   cancelSchedule = (handle) =>
     clearTimeout(handle as ReturnType<typeof setTimeout>),
   now = () => new Date().toISOString(),
   intervalMs = 30 * 60_000,
   initialDelayMs = 60_000,
+  deferredDelayMs = 60_000,
   onChange,
 }: BackgroundSyncDependencies<TResult>) => {
   let configuration: BackgroundSyncConfiguration = {
@@ -47,6 +65,9 @@ export const createBackgroundSyncController = <TResult>({
   let error: string | null = null;
   let failures = 0;
   let retryBlocked = false;
+  let needsReconnect = false;
+  let deferred = false;
+  let partial = false;
   let lastSyncedAt: string | null = null;
   let timer: unknown = null;
   let active: AbortController | null = null;
@@ -74,6 +95,18 @@ export const createBackgroundSyncController = <TResult>({
         lastSyncedAt,
       };
     if (error) return { status: 'blocked', message: error, lastSyncedAt };
+    if (deferred)
+      return {
+        status: 'waiting',
+        message: 'Background sync is waiting for other academic work.',
+        lastSyncedAt,
+      };
+    if (partial)
+      return {
+        status: 'waiting',
+        message: 'The last background sync had incomplete source coverage.',
+        lastSyncedAt,
+      };
     return {
       status: 'waiting',
       message: 'Waiting for the next scheduled sync.',
@@ -116,7 +149,14 @@ export const createBackgroundSyncController = <TResult>({
   };
 
   const tick = async () => {
-    if (!isScheduled() || suspensions.size || userPaused || running) return;
+    if (
+      !isScheduled() ||
+      suspensions.size ||
+      userPaused ||
+      retryBlocked ||
+      running
+    )
+      return;
     if (!configuration.isCurrent()) {
       stop();
       return;
@@ -124,6 +164,8 @@ export const createBackgroundSyncController = <TResult>({
     const runGeneration = generation;
     running = true;
     error = null;
+    deferred = false;
+    partial = false;
     notify();
     const controller = new AbortController();
     active = controller;
@@ -137,28 +179,49 @@ export const createBackgroundSyncController = <TResult>({
       );
       if (runGeneration !== generation) return;
       completedResult = result;
+      const refreshStatus = refreshStatusFrom(result);
       const failure = syncFailure?.(result) ?? null;
-      if (failure) error = failure;
+      if (failure || refreshStatus === 'sign-in-required') {
+        error =
+          failure ??
+          'Sign in in your study browser, then resume background sync.';
+        needsReconnect =
+          refreshStatus === 'sign-in-required' ||
+          /sign in|password/i.test(error);
+      } else if (isPartial ? isPartial(result) : refreshStatus === 'partial')
+        partial = true;
       else {
         lastSyncedAt = now();
         error = null;
       }
     } catch (cause) {
       if (runGeneration !== generation) return;
-      error = errorMessage(cause, 'Background sync could not finish.');
+      if (isAcademicTaskDeferred(cause)) deferred = true;
+      else {
+        error = errorMessage(cause, 'Background sync could not finish.');
+        needsReconnect = /sign in|password/i.test(error);
+      }
     } finally {
       if (runGeneration === generation) {
         running = false;
         active = null;
         if (error) {
           failures += 1;
-          retryBlocked = /sign in|password/i.test(error) || failures >= 3;
-        } else {
+          retryBlocked = needsReconnect || failures >= 3;
+        } else if (!deferred && !partial) {
           failures = 0;
           retryBlocked = false;
         }
         if (isScheduled() && !suspensions.size && !userPaused && !retryBlocked)
-          scheduleTick(intervalMs * 2 ** Math.max(0, failures - 1));
+          scheduleTick(
+            deferred
+              ? deferredDelayMs
+              : error
+                ? failures === 1
+                  ? 60_000
+                  : 5 * 60_000
+                : intervalMs,
+          );
         notify(completedResult);
       }
     }
@@ -166,19 +229,24 @@ export const createBackgroundSyncController = <TResult>({
 
   const configure = (next: BackgroundSyncConfiguration) => {
     const key = `${next.userId ?? ''}:${next.enabled ? 1 : 0}`;
-    if (configuration.userId !== next.userId) {
+    const sameUser = configuration.userId === next.userId;
+    if (!sameUser) {
       lastSyncedAt = null;
       suspensions.clear();
+      needsReconnect = false;
     }
     configuration = next;
     if (key === configurationKey) return getState();
     configurationKey = key;
     halt();
-    error = null;
+    if (!needsReconnect) error = null;
     failures = 0;
-    retryBlocked = false;
+    retryBlocked = needsReconnect;
+    deferred = false;
+    partial = false;
     userPaused = false;
-    if (isScheduled() && !suspensions.size) scheduleTick(initialDelayMs);
+    if (isScheduled() && !suspensions.size && !needsReconnect)
+      scheduleTick(initialDelayMs);
     notify();
     return getState();
   };
@@ -192,7 +260,7 @@ export const createBackgroundSyncController = <TResult>({
   };
 
   const resume = () => {
-    if (!isScheduled()) return getState();
+    if (!isScheduled() || needsReconnect) return getState();
     failures = 0;
     retryBlocked = false;
     error = null;
@@ -229,11 +297,39 @@ export const createBackgroundSyncController = <TResult>({
     failures = 0;
     retryBlocked = false;
     lastSyncedAt = null;
+    needsReconnect = false;
+    deferred = false;
+    partial = false;
     cancelTimer();
     abortActive();
     notify();
     return getState();
   };
 
-  return { configure, pause, resume, suspend, stop, getState };
+  const connectionRestored = (userId: string) => {
+    if (
+      configuration.userId !== userId ||
+      !isScheduled() ||
+      !needsReconnect ||
+      !configuration.isCurrent()
+    )
+      return getState();
+    needsReconnect = false;
+    retryBlocked = false;
+    failures = 0;
+    error = null;
+    if (!suspensions.size && !userPaused) scheduleTick(initialDelayMs);
+    notify();
+    return getState();
+  };
+
+  return {
+    configure,
+    pause,
+    resume,
+    suspend,
+    stop,
+    getState,
+    connectionRestored,
+  };
 };

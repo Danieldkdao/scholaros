@@ -3,8 +3,12 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createServer } from 'node:net';
+import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import type { Stagehand, StagehandBrowser } from '@browserbasehq/stagehand';
+import type { ClientLLM } from '@browserbasehq/stagehand';
+import { requestIdSchema } from '@scholaros/services/learning/product-contracts';
+import type { BrowserId } from '../types';
 import { db } from '../../../db';
 import {
   AcademicConnectionTable,
@@ -25,10 +29,50 @@ export type ActiveWorkspace = {
   browser: StagehandBrowser;
 };
 
+export type WorkspaceReplacementErrorCode =
+  | 'provider-failed'
+  | 'revision-conflict'
+  | 'session-changed';
+
+export type WorkspaceReplacementDTO = {
+  operationId: string;
+  state:
+    | 'staged'
+    | 'verifying'
+    | 'ready'
+    | 'committed'
+    | 'cancelled'
+    | 'failed'
+    | 'needs-sign-in';
+  browserId: string;
+  errorCode: WorkspaceReplacementErrorCode | null;
+  revision: number;
+};
+
+type WorkspaceReplacementRecord = WorkspaceReplacementDTO & {
+  userId: string;
+  requestId: string;
+  browser: BrowserId;
+  browserName: string;
+  executable: string;
+  previousWorkspace: typeof BrowserWorkspaceTable.$inferSelect | undefined;
+  previousRuntime: ActiveWorkspace | null;
+  candidate: ActiveWorkspace | null;
+  candidateOwned: boolean;
+  profileExisted: boolean;
+  attempt: number | null;
+};
+
+const replacements = new Map<string, WorkspaceReplacementRecord>();
+const replacementRequests = new Map<string, string>();
+const replacementByAccount = new Map<string, string>();
+const replacementTasks = new Map<string, Promise<WorkspaceReplacementDTO>>();
+
 const tracker = createLaunchTracker();
 let active: ActiveWorkspace | null = null;
 let starting: Promise<ActiveWorkspace> | null = null;
 let launchQueue: Promise<unknown> = Promise.resolve();
+let missionStagehandQueue: Promise<unknown> = Promise.resolve();
 
 const enqueue = <T>(action: () => Promise<T>): Promise<T> => {
   const result = launchQueue.then(action, action);
@@ -91,6 +135,33 @@ const closeActiveWorkspace = async () => {
   );
 };
 
+const closeCandidateWorkspace = async (workspace: ActiveWorkspace) => {
+  if (active === workspace) return;
+  if (await settledWithin(stopWorkspace(workspace), closeBoundMs)) return;
+  await stopOwnedBrowserProcesses(
+    workspace.profileDirectory,
+    workspace.executable,
+  );
+};
+
+const closeStagedCandidates = async () => {
+  const candidates = [...replacements.values()].filter(
+    (replacement) =>
+      replacement.state === 'ready' &&
+      replacement.candidateOwned &&
+      replacement.candidate,
+  );
+  await Promise.all(
+    candidates.map(async (replacement) => {
+      await closeCandidateWorkspace(replacement.candidate!);
+      replacement.candidateOwned = false;
+      replacement.state = 'cancelled';
+      replacement.revision += 1;
+      replacementByAccount.delete(replacement.userId);
+    }),
+  );
+};
+
 export const waitForWorkspaceStops = async (milliseconds = 3000) => {
   if (!pendingStops.size) return;
   await Promise.race([Promise.allSettled(pendingStops), wait(milliseconds)]);
@@ -100,6 +171,10 @@ export const closeWorkspace = async () => {
   tracker.cancel();
   starting = null;
   await closeActiveWorkspace();
+  await Promise.all(
+    [...replacementTasks.values()].map((task) => task.catch(() => undefined)),
+  );
+  await closeStagedCandidates();
   // Any launch still in flight observes the cancelled tracker and closes itself.
 };
 
@@ -118,13 +193,21 @@ const availablePort = () =>
     });
   });
 
+type WorkspaceLaunchOptions = {
+  directory?: string;
+  preserveActive?: boolean;
+  activate?: boolean;
+  demoteConnectionsOnNewProfile?: boolean;
+};
+
 const launchWorkspace = async (
   userId: string,
   executable: string,
   attempt: number,
+  options: WorkspaceLaunchOptions = {},
 ): Promise<ActiveWorkspace> => {
-  await closeActiveWorkspace();
-  const directory = profileDirectory(userId, executable);
+  if (!options.preserveActive) await closeActiveWorkspace();
+  const directory = options.directory ?? profileDirectory(userId, executable);
   const profileExisted = existsSync(directory);
   await mkdir(directory, { recursive: true, mode: 0o700 });
   // Disable password saving in the automation workspace; students sign in on the real sites.
@@ -166,7 +249,7 @@ const launchWorkspace = async (
     stagehand = await Stagehand.create({ browser });
     if (!tracker.isCurrent(attempt))
       throw new Error('Study browser setup was cancelled.');
-    if (!profileExisted)
+    if (!profileExisted && options.demoteConnectionsOnNewProfile !== false)
       // A recreated profile holds no academic cookies, so past checks are void.
       db.update(AcademicConnectionTable)
         .set({ status: 'needs-sign-in', verifiedAt: null })
@@ -180,7 +263,7 @@ const launchWorkspace = async (
       stagehand,
       browser,
     };
-    active = workspace;
+    if (options.activate !== false) active = workspace;
     return workspace;
   } catch (error) {
     const closing = closeEvery([stagehand?.close(), browser?.close()]);
@@ -285,6 +368,313 @@ export const createWorkspace = async (
   });
 };
 
+const replacementRequestKey = (userId: string, requestId: string) =>
+  `${userId}:${requestId}`;
+
+const toReplacementDto = (
+  replacement: WorkspaceReplacementRecord,
+): WorkspaceReplacementDTO => ({
+  operationId: replacement.operationId,
+  state: replacement.state,
+  browserId: replacement.browserId,
+  errorCode: replacement.errorCode,
+  revision: replacement.revision,
+});
+
+const workspaceSelectionMatches = (
+  left: typeof BrowserWorkspaceTable.$inferSelect | undefined,
+  right: typeof BrowserWorkspaceTable.$inferSelect | undefined,
+) =>
+  left === undefined || right === undefined
+    ? left === right
+    : left.browser === right.browser &&
+      left.browserName === right.browserName &&
+      left.executable === right.executable &&
+      left.verifiedAt === right.verifiedAt;
+
+const getWorkspaceReplacement = (userId: string, operationId: string) => {
+  const replacement = replacements.get(operationId);
+  if (!replacement || replacement.userId !== userId)
+    throw new Error('Browser replacement was not found.');
+  return replacement;
+};
+
+const releaseWorkspaceReplacement = (
+  replacement: WorkspaceReplacementRecord,
+) => {
+  if (replacementByAccount.get(replacement.userId) === replacement.operationId)
+    replacementByAccount.delete(replacement.userId);
+};
+
+export const stageWorkspaceReplacement = (
+  userId: string,
+  input: { requestId: string; browserId: string },
+  isCurrent: () => boolean = () => true,
+): Promise<WorkspaceReplacementDTO> => {
+  if (!requestIdSchema.safeParse(input.requestId).success)
+    throw new Error('A valid UUID replacement request ID is required.');
+  if (!isCurrent()) throw new Error('Your session changed; sign in again.');
+  const requestKey = replacementRequestKey(userId, input.requestId);
+  const existingOperationId = replacementRequests.get(requestKey);
+  if (existingOperationId) {
+    const existingTask = replacementTasks.get(existingOperationId);
+    if (existingTask) return existingTask;
+    const existingReplacement = replacements.get(existingOperationId);
+    if (existingReplacement)
+      return Promise.resolve(toReplacementDto(existingReplacement));
+  }
+  if (replacementByAccount.has(userId))
+    throw new Error('A browser replacement is already in progress.');
+
+  const selected = getBrowserInstallation(input.browserId);
+  const operationId = randomUUID();
+  const replacement: WorkspaceReplacementRecord = {
+    operationId,
+    state: 'staged',
+    browserId: input.browserId,
+    errorCode: null,
+    revision: 0,
+    userId,
+    requestId: input.requestId,
+    browser: selected.browser,
+    browserName: selected.name,
+    executable: selected.executable,
+    previousWorkspace: undefined,
+    previousRuntime: null,
+    candidate: null,
+    candidateOwned: false,
+    profileExisted: false,
+    attempt: null,
+  };
+  replacements.set(operationId, replacement);
+  replacementRequests.set(requestKey, operationId);
+  replacementByAccount.set(userId, operationId);
+
+  const staging = enqueue(async () => {
+    if (!isCurrent()) throw new Error('Your session changed; sign in again.');
+    replacement.previousWorkspace = db
+      .select()
+      .from(BrowserWorkspaceTable)
+      .where(eq(BrowserWorkspaceTable.userId, userId))
+      .get();
+    replacement.previousRuntime = active?.userId === userId ? active : null;
+    replacement.profileExisted = existsSync(
+      profileDirectory(userId, selected.executable),
+    );
+    replacement.state = 'verifying';
+    replacement.revision = 1;
+
+    const existingRuntime =
+      replacement.previousRuntime?.executable === selected.executable
+        ? replacement.previousRuntime
+        : null;
+    const candidate =
+      existingRuntime ??
+      (await launchWorkspace(
+        userId,
+        selected.executable,
+        (replacement.attempt = tracker.begin()),
+        {
+          preserveActive: true,
+          activate: false,
+          demoteConnectionsOnNewProfile: false,
+        },
+      ));
+    replacement.candidate = candidate;
+    replacement.candidateOwned = !existingRuntime;
+    await candidate.browser.context.pages();
+    if (
+      !isCurrent() ||
+      (replacement.attempt !== null && !tracker.isCurrent(replacement.attempt))
+    )
+      throw new Error('Your session changed; sign in again.');
+    if (
+      candidate.browser.closed ||
+      candidate.userId !== userId ||
+      candidate.executable !== selected.executable ||
+      (replacement.previousRuntime && active !== replacement.previousRuntime)
+    )
+      throw new Error('The selected study browser did not start.');
+
+    replacement.state = 'ready';
+    return toReplacementDto(replacement);
+  });
+  const task = staging.catch(async () => {
+    if (replacement.candidateOwned && replacement.candidate)
+      await closeCandidateWorkspace(replacement.candidate).catch(
+        () => undefined,
+      );
+    replacement.candidate = null;
+    replacement.candidateOwned = false;
+    replacement.state = 'failed';
+    replacement.errorCode = isCurrent() ? 'provider-failed' : 'session-changed';
+    replacement.revision = Math.max(1, replacement.revision);
+    releaseWorkspaceReplacement(replacement);
+    return toReplacementDto(replacement);
+  });
+  replacementTasks.set(operationId, task);
+  void task
+    .finally(() => {
+      if (replacementTasks.get(operationId) === task)
+        replacementTasks.delete(operationId);
+    })
+    .catch(() => undefined);
+  return task;
+};
+
+export const cancelWorkspaceReplacement = (
+  userId: string,
+  input: { operationId: string },
+): Promise<WorkspaceReplacementDTO> =>
+  enqueue(async () => {
+    const replacement = getWorkspaceReplacement(userId, input.operationId);
+    if (replacement.state !== 'ready') return toReplacementDto(replacement);
+    if (replacement.candidateOwned && replacement.candidate)
+      await closeCandidateWorkspace(replacement.candidate);
+    replacement.candidate = null;
+    replacement.candidateOwned = false;
+    replacement.state = 'cancelled';
+    replacement.revision += 1;
+    releaseWorkspaceReplacement(replacement);
+    return toReplacementDto(replacement);
+  });
+
+export const commitWorkspaceReplacement = (
+  userId: string,
+  input: { operationId: string; expectedRevision: number },
+  isCurrent: () => boolean = () => true,
+): Promise<WorkspaceReplacementDTO> =>
+  enqueue(async () => {
+    const replacement = getWorkspaceReplacement(userId, input.operationId);
+    if (!isCurrent()) throw new Error('Your session changed; sign in again.');
+    if (
+      replacement.state === 'committed' ||
+      replacement.state === 'needs-sign-in' ||
+      replacement.state === 'failed' ||
+      replacement.state === 'cancelled'
+    )
+      return toReplacementDto(replacement);
+    if (
+      replacement.state !== 'ready' ||
+      replacement.revision !== input.expectedRevision
+    )
+      throw new Error('The browser replacement changed; review it and retry.');
+    const candidate = replacement.candidate;
+    if (!candidate || candidate.browser.closed)
+      throw new Error('The selected study browser is no longer ready.');
+    try {
+      await candidate.browser.context.pages();
+      if (!isCurrent()) throw new Error('Your session changed; sign in again.');
+      const currentWorkspace = db
+        .select()
+        .from(BrowserWorkspaceTable)
+        .where(eq(BrowserWorkspaceTable.userId, userId))
+        .get();
+      if (
+        !workspaceSelectionMatches(
+          replacement.previousWorkspace,
+          currentWorkspace,
+        )
+      )
+        throw new Error(
+          'The configured study browser changed; review it and retry.',
+        );
+
+      const needsSignIn =
+        !replacement.previousWorkspace ||
+        replacement.previousWorkspace.executable !== replacement.executable ||
+        !replacement.profileExisted;
+      if (active !== candidate) await closeActiveWorkspace();
+      if (!isCurrent()) throw new Error('Your session changed; sign in again.');
+
+      const verifiedAt = new Date().toISOString();
+      db.transaction((tx) => {
+        if (!isCurrent())
+          throw new Error('Your session changed; sign in again.');
+        const latestWorkspace = tx
+          .select()
+          .from(BrowserWorkspaceTable)
+          .where(eq(BrowserWorkspaceTable.userId, userId))
+          .get();
+        if (
+          !workspaceSelectionMatches(
+            replacement.previousWorkspace,
+            latestWorkspace,
+          )
+        )
+          throw new Error(
+            'The configured study browser changed; review it and retry.',
+          );
+        tx.insert(BrowserWorkspaceTable)
+          .values({
+            userId,
+            browser: replacement.browser,
+            browserName: replacement.browserName,
+            executable: replacement.executable,
+            verifiedAt,
+          })
+          .onConflictDoUpdate({
+            target: BrowserWorkspaceTable.userId,
+            set: {
+              browser: replacement.browser,
+              browserName: replacement.browserName,
+              executable: replacement.executable,
+              verifiedAt,
+            },
+          })
+          .run();
+        if (needsSignIn)
+          tx.update(AcademicConnectionTable)
+            .set({ status: 'needs-sign-in', verifiedAt: null })
+            .where(eq(AcademicConnectionTable.userId, userId))
+            .run();
+      });
+
+      active = candidate;
+      replacement.candidateOwned = false;
+      replacement.state = needsSignIn ? 'needs-sign-in' : 'committed';
+      replacement.errorCode = null;
+      replacement.revision += 1;
+      releaseWorkspaceReplacement(replacement);
+      return toReplacementDto(replacement);
+    } catch (error) {
+      if (replacement.candidateOwned && replacement.candidate)
+        await closeCandidateWorkspace(replacement.candidate).catch(
+          () => undefined,
+        );
+      replacement.candidate = null;
+      replacement.candidateOwned = false;
+      replacement.state = 'failed';
+      replacement.errorCode = isCurrent()
+        ? error instanceof Error && error.message.includes('changed')
+          ? 'revision-conflict'
+          : 'provider-failed'
+        : 'session-changed';
+      replacement.revision += 1;
+      releaseWorkspaceReplacement(replacement);
+      const previousRuntime = replacement.previousRuntime;
+      if (
+        isCurrent() &&
+        replacement.previousWorkspace &&
+        previousRuntime &&
+        (active === null ||
+          (active === previousRuntime && previousRuntime.browser.closed))
+      ) {
+        try {
+          await launchWorkspace(
+            userId,
+            previousRuntime.executable,
+            tracker.begin(),
+            { preserveActive: true },
+          );
+        } catch {
+          // Keep the saved configuration authoritative if runtime recovery fails.
+        }
+      }
+      return toReplacementDto(replacement);
+    }
+  });
+
 export const getWorkspace = async (
   userId: string,
   isCurrent: () => boolean = () => true,
@@ -321,6 +711,52 @@ export const getWorkspace = async (
       .where(eq(BrowserWorkspaceTable.userId, userId))
       .run();
   return started;
+};
+
+const runWithMissionStagehand = async <T>(
+  workspace: ActiveWorkspace,
+  options: { signal: AbortSignal; isCurrent: () => boolean },
+  run: (stagehand: Stagehand) => Promise<T>,
+) => {
+  options.signal.throwIfAborted();
+  if (active !== workspace || workspace.browser.closed || !options.isCurrent())
+    throw new Error('Your study browser session changed.');
+  const { Stagehand } = await import('@browserbasehq/stagehand');
+  await workspace.stagehand.close();
+  let missionStagehand: Stagehand | null = null;
+  try {
+    options.signal.throwIfAborted();
+    const { createBrowserModel } = await import('./browser-model');
+    missionStagehand = await Stagehand.create({
+      browser: workspace.browser,
+      model: { generate: createBrowserModel(options) as ClientLLM['generate'] },
+      selfHeal: false,
+      logging: { level: 'off' },
+    });
+    if (active !== workspace || !options.isCurrent())
+      throw new Error('Your study browser session changed.');
+    workspace.stagehand = missionStagehand;
+    return await run(missionStagehand);
+  } finally {
+    await missionStagehand?.close().catch(() => undefined);
+    if (active === workspace && !workspace.browser.closed) {
+      workspace.stagehand = await Stagehand.create({
+        browser: workspace.browser,
+      });
+    }
+  }
+};
+
+export const withMissionStagehand = <T>(
+  workspace: ActiveWorkspace,
+  options: { signal: AbortSignal; isCurrent: () => boolean },
+  run: (stagehand: Stagehand) => Promise<T>,
+): Promise<T> => {
+  const result = missionStagehandQueue.then(() =>
+    runWithMissionStagehand(workspace, options, run),
+  );
+  missionStagehandQueue = result.catch(() => undefined);
+  return result;
 };
 
 export const openAcademicPage = async (

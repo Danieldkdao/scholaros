@@ -16,7 +16,7 @@ export const settingsUpdateSchema = z
     consent: z.boolean().optional(),
     launchAtLogin: z.boolean().optional(),
     backgroundSync: z.boolean().optional(),
-    decisionTimeSeconds: z.number().positive().max(5).optional(),
+    decisionTimeSeconds: z.number().min(0.5).max(5).optional(),
     blockedWords: z
       .array(z.string().trim().min(1).max(100).toLowerCase())
       .max(100)

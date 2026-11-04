@@ -53,10 +53,6 @@ export const useOnboardingState = () => {
     setLoading(false);
   }, []);
 
-  useEffect(() => {
-    void load();
-  }, [load]);
-
   useEffect(
     () =>
       window.scholar.onBackgroundSyncChange(
@@ -82,6 +78,26 @@ export const useOnboardingState = () => {
       ),
     [],
   );
+
+  useEffect(
+    () =>
+      window.scholar.onWatchChange?.((change) => {
+        if (!accepting.current) return;
+        setDisplayed((current) => {
+          if (!current || current.accountId !== change.accountId)
+            return current;
+          return {
+            ...current,
+            watch: { enabled: change.enabled, status: change.status },
+          };
+        });
+      }) ?? (() => undefined),
+    [],
+  );
+
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   return {
     state: displayed,

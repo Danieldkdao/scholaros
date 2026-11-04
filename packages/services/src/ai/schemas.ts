@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { browserNavigationModeSchema } from '@scholaros/env/browser-navigation';
 
 export const requestKinds = [
   'choose',
@@ -6,11 +7,30 @@ export const requestKinds = [
   'courses',
   'assignments',
   'announcements',
+  'materials',
 ] as const;
 export type RequestKind = (typeof requestKinds)[number];
 export const agentRequestSchema = z.object({
   kind: z.enum(requestKinds),
+  browserNavigationMode: browserNavigationModeSchema.optional(),
   goal: z.string().max(500),
+  memory: z
+    .object({
+      navigation: z.string().max(8000),
+      resources: z
+        .array(
+          z.object({
+            id: z.string().max(300),
+            title: z.string().max(300),
+            sourceId: z.string().max(300).nullable(),
+            url: z.url().max(2048).nullable(),
+            active: z.boolean(),
+          }),
+        )
+        .max(40),
+      truncated: z.boolean(),
+    })
+    .optional(),
   context: z
     .object({
       retrievedAt: z.iso.datetime({ offset: true }),
@@ -48,6 +68,70 @@ export const agentRequestSchema = z.object({
 });
 export type AgentRequestSchema = z.infer<typeof agentRequestSchema>;
 
+export const agentOperationSources = ['browser', 'synthetic-material'] as const;
+export type AgentOperationSource = (typeof agentOperationSources)[number];
+
+export const configurationRevisionSchema = z
+  .string()
+  .regex(/^v1-[a-f0-9]{24}$/);
+export type ConfigurationRevisionSchema = z.infer<
+  typeof configurationRevisionSchema
+>;
+
+export const browserAgentRequestSchema = agentRequestSchema
+  .extend({
+    browserNavigationMode: browserNavigationModeSchema,
+    configurationRevision: configurationRevisionSchema.optional(),
+  })
+  .strict();
+export type BrowserAgentRequestSchema = z.infer<
+  typeof browserAgentRequestSchema
+>;
+
+const syntheticMaterialMaxPages = 4;
+const syntheticMaterialMaxCharacters = 24_000;
+const syntheticMaterialAgentRequestSchema = z
+  .strictObject({
+    ...agentRequestSchema.shape,
+    kind: z.literal('materials'),
+    browserNavigationMode: z.never().optional(),
+    targets: z.never().optional(),
+  })
+  .superRefine((request, context) => {
+    if (request.pages.length > syntheticMaterialMaxPages)
+      context.addIssue({
+        code: 'custom',
+        message: 'Synthetic material exceeds the page limit.',
+      });
+    const characters = request.pages.reduce(
+      (total, page) => total + page.title.length + page.text.length,
+      0,
+    );
+    if (characters > syntheticMaterialMaxCharacters)
+      context.addIssue({
+        code: 'custom',
+        message: 'Synthetic material exceeds the content limit.',
+      });
+  });
+export type SyntheticMaterialAgentRequestSchema = z.infer<
+  typeof syntheticMaterialAgentRequestSchema
+>;
+
+// Internal host envelope; never parse renderer or model payloads as this type.
+export const internalAgentOperationSchema = z.discriminatedUnion('source', [
+  z.strictObject({
+    source: z.literal(agentOperationSources[0]),
+    request: browserAgentRequestSchema,
+  }),
+  z.strictObject({
+    source: z.literal(agentOperationSources[1]),
+    request: syntheticMaterialAgentRequestSchema,
+  }),
+]);
+export type InternalAgentOperationSchema = z.infer<
+  typeof internalAgentOperationSchema
+>;
+
 export const navigationOperations = ['NAVIGATE', 'DONE', 'BLOCKED'] as const;
 export type NavigationOperation = (typeof navigationOperations)[number];
 export const navigationDecisionSchema = z.object({
@@ -57,7 +141,11 @@ export const navigationDecisionSchema = z.object({
 export type NavigationDecisionSchema = z.infer<typeof navigationDecisionSchema>;
 
 export { assignmentStates, contentCoverageValues } from './resources/shared';
-export type { AssignmentState, ContentCoverage } from './resources/shared';
+export type {
+  AssignmentState,
+  ContentCoverage,
+  ContentCoverage as ModelContentCoverage,
+} from './resources/shared';
 
 export const courseDiscoverySchema = z.object({
   courseTargetIds: z.array(z.string().min(1).max(20)).max(30),
@@ -80,7 +168,7 @@ export const connectionSuggestionsSchema = z.object({
 export type ConnectionSuggestionsSchema = z.infer<
   typeof connectionSuggestionsSchema
 >;
-export const connectionResolveRequestSchema = z.object({
+export const connectionResolveRequestSchema = z.strictObject({
   kind: z.literal('resolve'),
   prompt: z.string().trim().min(1).max(500),
 });

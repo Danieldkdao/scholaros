@@ -1,14 +1,46 @@
 import type {
   CourseRecordSchema,
   CreateCourseRecordSchema,
+  ListCourseRecordSuppressionsSchema,
+  RestoreCourseRecordSuppressionSchema,
   UpdateCourseRecordSchema,
 } from '../courses/schemas';
+import type {
+  InputOf,
+  LearningPublicMethod,
+  ProductEventV1,
+  ResultOf,
+} from '@scholaros/services/learning/product-contracts';
+import type {
+  DictationAudioChunk,
+  DictationEvent,
+  DictationStartInput,
+} from '@scholaros/services/learning/speech-contracts';
+import type {
+  AcademicReconnect,
+  ActivityRuntimeChange,
+  AuthMode,
+  CloseActivityInput,
+  ContextFileSelectionInput,
+  ContextFileSelectionResult,
+  DeleteLocalAcademicDataInput,
+  MountActivityInput,
+  UpdateActivityBoundsInput,
+  WorkspaceReplacementCancelInput,
+  WorkspaceReplacementCommitInput,
+  WorkspaceReplacementInput,
+} from '../../services/academic/contracts';
 import type { ConnectRunState } from './services/connect-run';
+import type { WorkspaceReplacementDTO } from './services/browser-workspace';
 import type { ConnectionCandidateSchema } from '@scholaros/services/ai/schemas';
 import type { CourseDetail, CoursesSnapshot } from '../courses/types';
+import type { CourseRecordSuppressionView } from '../courses/services/store';
 import type { OnboardingStep, PreviewCardKind, PreviewPrompt } from './schemas';
+import type { BrowserNavigationMode } from '@scholaros/env/browser-navigation';
+import type { WatchRuntimeStatus, WatchSettings } from '../watch/types';
 
 export type { OnboardingStep, PreviewCardKind, PreviewPrompt };
+export type { BrowserNavigationMode };
 
 export type CurrentUser = {
   id: string;
@@ -16,6 +48,7 @@ export type CurrentUser = {
   email: string;
   image: string | null;
   hasCompletedOnboarding: boolean;
+  authMode?: AuthMode;
 };
 export type BrowserId = 'chrome' | 'edge' | 'brave';
 export type BrowserInstallation = {
@@ -140,7 +173,14 @@ export type OnboardingState = {
   primaryLms: string | null;
   discovery: AcademicDiscovery;
   preferences: OnboardingPreferences;
+  watch?: { enabled: boolean; status: WatchRuntimeStatus };
 };
+export type WatchRuntimeState = {
+  enabled: boolean;
+  status: WatchRuntimeStatus;
+};
+export type WatchRuntimeChange = WatchRuntimeState & { accountId: string };
+export type { WatchSettings };
 export type ActivityType =
   | 'waiting'
   | 'opening'
@@ -180,7 +220,21 @@ export type ConnectionProposal = {
   id: string;
   candidates: ConnectionCandidateSchema[];
 };
-export type ScholarBridge = {
+
+export type DeviceReplacementDTO = WorkspaceReplacementDTO;
+
+type LearningBridge = {
+  [Method in LearningPublicMethod]: (
+    input: InputOf<Method>,
+  ) => Promise<ResultOf<Method>>;
+};
+
+export type ScholarBridge = LearningBridge & {
+  onProductEvent: (listener: (event: ProductEventV1) => void) => () => void;
+  onAcademicReconnect: (
+    listener: (change: AcademicReconnect) => void,
+  ) => () => void;
+  onDictationEvent: (listener: (event: DictationEvent) => void) => () => void;
   onCoursesChange: (
     listener: (change: { accountId: string; courseId: string | null }) => void,
   ) => () => void;
@@ -196,6 +250,10 @@ export type ScholarBridge = {
   cancelConnectRun: () => Promise<void>;
   onConnectChange: (listener: (state: ConnectRunState) => void) => () => void;
   getState: () => Promise<OnboardingState>;
+  getWatchSettings: () => Promise<WatchSettings>;
+  saveWatchSettings: (settings: WatchSettings) => Promise<WatchSettings>;
+  getWatchRuntimeState: () => Promise<WatchRuntimeState>;
+  onWatchChange: (listener: (change: WatchRuntimeChange) => void) => () => void;
   saveSettings: (
     changes: Partial<
       Pick<
@@ -225,6 +283,12 @@ export type ScholarBridge = {
   createCourseRecord: (input: CreateCourseRecordSchema) => Promise<string>;
   updateCourseRecord: (input: UpdateCourseRecordSchema) => Promise<void>;
   deleteCourseRecord: (input: CourseRecordSchema) => Promise<void>;
+  listCourseRecordSuppressions: (
+    input: ListCourseRecordSuppressionsSchema,
+  ) => Promise<CourseRecordSuppressionView[] | null>;
+  restoreCourseRecordSuppression: (
+    input: RestoreCourseRecordSuppressionSchema,
+  ) => Promise<void>;
   getCourses: () => Promise<CoursesSnapshot | null>;
   getCourse: (courseId: string) => Promise<CourseDetail | null>;
   refreshCourses: () => Promise<CoursesSnapshot>;
@@ -242,6 +306,43 @@ export type ScholarBridge = {
   completeOnboarding: () => Promise<void>;
   signOut: () => Promise<void>;
   openSource: (url: string) => Promise<void>;
+  stageWorkspaceReplacement: (
+    input: WorkspaceReplacementInput,
+  ) => Promise<DeviceReplacementDTO>;
+  commitWorkspaceReplacement: (
+    input: WorkspaceReplacementCommitInput,
+  ) => Promise<DeviceReplacementDTO>;
+  cancelWorkspaceReplacement: (
+    input: WorkspaceReplacementCancelInput,
+  ) => Promise<DeviceReplacementDTO>;
+  deleteLocalAcademicData: (
+    input: DeleteLocalAcademicDataInput,
+  ) => Promise<void>;
+  chooseContextFiles: (
+    input: ContextFileSelectionInput,
+  ) => Promise<ContextFileSelectionResult>;
+  mountActivity: (input: MountActivityInput) => Promise<{ runId: string }>;
+  updateActivityBounds: (input: UpdateActivityBoundsInput) => Promise<void>;
+  closeActivity: (input: CloseActivityInput) => Promise<void>;
+  retryActivityCheckpoint: (input: CloseActivityInput) => Promise<void>;
+  onActivityChange: (
+    runId: string,
+    listener: (change: ActivityRuntimeChange) => void,
+  ) => () => void;
+  startDictation: (
+    input: DictationStartInput,
+  ) => Promise<{ operationId: string }>;
+  appendDictationAudio: (
+    input: DictationAudioChunk,
+  ) => Promise<{ acceptedSequence: number }>;
+  stopDictation: (input: { operationId: string }) => Promise<void>;
+  cancelDictation: (input: { operationId: string }) => Promise<void>;
+  requestMicrophonePermission: (input: { sessionId: string }) => Promise<{
+    state: 'granted' | 'denied' | 'unsupported';
+  }>;
+  requestNotificationPermission: (input: Record<string, never>) => Promise<{
+    state: 'granted' | 'denied' | 'unsupported' | 'unknown';
+  }>;
 };
 
 declare global {

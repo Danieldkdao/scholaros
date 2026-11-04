@@ -1,9 +1,12 @@
 import { openBackgroundPage } from './background-page';
 import { composeAgentNotes } from '../lib/agent-notes';
-import { courseDiscoverySchema } from '@scholaros/services/ai/schemas';
-import { accountRequest } from '../../../lib/auth/main';
 import { exploreForCourses } from '../lib/course-exploration';
-import { academicPageIdentity, isReadNavigation } from '../lib/browser-policy';
+import {
+  academicPageIdentity,
+  isCourseNavigationTarget,
+  isReadNavigation,
+} from '../lib/browser-policy';
+import { navigationLocationRowSchema } from '../../context/schemas';
 import {
   assertMissionNavigation,
   isStaleNavigation,
@@ -14,10 +17,13 @@ import {
   outcomeFromExploration,
 } from '../lib/discovery-outcomes';
 import { readPage, revealCourseNavigation } from './page-content';
+import {
+  downloadPdfFromObservedLink,
+  type PdfDownloadResult,
+} from '../../context/services/material-download';
 import { waitForMissionPage } from './page-readiness';
 import { missionTraffic } from './mission-traffic';
 import {
-  AccountContinuationError,
   createAccountContinuation,
   type AccountContinuation,
 } from './account-continuation';
@@ -25,16 +31,23 @@ import {
   protectMissionPage,
   type MissionProtection,
 } from './mission-request-guard';
-import type { Page } from '@browserbasehq/stagehand';
+import type { Page, Stagehand } from '@browserbasehq/stagehand';
+import type { BrowserNavigationMode } from '@scholaros/env/browser-navigation';
+import { createBrowserNavigationAdapter } from './browser-navigation';
+import type { BrowserNavigationAdapter } from './browser-navigation';
+import { getBrowserNavigationMode } from './browser-mode';
+import { withMissionStagehand } from './browser-workspace';
 import type { AcademicContextEntryDraft, AcademicConnection } from '../types';
 import type { ActiveWorkspace } from './browser-workspace';
 import type { ConnectionOutcome } from '../lib/discovery-outcomes';
 import type { ObservedPage } from '../lib/academic-discovery';
+import type { NavigationLocationSelectData } from '../../../db/schema';
 
 export type CourseListContext = {
   withCoursePage: (
     url: string,
     run: (context: CourseListContext) => Promise<void>,
+    locationScope?: { userId: string; courseId: string },
   ) => Promise<void>;
   observed: ObservedPage | null;
   pages?: ObservedPage[];
@@ -43,6 +56,14 @@ export type CourseListContext = {
   assertReadable: () => void;
   // Opens a destination a given observed page exposed, under the same guards.
   openFrom: (from: ObservedPage, url: string) => Promise<ObservedPage>;
+  downloadPdf: (from: ObservedPage, url: string) => Promise<PdfDownloadResult>;
+  navigation?: BrowserNavigationAdapter;
+  readCurrent?: () => Promise<ObservedPage>;
+  hasBlockedRequiredData?: () => boolean;
+  visitKnownLocation?: (
+    scopedRecord: NavigationLocationSelectData,
+    target?: 'destination' | 'parent',
+  ) => Promise<ObservedPage>;
 };
 
 export type ConnectionScan<TFollowed = never> = {
@@ -68,19 +89,7 @@ const skipped = <TFollowed>(
 });
 
 // Keep discovery and course content inside the same protected browser walk.
-export const scanConnection = async <TFollowed = never>({
-  connection,
-  workspace,
-  hosts,
-  notes,
-  navigatePage,
-  isCurrent,
-  signal,
-  maxPages,
-  reserveModelCall,
-  withCourseList,
-  courseUrl,
-}: {
+type ScanConnectionInput<TFollowed> = {
   connection: AcademicConnection;
   workspace: ActiveWorkspace;
   hosts: string[];
@@ -93,19 +102,51 @@ export const scanConnection = async <TFollowed = never>({
   isCurrent: () => boolean;
   signal: AbortSignal;
   courseUrl?: string;
+  locationScope?: { userId: string; courseId: string };
   maxPages?: number;
   reserveModelCall?: () => boolean;
   withCourseList?: (context: CourseListContext) => Promise<TFollowed>;
-}): Promise<ConnectionScan<TFollowed>> => {
+  browserMode?: BrowserNavigationMode;
+  stagehand?: Stagehand;
+};
+
+export const scanConnection = async <TFollowed = never>(
+  input: ScanConnectionInput<TFollowed>,
+): Promise<ConnectionScan<TFollowed>> => {
+  const {
+    connection,
+    workspace,
+    hosts,
+    notes,
+    navigatePage,
+    isCurrent,
+    signal,
+    maxPages,
+    reserveModelCall,
+    withCourseList,
+    courseUrl,
+  } = input;
+  const browserMode =
+    input.browserMode ??
+    (await getBrowserNavigationMode({ signal, isCurrent }));
+  if (browserMode === 'inout' && !input.stagehand)
+    return withMissionStagehand(workspace, { signal, isCurrent }, (stagehand) =>
+      scanConnection({ ...input, browserMode, stagehand }),
+    );
   const entry = resolveMissionEntry(connection, hosts);
   if (entry.kind === 'unsupported') return skipped('skipped');
   let page: Page | null = null;
   let releaseProtection: MissionProtection | null = null;
   const blockedHosts = new Set<string>();
   let sawSignInWall = false;
+  let blockedRequiredData = false;
   let notesOmitted = false;
   let truncated = false;
   let following = false;
+  const observedResourceRelationships = new Map<
+    string,
+    { parentUrl: string; targetUrl: string }
+  >();
   const continuation = createAccountContinuation(
     connection.host,
     connection.notes,
@@ -130,10 +171,50 @@ export const scanConnection = async <TFollowed = never>({
           event.mainFrame
         )
           sawSignInWall = true;
-        else void blockedHosts.add(event.host);
+        else {
+          blockedHosts.add(event.host);
+          if ('requiredData' in event && event.requiredData === true)
+            blockedRequiredData = true;
+        }
       },
       continuation,
     );
+    const navigation = createBrowserNavigationAdapter(browserMode, {
+      page: openedPage,
+      stagehand: input.stagehand,
+      hosts,
+      signal,
+      isCurrent,
+      assertReadable: () => releaseProtection?.assertReadable?.(),
+      courseScope: courseUrl
+        ? { courseUrl, observedResourceRelationships: [] }
+        : null,
+    });
+    const updateCourseNavigationScope = (snapshot: ObservedPage) => {
+      if (!courseUrl) return;
+      const currentScope = {
+        courseUrl,
+        observedResourceRelationships: [
+          ...observedResourceRelationships.values(),
+        ],
+      };
+      if (!isCourseNavigationTarget(snapshot.url, currentScope, hosts)) return;
+      const parentUrl = academicPageIdentity(snapshot.url) ?? snapshot.url;
+      for (const link of snapshot.links) {
+        if (!isReadNavigation(link.url, hosts)) continue;
+        const targetUrl = academicPageIdentity(link.url) ?? link.url;
+        observedResourceRelationships.set(`${parentUrl}\n${targetUrl}`, {
+          parentUrl,
+          targetUrl,
+        });
+      }
+      navigation.setCourseScope({
+        courseUrl,
+        observedResourceRelationships: [
+          ...observedResourceRelationships.values(),
+        ],
+      });
+    };
     await navigatePage(openedPage, courseUrl ?? entry.url, continuation);
     let observed: ObservedPage | null = null;
     const observedPages: ObservedPage[] = [];
@@ -159,6 +240,7 @@ export const scanConnection = async <TFollowed = never>({
       assertMissionNavigation(snapshot.url, hosts);
       observed = snapshot;
       observedPages.push(snapshot);
+      updateCourseNavigationScope(snapshot);
       return snapshot;
     };
     const assertObserved = async (url: string) => {
@@ -186,6 +268,65 @@ export const scanConnection = async <TFollowed = never>({
       assertMissionNavigation(url, hosts);
       await navigatePage(openedPage, url, continuation);
       return readSnapshot();
+    };
+    const visitKnownLocation = async (
+      inputLocation: NavigationLocationSelectData,
+      target: 'destination' | 'parent' = 'destination',
+    ): Promise<ObservedPage> => {
+      signal.throwIfAborted();
+      if (!isCurrent()) throw new Error('Your session changed; sign in again.');
+      releaseProtection?.assertReadable?.();
+      const parsedLocation =
+        navigationLocationRowSchema.safeParse(inputLocation);
+      const location = parsedLocation.success ? parsedLocation.data : null;
+      if (
+        !courseUrl ||
+        !input.locationScope ||
+        !location ||
+        location.userId !== input.locationScope.userId ||
+        location.connectionId !== connection.id ||
+        location.courseId !== input.locationScope.courseId ||
+        location.status !== 'verified' ||
+        location.destinationKind !== 'collection' ||
+        !location.parentUrl ||
+        location.parentUrl !== location.evidence.sourceUrl
+      ) {
+        throw Object.assign(
+          new Error('The saved destination is not verified for this course.'),
+          { failureClass: 'wrong-course' as const },
+        );
+      }
+      const targetUrl =
+        target === 'parent' ? location.parentUrl : location.destinationUrl;
+      const courseIdentity = academicPageIdentity(courseUrl);
+      const targetIdentity = academicPageIdentity(targetUrl);
+      if (
+        !courseIdentity ||
+        !targetIdentity ||
+        (targetIdentity !== courseIdentity &&
+          !targetIdentity.startsWith(`${courseIdentity}/`))
+      )
+        throw Object.assign(
+          new Error('The saved destination is not inside the active course.'),
+          { failureClass: 'wrong-course' as const },
+        );
+      if (!isReadNavigation(targetUrl, [connection.host]))
+        throw Object.assign(
+          new Error('The saved destination is not safe to open.'),
+          { failureClass: 'unknown' as const },
+        );
+      assertMissionNavigation(targetUrl, hosts);
+      await navigatePage(openedPage, targetUrl, continuation);
+      const snapshot = await readSnapshot();
+      if (
+        (academicPageIdentity(snapshot.url) ?? snapshot.url) !==
+        (academicPageIdentity(targetUrl) ?? targetUrl)
+      )
+        throw Object.assign(
+          new Error('The saved destination changed during navigation.'),
+          { failureClass: 'wrong-course' as const },
+        );
+      return snapshot;
     };
     const readCourseTarget = async () => {
       let snapshot = await readSnapshot();
@@ -241,32 +382,23 @@ export const scanConnection = async <TFollowed = never>({
                 notes,
               );
               notesOmitted ||= composedNotes.omitted;
-              const result = courseDiscoverySchema.parse(
-                await accountRequest(
-                  '/api/agent',
+              const courseTargetIds = await navigation.discoverCourses({
+                goal: 'Find my current enrolled courses',
+                notes: composedNotes.notes,
+                pages: [
                   {
-                    kind: 'discover',
-                    goal: 'Find my current enrolled courses',
-                    notes: composedNotes.notes,
-                    pages: [
-                      {
-                        url: snapshot.url,
-                        title: snapshot.title,
-                        text: (snapshot.text ?? '').slice(0, 16000),
-                      },
-                    ],
-                    targets,
+                    url: snapshot.url,
+                    title: snapshot.title,
+                    text: (snapshot.text ?? '').slice(0, 16000),
                   },
-                  signal,
-                ),
-              );
+                ],
+                targets,
+              });
               signal.throwIfAborted();
               releaseProtection?.assertReadable?.();
               selectedUrls.push(
                 ...targets
-                  .filter((target) =>
-                    result.courseTargetIds.includes(target.id),
-                  )
+                  .filter((target) => courseTargetIds.includes(target.id))
                   .map((target) => target.url),
               );
             }
@@ -288,55 +420,102 @@ export const scanConnection = async <TFollowed = never>({
       blockedHosts.size,
     );
     following = true;
+    let courseListContext: CourseListContext;
+    courseListContext = {
+      withCoursePage: async (url, run, locationScope = input.locationScope) => {
+        if (
+          courseUrl &&
+          (academicPageIdentity(url) ?? url) ===
+            (academicPageIdentity(courseUrl) ?? courseUrl)
+        ) {
+          signal.throwIfAborted();
+          if (!isCurrent())
+            throw new Error('Your session changed; sign in again.');
+          releaseProtection?.assertReadable?.();
+          await continuation.resume(openedPage, signal, isCurrent);
+          await navigatePage(openedPage, url, continuation);
+          const courseRoot = await readSnapshot();
+          if (
+            (academicPageIdentity(courseRoot.url) ?? courseRoot.url) !==
+            (academicPageIdentity(url) ?? url)
+          )
+            throw new Error('The selected course changed during refresh.');
+          await run({
+            ...courseListContext,
+            observed: courseRoot,
+            pages: observedPages,
+          });
+          return;
+        }
+        if (
+          !observedPages.some((snapshot) =>
+            snapshot.links.some((link) => link.url === url),
+          )
+        )
+          throw new Error('The course was not exposed by the course list.');
+        const worker = await scanConnection({
+          connection,
+          workspace,
+          hosts,
+          notes,
+          navigatePage,
+          isCurrent,
+          signal,
+          courseUrl: url,
+          ...(locationScope ? { locationScope } : {}),
+          browserMode,
+          stagehand: input.stagehand,
+          withCourseList: async (context) => {
+            await run(context);
+            return true;
+          },
+        });
+        if (!worker.followed)
+          throw new Error(
+            worker.message ?? 'The course page could not be read.',
+          );
+      },
+      observed: listPage,
+      pages: observedPages,
+      entries: exploration.entries,
+      assertReadable: () => releaseProtection?.assertReadable?.(),
+      hasBlockedRequiredData: () => blockedRequiredData,
+      openFrom,
+      visitKnownLocation,
+      navigation,
+      readCurrent: readSnapshot,
+      downloadPdf: async (from, url) => {
+        signal.throwIfAborted();
+        releaseProtection?.assertReadable?.();
+        const result = await downloadPdfFromObservedLink({
+          page: openedPage,
+          observedPage: from,
+          targetUrl: url,
+          allowedHosts: hosts,
+          signal,
+          beforeFetch: (targetUrl) =>
+            missionTraffic.waitForTurn(targetUrl, signal),
+        });
+        signal.throwIfAborted();
+        releaseProtection?.assertReadable?.();
+        return result;
+      },
+      revealContent: async (from) => {
+        signal.throwIfAborted();
+        releaseProtection?.assertReadable?.();
+        if ((await openedPage.url()) !== from.url)
+          await navigatePage(openedPage, from.url, continuation);
+        await missionTraffic.waitForTurn(from.url, signal);
+        if (!isCurrent())
+          throw new Error('Your session changed; sign in again.');
+        const outcome = await revealCourseNavigation(openedPage, 'content');
+        if (outcome === 'refused')
+          throw new Error('This content control could not be opened safely.');
+        return outcome === 'opened' ? readSnapshot() : null;
+      },
+    };
     const followed = withCourseList
-      ? await withCourseList({
-          withCoursePage: async (url, run) => {
-            if (
-              !observedPages.some((snapshot) =>
-                snapshot.links.some((link) => link.url === url),
-              )
-            )
-              throw new Error('The course was not exposed by the course list.');
-            const worker = await scanConnection({
-              connection,
-              workspace,
-              hosts,
-              notes,
-              navigatePage,
-              isCurrent,
-              signal,
-              courseUrl: url,
-              withCourseList: async (context) => {
-                await run(context);
-                return true;
-              },
-            });
-            if (!worker.followed)
-              throw new Error(
-                worker.message ?? 'The course page could not be read.',
-              );
-          },
-          observed: listPage,
-          pages: [...observedPages],
-          entries: exploration.entries,
-          assertReadable: () => releaseProtection?.assertReadable?.(),
-          openFrom,
-          revealContent: async (from) => {
-            signal.throwIfAborted();
-            releaseProtection?.assertReadable?.();
-            if ((await openedPage.url()) !== from.url)
-              await navigatePage(openedPage, from.url, continuation);
-            await missionTraffic.waitForTurn(from.url, signal);
-            if (!isCurrent())
-              throw new Error('Your session changed; sign in again.');
-            const outcome = await revealCourseNavigation(openedPage, 'content');
-            if (outcome === 'refused')
-              throw new Error(
-                'This content control could not be opened safely.',
-              );
-            return outcome === 'opened' ? readSnapshot() : null;
-          },
-        })
+      ? await withCourseList(courseListContext)
       : null;
     return {
       outcome,
@@ -356,7 +535,10 @@ export const scanConnection = async <TFollowed = never>({
       notesOmitted,
       followed: null,
       truncated,
-      message: error instanceof AccountContinuationError ? error.message : null,
+      message:
+        error instanceof Error
+          ? error.message.split('\n')[0]!.slice(0, 300)
+          : null,
     };
   } finally {
     signal.removeEventListener('abort', closeOnAbort);

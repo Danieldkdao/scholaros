@@ -1,22 +1,84 @@
-import type { CourseRefreshActivity } from '../../courses/types';
+import type {
+  CourseRefreshActivity,
+  CourseRefreshMetricName,
+  CourseRefreshMetrics,
+} from '../../courses/types';
+
+export type AcademicTaskExecutionContext = {
+  runId: string;
+  sessionEpoch: number;
+  coveredRevisions: Readonly<Record<string, string>>;
+};
+
+type AcademicTaskExecutionScope = Omit<AcademicTaskExecutionContext, 'runId'>;
+type AcademicTaskOutcome = 'complete' | 'partial';
+type AcademicTaskActivity = Omit<CourseRefreshActivity, 'status'> & {
+  status: CourseRefreshActivity['status'] | 'partial';
+};
 
 type AcademicTask = {
   accountId: string;
   controller: AbortController;
   completion: Promise<unknown>;
   key?: string;
+  exclusive: boolean;
   signal: AbortSignal;
-  activity?: CourseRefreshActivity;
+  activity?: AcademicTaskActivity;
   partial?: boolean;
+  signInRequired?: boolean;
+  startedAt: number;
 };
 
-export const createAcademicTaskRunner = () => {
+export class AcademicTaskDeferredError extends Error {
+  readonly status = 'deferred';
+  readonly reason = 'busy';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'AcademicTaskDeferredError';
+  }
+}
+
+export const isAcademicTaskDeferred = (
+  error: unknown,
+): error is AcademicTaskDeferredError =>
+  error instanceof AcademicTaskDeferredError;
+
+type BrowserCapabilityChangedError = Error & {
+  name: 'BrowserCapabilityChangedError';
+};
+
+const isBrowserCapabilityChangedError = (
+  error: unknown,
+): error is BrowserCapabilityChangedError =>
+  error instanceof Error && error.name === 'BrowserCapabilityChangedError';
+
+const emptyMetrics = (): CourseRefreshMetrics => ({
+  pagesOpened: 0,
+  modelCalls: 0,
+  knownDestinationsReused: 0,
+  navigationRepairs: 0,
+  candidatesExtracted: 0,
+  duplicatesReconciled: 0,
+  ambiguousIdentityConflicts: 0,
+  recordsCreated: 0,
+  recordsUpdated: 0,
+  recordsRetired: 0,
+  firstFindingMs: null,
+  durationMs: null,
+});
+
+export const createAcademicTaskRunner = (
+  options: { now?: () => number } = {},
+) => {
   const active = new Set<AcademicTask>();
-  const history: { accountId: string; activity: CourseRefreshActivity }[] = [];
-  const getActivity = (accountId: string) =>
+  const history: { accountId: string; activity: AcademicTaskActivity }[] = [];
+  const now = options.now ?? Date.now;
+  // P01 owns the shared DTO and has not added partial yet.
+  const getActivity = (accountId: string): CourseRefreshActivity[] =>
     history
       .filter((run) => run.accountId === accountId)
-      .map((run) => run.activity);
+      .map((run) => run.activity as unknown as CourseRefreshActivity);
   const report = (signal: AbortSignal, message: string, partial = false) => {
     const task = [...active].find((task) => task.signal === signal);
     if (!task?.activity || signal.aborted) return;
@@ -35,6 +97,44 @@ export const createAcademicTaskRunner = () => {
       }
     }
   };
+  const recordMetric = (
+    signal: AbortSignal,
+    metric: CourseRefreshMetricName,
+    amount = 1,
+  ) => {
+    const task = [...active].find((item) => item.signal === signal);
+    if (
+      !task?.activity?.metrics ||
+      signal.aborted ||
+      !Number.isFinite(amount) ||
+      amount < 0
+    )
+      return;
+    task.activity.metrics[metric] =
+      (task.activity.metrics[metric] ?? 0) + amount;
+    notify(task.accountId);
+  };
+  const markFirstFinding = (signal: AbortSignal) => {
+    const task = [...active].find((item) => item.signal === signal);
+    if (
+      !task?.activity?.metrics ||
+      signal.aborted ||
+      task.activity.metrics.firstFindingMs !== null
+    )
+      return;
+    task.activity.metrics.firstFindingMs = Math.max(0, now() - task.startedAt);
+    notify(task.accountId);
+  };
+  const reportSignInRequired = (signal: AbortSignal, _message: string) => {
+    const task = [...active].find((task) => task.signal === signal);
+    if (!task?.activity || signal.aborted) return;
+    task.signInRequired = true;
+    task.activity.events = [
+      ...task.activity.events,
+      'Sign in to your academic source to refresh it.',
+    ].slice(-100);
+    notify(task.accountId);
+  };
   const subscribe = (listener: (accountId: string) => void) => {
     listeners.add(listener);
     return () => {
@@ -44,24 +144,36 @@ export const createAcademicTaskRunner = () => {
   const getRefreshState = (accountId: string) => {
     const tasks = [...active].filter((task) => task.accountId === accountId);
     return {
-      allCourses: tasks.some((task) => task.key === 'courses'),
+      allCourses: tasks.some(
+        (task) => task.key === 'courses' || task.exclusive,
+      ),
       courseIds: tasks.flatMap((task) =>
-        task.key && task.key !== 'courses' ? [task.key] : [],
+        task.key && task.key !== 'courses' && !task.exclusive ? [task.key] : [],
       ),
     };
   };
   const run = <T>(
     accountId: string,
-    action: (signal: AbortSignal) => Promise<T>,
+    action: (
+      signal: AbortSignal,
+      execution: AcademicTaskExecutionContext,
+    ) => Promise<T>,
     externalSignal?: AbortSignal,
     key?: string,
+    options: {
+      exclusive?: boolean;
+      classifyOutcome?: (value: T) => AcademicTaskOutcome;
+      captureExecutionScope?: () => AcademicTaskExecutionScope;
+    } = {},
   ): Promise<T> => {
+    const exclusive = options.exclusive ?? key === 'courses';
     const duplicate =
       key &&
       [...active].find(
         (task) =>
           task.accountId === accountId &&
           task.key === key &&
+          task.exclusive === exclusive &&
           !task.controller.signal.aborted,
       );
     if (duplicate && !externalSignal?.aborted)
@@ -70,6 +182,8 @@ export const createAcademicTaskRunner = () => {
       [...active].some(
         (task) =>
           !key ||
+          exclusive ||
+          task.exclusive ||
           !task.key ||
           key === 'courses' ||
           task.key === 'courses' ||
@@ -78,40 +192,61 @@ export const createAcademicTaskRunner = () => {
       )
     )
       return Promise.reject(
-        new Error(
+        new AcademicTaskDeferredError(
           'Another academic task is running; stop it or try again shortly.',
         ),
       );
     if (active.size >= 2)
       return Promise.reject(
-        new Error('Two courses are already refreshing; try again shortly.'),
+        new AcademicTaskDeferredError(
+          'Two courses are already refreshing; try again shortly.',
+        ),
       );
     const controller = new AbortController();
     const signal = externalSignal
       ? AbortSignal.any([controller.signal, externalSignal])
       : controller.signal;
+    const startedAt = now();
+    const runId = crypto.randomUUID();
     const completion = Promise.resolve()
       .then(() => {
         signal.throwIfAborted();
-        return action(signal);
+        const scope = options.captureExecutionScope?.() ?? {
+          sessionEpoch: 0,
+          coveredRevisions: {},
+        };
+        return action(signal, {
+          runId,
+          sessionEpoch: scope.sessionEpoch,
+          coveredRevisions: Object.freeze({ ...scope.coveredRevisions }),
+        });
       })
       .then(
         (value) => {
-          if (task.activity)
+          if (task.activity) {
+            if (task.activity.metrics)
+              task.activity.metrics.durationMs = Math.max(0, now() - startedAt);
+            const outcome = options.classifyOutcome?.(value);
             task.activity.status = signal.aborted
               ? 'cancelled'
-              : task.partial
-                ? 'partial'
-                : 'complete';
+              : task.signInRequired
+                ? 'sign-in-required'
+                : task.partial || outcome === 'partial'
+                  ? 'partial'
+                  : 'complete';
+          }
           return value;
         },
         (error) => {
+          if (isBrowserCapabilityChangedError(error))
+            for (const sibling of active)
+              if (sibling.accountId === accountId && sibling !== task)
+                sibling.controller.abort();
           if (task.activity) {
+            if (task.activity.metrics)
+              task.activity.metrics.durationMs = Math.max(0, now() - startedAt);
             task.activity.status = signal.aborted ? 'cancelled' : 'failed';
-            if (!signal.aborted)
-              task.activity.events.push(
-                error instanceof Error ? error.message : 'Refresh failed.',
-              );
+            if (!signal.aborted) task.activity.events.push('Refresh failed.');
           }
           throw error;
         },
@@ -120,12 +255,13 @@ export const createAcademicTaskRunner = () => {
         active.delete(task);
         notify(accountId);
       });
-    const activity: CourseRefreshActivity | undefined = key
+    const activity: AcademicTaskActivity | undefined = key
       ? {
-          id: crypto.randomUUID(),
+          id: runId,
           key,
           status: 'running',
           events: ['Starting refresh'],
+          metrics: emptyMetrics(),
         }
       : undefined;
     const task: AcademicTask = {
@@ -133,8 +269,10 @@ export const createAcademicTaskRunner = () => {
       controller,
       completion,
       key,
+      exclusive,
       signal,
       activity,
+      startedAt,
     };
     if (activity) {
       const previous = history.findIndex(
@@ -197,6 +335,9 @@ export const createAcademicTaskRunner = () => {
     getRefreshState,
     getActivity,
     report,
+    reportSignInRequired,
+    recordMetric,
+    markFirstFinding,
   };
 };
 export const academicTasks = createAcademicTaskRunner();

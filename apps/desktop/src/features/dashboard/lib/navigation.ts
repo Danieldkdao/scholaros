@@ -2,7 +2,7 @@ export const dashboardPages = [
   'today',
   'courses',
   'study',
-  'planner',
+  'context',
   'connections',
   'settings',
 ] as const;
@@ -14,7 +14,7 @@ export const dashboardNavigation = [
   'today',
   'courses',
   'study',
-  'planner',
+  'context',
   'connections',
 ] as const;
 
@@ -22,7 +22,7 @@ export type DashboardRoutePath =
   | '/dashboard'
   | '/dashboard/courses'
   | '/dashboard/study'
-  | '/dashboard/planner'
+  | '/dashboard/context'
   | '/dashboard/connections'
   | '/dashboard/settings';
 
@@ -34,8 +34,8 @@ export const dashboardPagePath = (page: DashboardPage): DashboardRoutePath => {
       return '/dashboard/courses';
     case 'study':
       return '/dashboard/study';
-    case 'planner':
-      return '/dashboard/planner';
+    case 'context':
+      return '/dashboard/context';
     case 'connections':
       return '/dashboard/connections';
     case 'settings':

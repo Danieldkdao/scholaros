@@ -186,7 +186,7 @@ export const PreviewStep = ({
         </div>
       )}
       {counts.totalCount > 0 ? (
-        <Collapsible className="rounded-lg bg-muted/50 w-full mt-2">
+        <Collapsible className="rounded-lg w-full mt-2">
           <CollapsibleTrigger className="cursor-pointer font-medium group/more-info flex items-center gap-2 justify-between w-full">
             <div className="flex items-center gap-2 flex-wrap">
               {counts.courseCount > 0 && (
@@ -242,7 +242,7 @@ export const PreviewStep = ({
                       </span>
                     </p>
                   )}
-                  <Collapsible className="rounded-lg bg-muted/50 w-full">
+                  <Collapsible className="rounded-lg w-full">
                     <CollapsibleTrigger className="cursor-pointer font-medium group/more-info flex items-center gap-2 justify-between md:justify-start w-full">
                       <span className="font-medium">More details</span>
                       <ChevronDownIcon className="size-4 shrink-0 transition-transform group-data-panel-open/more-info:rotate-180 motion-reduce:transition-none" />

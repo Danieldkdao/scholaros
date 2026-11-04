@@ -11,27 +11,47 @@ import {
 } from '@scholaros/ui/components/trace';
 import { toast } from '@scholaros/ui/components/toast';
 import { cn } from '@scholaros/ui/lib/utils';
-import type { CourseRefreshActivity as RefreshActivity } from '../types';
+import type { CourseRefreshActivity as CourseRefreshActivityData } from '../types';
 import { formatRefreshActivity } from '../lib/formatters';
+
+export type CourseRefreshActivityView = Omit<
+  CourseRefreshActivityData,
+  'status'
+> & { status: CourseRefreshActivityData['status'] | 'partial' };
 
 export const CourseRefreshActivity = ({
   activity = [],
 }: {
-  activity?: RefreshActivity[];
+  activity?: CourseRefreshActivityView[];
 }) => {
-  const observed = useRef(new Map<string, RefreshActivity['status']>());
+  const observed = useRef(
+    new Map<string, CourseRefreshActivityView['status']>(),
+  );
   useEffect(() => {
     for (const run of activity) {
       const previous = observed.current.get(run.id);
       if (previous && previous !== run.status && run.status !== 'running') {
-        const { label } = formatRefreshActivity(run.status);
-        if (run.status === 'failed')
-          toast.error(run.events.at(-1) ?? label, {
-            id: `course-refresh-${run.key}`,
-          });
-        else if (run.status === 'partial')
-          toast.warning(label, { id: `course-refresh-${run.key}` });
-        else toast.success(label, { id: `course-refresh-${run.key}` });
+        const formatted = formatRefreshActivity(run.status);
+        const toastId = `course-refresh-${run.key}`;
+        switch (formatted.kind) {
+          case 'complete':
+            toast.success(formatted.label, { id: toastId });
+            break;
+          case 'partial':
+          case 'cancelled':
+            toast.warning(formatted.label, { id: toastId });
+            break;
+          case 'sign-in-required':
+            toast.error('Sign in to your academic source to refresh it.', {
+              id: toastId,
+            });
+            break;
+          case 'failed':
+            toast.error(run.events.at(-1) ?? formatted.label, { id: toastId });
+            break;
+          case 'running':
+            break;
+        }
       }
       observed.current.set(run.id, run.status);
     }
@@ -67,9 +87,10 @@ export const CourseRefreshActivity = ({
                 <TraceLine
                   className="text-base"
                   status={
-                    run.status === 'running'
+                    status.kind === 'running'
                       ? 'running'
-                      : run.status === 'failed'
+                      : status.kind === 'failed' ||
+                          status.kind === 'sign-in-required'
                         ? 'error'
                         : undefined
                   }

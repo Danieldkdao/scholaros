@@ -20,7 +20,7 @@ describe('dashboard pages', () => {
     ['today', '/dashboard'],
     ['courses', '/dashboard/courses'],
     ['study', '/dashboard/study'],
-    ['planner', '/dashboard/planner'],
+    ['context', '/dashboard/context'],
     ['connections', '/dashboard/connections'],
     ['settings', '/dashboard/settings'],
   ] as const)('routes %s to %s', (page, path) => {
@@ -31,7 +31,7 @@ describe('dashboard pages', () => {
     ['/dashboard', 'today'],
     ['/dashboard/courses', 'courses'],
     ['/dashboard/study', 'study'],
-    ['/dashboard/planner', 'planner'],
+    ['/dashboard/context', 'context'],
     ['/dashboard/connections', 'connections'],
     ['/dashboard/settings', 'settings'],
   ] as const)('reads %s as the %s page', (pathname, page) => {
@@ -42,12 +42,16 @@ describe('dashboard pages', () => {
     expect(dashboardPageForPath('/onboarding')).toBeNull();
     expect(dashboardPageForPath('/auth')).toBeNull();
     expect(dashboardPageForPath('/dashboard/unknown')).toBeNull();
+    expect(dashboardPageForPath('/dashboard/planner')).toBeNull();
   });
 });
 
 describe('sidebar navigation', () => {
-  it('leaves Settings to the profile menu', () => {
+  it('replaces Planner with Context in the sidebar', () => {
+    expect(dashboardNavigation).toContain('context');
+    expect(dashboardNavigation).not.toContain('planner');
     expect(dashboardNavigation).not.toContain('settings');
+    expect(dashboardPages).not.toContain('planner');
     expect(dashboardPages).toContain('settings');
   });
 

@@ -15,13 +15,40 @@ import {
   type SourceEvidenceSchema,
   type ResourceLinkSchema,
 } from './shared';
-import type { AgentRequestSchema } from '../schemas';
+import { reconcileResourceIdentities } from './identity';
+import type { ResourceIdentityAmbiguity } from './identity';
+import type { ExtractedAssignmentSchema } from './assignment';
+import type { ExtractedAnnouncementSchema } from './announcement';
+import type { AgentRequestSchema, ModelContentCoverage } from '../schemas';
+
+export type ResourceIdentityConflictReason = ResourceIdentityAmbiguity<
+  ExtractedAssignmentSchema | ExtractedAnnouncementSchema
+>['reason'];
+
+export type ResourceIdentityConflict = {
+  kind: 'assignments' | 'announcements';
+  reason: ResourceIdentityConflictReason;
+  observationFingerprint: string;
+};
+
+type ModelReportedCoverage<T extends { coverage: unknown }> = Omit<
+  T,
+  'coverage'
+> & { coverage: ModelContentCoverage };
 
 type ResourceResults = {
-  courses: ExtractedCoursesSchema & { detailRecord?: true };
-  assignments: ExtractedAssignmentsSchema & { detailRecord?: true };
-  announcements: ExtractedAnnouncementsSchema & { detailRecord?: true };
+  courses: ModelReportedCoverage<
+    ExtractedCoursesSchema & { detailRecord?: true }
+  >;
+  assignments: ModelReportedCoverage<
+    ExtractedAssignmentsSchema & { detailRecord?: true }
+  >;
+  announcements: ModelReportedCoverage<
+    ExtractedAnnouncementsSchema & { detailRecord?: true }
+  >;
 };
+export type ResourceExtractionValidationResult<TKind extends ResourceKind> =
+  ResourceResults[TKind];
 type DateRole =
   | 'due'
   | 'availableFrom'
@@ -831,13 +858,80 @@ export const validateResourceExtraction = <TKind extends ResourceKind>(
             envelope.coverage,
             envelope.detailRecord === true,
           );
+  let items: unknown[] = result.items;
+  let ambiguousIdentity = false;
+  if (kind !== 'courses') {
+    const resourceKind = kind as 'assignments' | 'announcements';
+    const identityScope = {
+      accountId: 'validated-request',
+      connectionId: 'validated-request',
+      courseId: input.context?.courseUrl ?? input.pages[0]!.url,
+      kind: resourceKind,
+    };
+    const childResources = result.items as Array<
+      ExtractedAssignmentSchema | ExtractedAnnouncementSchema
+    >;
+    const reconciled = reconcileResourceIdentities<
+      ExtractedAssignmentSchema | ExtractedAnnouncementSchema
+    >(childResources.map((resource) => ({ scope: identityScope, resource })));
+    ambiguousIdentity = reconciled.ambiguities.length > 0;
+    items = [];
+    for (const candidate of reconciled.candidates) {
+      const [first] = candidate.resources;
+      if (!first) continue;
+      const sameFields = candidate.resources.every(
+        (resource) =>
+          JSON.stringify(
+            Object.fromEntries(
+              Object.entries(resource).filter(([key]) => key !== 'evidence'),
+            ),
+          ) ===
+          JSON.stringify(
+            Object.fromEntries(
+              Object.entries(first).filter(([key]) => key !== 'evidence'),
+            ),
+          ),
+      );
+      const sameSourcePage = candidate.resources.every(
+        (resource) => resource.evidence.sourceUrl === first.evidence.sourceUrl,
+      );
+      if (!sameFields || !sameSourcePage) {
+        ambiguousIdentity = true;
+        items.push(...candidate.resources);
+        continue;
+      }
+      const excerpts = [
+        ...new Set(
+          candidate.resources.flatMap((resource) => resource.evidence.excerpts),
+        ),
+      ];
+      const targetIds = [
+        ...new Set(
+          candidate.resources.flatMap(
+            (resource) => resource.evidence.targetIds,
+          ),
+        ),
+      ];
+      if (excerpts.length > 4 || targetIds.length > 30)
+        ambiguousIdentity = true;
+      items.push({
+        ...first,
+        evidence: {
+          ...first.evidence,
+          excerpts: excerpts.slice(0, 4),
+          targetIds: targetIds.slice(0, 30),
+        },
+      });
+    }
+  }
   const partial =
     result.invalid ||
+    ambiguousIdentity ||
     input.context?.truncated ||
-    (envelope.coverage === 'unavailable' && result.items.length > 0) ||
-    (envelope.coverage === 'detail' && result.items.length !== 1);
+    (envelope.coverage === 'unavailable' && items.length > 0) ||
+    (envelope.coverage === 'detail' && items.length !== 1);
   return {
-    [kind]: result.items,
+    [kind]: items,
     coverage: partial ? 'partial' : envelope.coverage,
     ...(partial && result.detailRecord ? { detailRecord: true as const } : {}),
   } as ResourceResults[TKind];

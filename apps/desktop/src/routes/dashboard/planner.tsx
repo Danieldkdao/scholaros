@@ -1,8 +1,7 @@
-import { createFileRoute } from '@tanstack/react-router';
-import { PageHeading } from '../../features/dashboard/page-heading';
-
-const PlannerPage = () => <PageHeading page="planner" />;
+import { createFileRoute, redirect } from '@tanstack/react-router';
 
 export const Route = createFileRoute('/dashboard/planner')({
-  component: PlannerPage,
+  beforeLoad: () => {
+    throw redirect({ to: '/dashboard/context' });
+  },
 });

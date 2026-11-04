@@ -1,13 +1,31 @@
 import { mkdtemp, rm } from 'node:fs/promises';
+import { rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import { localBrowser, Stagehand } from '@browserbasehq/stagehand';
 import { scanConnection } from '../services/connection-scan';
 import { createMissionNavigator } from '../services/mission-navigation';
 import type { ActiveWorkspace } from '../services/browser-workspace';
 import type { AcademicConnection } from '../types';
+
+const electronTestState = vi.hoisted(() => ({ userData: '' }));
+vi.mock('electron', async () => {
+  const { mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  electronTestState.userData = mkdtempSync(
+    join(tmpdir(), 'scholaros-protected-db-'),
+  );
+  const app = {
+    getPath: () => electronTestState.userData,
+    getAppPath: () => process.cwd(),
+    isPackaged: false,
+    once: vi.fn(),
+  };
+  return { app, default: { app } };
+});
 
 vi.mock('../../../lib/auth/main', () => ({
   accountRequest: async (
@@ -19,6 +37,12 @@ vi.mock('../../../lib/auth/main', () => ({
       .map((target) => target.id),
   }),
 }));
+vi.mock('../services/browser-mode', () => ({
+  getBrowserNavigationMode: async () => 'decision',
+}));
+afterAll(() =>
+  rmSync(electronTestState.userData, { recursive: true, force: true }),
+);
 
 // Browser integration is opt-in and uses an empty temporary profile, never a student's profile.
 const enabled = process.env.RUN_BROWSER_INTEGRATION === '1';
@@ -29,6 +53,17 @@ const host = 'district.schoology.com';
 const origin = `https://${host}`;
 const email = 'student@example.test';
 const NativeWebSocket = globalThis.WebSocket;
+
+const isChromeDebuggingPortAvailable = async (port: number) => {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/json/version`, {
+      signal: AbortSignal.timeout(250),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+};
 
 describe.skipIf(!enabled)('protected Chromium browsing', () => {
   it.each([false, true])(
@@ -56,13 +91,24 @@ describe.skipIf(!enabled)('protected Chromium browsing', () => {
         headless: true,
         keepAlive: false,
       });
+      let compatibilityStagehand: Stagehand | undefined;
       let pickerVisits = 0;
       let accountSelections = 0;
       const assetReads = new Set<string>();
       let bannerReads = 0;
       let blockedFrameWrites = 0;
+      let popupPageRequests = 0;
+      let popupPostEffects = 0;
       const assignmentReads = new Set<string>();
-      const fixture = (url: string, headers: Record<string, string>) => {
+      let pdfReads = 0;
+      const pdfRequestCookies: string[] = [];
+      const pdfUrl = `${origin}/course/1/handout.pdf`;
+      const pdfBytes = '%PDF-1.4\nprotected fixture';
+      const fixture = (
+        url: string,
+        headers: Record<string, string>,
+        method: string,
+      ) => {
         const parsed = new URL(url);
         const cookie =
           Object.entries(headers).find(
@@ -91,7 +137,7 @@ describe.skipIf(!enabled)('protected Chromium browsing', () => {
               body: '',
             };
           return {
-            body: `<html><head><title>School home</title><link rel="stylesheet" href="https://assets.example.test/site.css?Signature=fixture&Key-Pair-Id=fixture"><script src="https://assets.example.test/s_grade_item_add_form.js?token=fixture" defer></script><script>addEventListener('message', event => { if (event.origin === 'https://docs.google.com' && event.data === 'banner-ready') document.body.dataset.banner = 'ready'; });</script></head><body><header><a href="#courses" ${forcePicker ? '' : 'role="button" aria-expanded="false"'}>Courses</a></header><a href="${origin}/home">Course dashboard</a><main>Welcome to your academic dashboard and current learning resources.</main><aside><div class="upcoming-events">Art live class 2:20 pm</div><div id="upcoming"></div><div id="overdue"></div></aside><iframe src="https://docs.google.com/presentation/d/e/fixture-deck/pubembed?start=false&loop=false"></iframe><div id="courses" hidden></div></body></html>`,
+            body: `<html><head><title>School home</title><link rel="stylesheet" href="https://assets.example.test/site.css?Signature=fixture&Key-Pair-Id=fixture"><script src="https://assets.example.test/s_grade_item_add_form.js?token=fixture" defer></script><script>addEventListener('message', event => { if (event.origin === 'https://docs.google.com' && event.data === 'banner-ready') document.body.dataset.banner = 'ready'; });</script></head><body><header><a href="#courses" ${forcePicker ? '' : 'role="button" aria-expanded="false"'}>Courses</a><a id="open-popup" href="${origin}/popup" target="_blank" onclick="document.body.dataset.popupClick = event.isTrusted ? 'trusted' : 'synthetic'; window.open('${origin}/popup?via=script')">Open resource</a></header><form id="popup-form" action="${origin}/popup" method="GET"><button type="submit" formtarget="_blank">Open form resource</button></form><script>document.querySelector('#popup-form').requestSubmit(document.querySelector('#popup-form button'));</script><a href="${origin}/home">Course dashboard</a><main>Welcome to your academic dashboard and current learning resources.</main><aside><div class="upcoming-events">Art live class 2:20 pm</div><div id="upcoming"></div><div id="overdue"></div></aside><iframe src="https://docs.google.com/presentation/d/e/fixture-deck/pubembed?start=false&loop=false"></iframe><div id="courses" hidden></div></body></html>`,
           };
         }
         if (
@@ -196,8 +242,30 @@ describe.skipIf(!enabled)('protected Chromium browsing', () => {
         }
         if (parsed.hostname === host && parsed.pathname === '/course/1')
           return {
-            body: '<html><head><title>Biology 101</title></head><body><main>Biology 101 course materials</main></body></html>',
+            body: `<html><head><title>Biology 101</title></head><body><main>Biology 101 course materials<a href="${pdfUrl}">Course handout PDF</a></main></body></html>`,
           };
+        if (parsed.hostname === host && parsed.pathname === '/popup') {
+          popupPageRequests += 1;
+          return {
+            body: `<html><body><script>fetch('${origin}/popup-mutation', { method: 'POST' });</script></body></html>`,
+          };
+        }
+        if (
+          parsed.hostname === host &&
+          parsed.pathname === '/popup-mutation' &&
+          method === 'POST'
+        ) {
+          popupPostEffects += 1;
+          return { type: 'text/plain', body: 'mutated' };
+        }
+        if (
+          parsed.hostname === host &&
+          parsed.pathname === '/course/1/handout.pdf'
+        ) {
+          pdfReads += 1;
+          pdfRequestCookies.push(cookie);
+          return { type: 'application/pdf', body: pdfBytes };
+        }
         return null;
       };
       class FixtureSocket extends NativeWebSocket {
@@ -220,17 +288,22 @@ describe.skipIf(!enabled)('protected Chromium browsing', () => {
           const command = JSON.parse(String(data));
           if (
             command.method === 'Fetch.failRequest' &&
-            this.requests.get(
+            this.requests.has(
               JSON.stringify([command.sessionId, command.params.requestId]),
-            )?.url === 'https://docs.google.com/fixture-write'
-          )
-            blockedFrameWrites += 1;
+            )
+          ) {
+            const url = this.requests.get(
+              JSON.stringify([command.sessionId, command.params.requestId]),
+            )?.url;
+            if (url === 'https://docs.google.com/fixture-write')
+              blockedFrameWrites += 1;
+          }
           if (command.method === 'Fetch.continueRequest') {
             const request = this.requests.get(
               JSON.stringify([command.sessionId, command.params.requestId]),
             );
             const response = request
-              ? fixture(request.url, request.headers)
+              ? fixture(request.url, request.headers, request.method)
               : null;
             if (response) {
               super.send(
@@ -268,7 +341,10 @@ describe.skipIf(!enabled)('protected Chromium browsing', () => {
         }
       }
       try {
-        await Stagehand.create({ browser, logging: { level: 'off' } });
+        compatibilityStagehand = await Stagehand.create({
+          browser,
+          logging: { level: 'off' },
+        });
         vi.stubGlobal('WebSocket', FixtureSocket);
         const workspace = {
           browser,
@@ -328,9 +404,15 @@ describe.skipIf(!enabled)('protected Chromium browsing', () => {
               expect(
                 await browser.context
                   .pages()
-                  .then((pages) =>
+                  .then(async (pages) =>
                     pages.at(-1)!.evaluate(() => document.body.dataset.banner),
                   ),
+                JSON.stringify({
+                  assetReads: [...assetReads],
+                  bannerReads,
+                  blockedFrameWrites,
+                  popupPageRequests,
+                }),
               ).toBe('ready');
               expect(
                 await browser.context
@@ -355,9 +437,47 @@ describe.skipIf(!enabled)('protected Chromium browsing', () => {
                       ),
                   ),
               ).toBe('rgb(1, 2, 3)');
+              const parentPage = (await browser.context.pages()).at(-1)!;
+              await parentPage.locator('#open-popup').click();
+              expect(
+                await parentPage.evaluate(
+                  () => document.body.dataset.popupClick,
+                ),
+              ).toBe('trusted');
+              const pageIds = (await browser.context.pages()).map(
+                (page) => page.pageId,
+              );
+              await parentPage.waitForTimeout(500);
+              expect(popupPageRequests).toBe(0);
+              expect(popupPostEffects).toBe(0);
+              expect(
+                (await browser.context.pages()).map((page) => page.pageId),
+              ).toEqual(pageIds);
+              for (const popup of await browser.context.pages())
+                if ((await popup.url()).endsWith('/popup')) await popup.close();
               if (!context.entries.some((entry) => entry.role === 'course'))
                 return false;
               const before = (await browser.context.pages()).length;
+              await context.withCoursePage(
+                `${origin}/course/1`,
+                async (course) => {
+                  const pdf = await course.downloadPdf(
+                    course.observed!,
+                    pdfUrl,
+                  );
+                  expect(pdf.status).toBe('complete');
+                  if (pdf.status === 'complete') {
+                    expect(new TextDecoder().decode(pdf.bytes)).toBe(pdfBytes);
+                    expect(pdf.url).toBe(pdfUrl);
+                  }
+                },
+              );
+              expect(pdfReads).toBeGreaterThan(0);
+              expect(
+                pdfRequestCookies.every((cookie) =>
+                  cookie.includes('fixture-session=ready'),
+                ),
+              ).toBe(true);
               let entered = 0;
               let release!: () => void;
               const gate = new Promise<void>((resolve) => {
@@ -421,8 +541,17 @@ describe.skipIf(!enabled)('protected Chromium browsing', () => {
         );
       } finally {
         vi.unstubAllGlobals();
+        await compatibilityStagehand?.close().catch(() => undefined);
         await browser.close();
-        await rm(profile, { recursive: true, force: true });
+        try {
+          await vi.waitFor(
+            async () =>
+              expect(await isChromeDebuggingPortAvailable(port)).toBe(false),
+            { interval: 100, timeout: 5000 },
+          );
+        } finally {
+          await rm(profile, { recursive: true, force: true });
+        }
       }
     },
     120_000,

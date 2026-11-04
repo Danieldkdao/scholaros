@@ -13,29 +13,34 @@ import { authorizeRoute, routeGroupForPath } from '../lib/auth/access';
 import { errorMessage } from '../lib/error-message';
 import { exitAndSignOut } from '../lib/session-actions';
 
-type BridgeUser = { id: string; hasCompletedOnboarding?: unknown } | null;
-
 const RootLayout = () => {
   const router = useRouter();
   const identity = useRef<string | null>(null);
   useEffect(() => {
-    const reevaluate = (user: BridgeUser) => {
-      const next = user
-        ? `${user.id}:${user.hasCompletedOnboarding === true}`
-        : 'signed-out';
-      if (identity.current === next) return;
-      identity.current = next;
-      void router.invalidate();
+    const reevaluate = async () => {
+      try {
+        const user = await window.scholar.getCurrentUser();
+        const next = user
+          ? `${user.id}:${user.hasCompletedOnboarding}:${user.authMode ?? 'online'}`
+          : 'signed-out';
+        if (identity.current === next) return;
+        identity.current = next;
+        await router.invalidate();
+      } catch {
+        identity.current = null;
+        await router.invalidate().catch(() => undefined);
+      }
     };
-    const unsubscribeAuthenticated = window.onAuthenticated((user) =>
-      reevaluate(user),
-    );
-    const unsubscribeUserUpdated = window.onUserUpdated((user) =>
-      reevaluate(user),
-    );
+    const refreshAuthorization = () => void reevaluate();
+    const unsubscribeAuthenticated =
+      window.onAuthenticated(refreshAuthorization);
+    const unsubscribeUserUpdated = window.onUserUpdated(refreshAuthorization);
+    const unsubscribeReconnect =
+      window.scholar.onAcademicReconnect(refreshAuthorization);
     return () => {
       unsubscribeAuthenticated();
       unsubscribeUserUpdated();
+      unsubscribeReconnect();
     };
   }, [router]);
   return (

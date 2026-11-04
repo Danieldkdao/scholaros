@@ -99,6 +99,37 @@ it('joins equivalent all-course refreshes and keeps them exclusive with targeted
   await runner.cancelAndWait();
 });
 
+it('treats connection refreshes as exclusive work with a reusable connection key', async () => {
+  const runner = createAcademicTaskRunner();
+  let finish!: () => void;
+  const action = vi.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const first = runner.run('student', action, undefined, 'connection:canvas', {
+    exclusive: true,
+  });
+  await Promise.resolve();
+
+  expect(
+    runner.run('student', action, undefined, 'connection:canvas', {
+      exclusive: true,
+    }),
+  ).toBe(first);
+  expect(runner.getRefreshState('student')).toEqual({
+    allCourses: true,
+    courseIds: [],
+  });
+  await expect(
+    runner.run('student', async () => undefined, undefined, 'course-1'),
+  ).rejects.toThrow('Another academic task');
+
+  finish();
+  await first;
+});
+
 it('reports active refresh scopes and publishes both job start and completion', async () => {
   const runner = createAcademicTaskRunner();
   const changed = vi.fn();
@@ -191,4 +222,142 @@ it('publishes scoped progress, retains completion, and distinguishes cancellatio
   expect(
     runner.getActivity('student').find((run) => run.key === 'course-3')?.status,
   ).toBe('failed');
+});
+
+it('records content-free measurements on the matching academic run', async () => {
+  const runner = createAcademicTaskRunner();
+  await runner.run(
+    'student',
+    async (signal) => {
+      runner.recordMetric(signal, 'pagesOpened');
+      runner.recordMetric(signal, 'modelCalls', 2);
+      runner.markFirstFinding(signal);
+    },
+    undefined,
+    'course-1',
+  );
+
+  const activity = runner.getActivity('student')[0];
+  expect(activity?.metrics).toMatchObject({
+    pagesOpened: 1,
+    modelCalls: 2,
+  });
+  expect(activity?.metrics?.durationMs).toBeGreaterThanOrEqual(0);
+  expect(activity?.metrics?.firstFindingMs).toBeGreaterThanOrEqual(0);
+  expect(JSON.stringify(activity?.metrics)).not.toMatch(/Biology|assignment/i);
+});
+
+it('keeps partial settlement distinct from complete task execution', async () => {
+  const runner = createAcademicTaskRunner();
+  await runner.run(
+    'student',
+    async () => ({ coverage: 'partial' as const }),
+    undefined,
+    'course-1',
+    {
+      classifyOutcome: (result) => result.coverage,
+    },
+  );
+
+  expect(runner.getActivity('student')[0]?.status).toBe('partial');
+});
+
+it('captures execution revisions once when a coalesced task actually starts', async () => {
+  const runner = createAcademicTaskRunner();
+  let revision = 'older';
+  const capture = vi.fn(() => ({
+    sessionEpoch: 7,
+    coveredRevisions: { target: revision },
+  }));
+  let execution: unknown;
+  const action = async (_signal: AbortSignal, value: unknown) => {
+    execution = value;
+  };
+  const first = runner.run('student', action, undefined, 'course-1', {
+    captureExecutionScope: capture,
+  });
+  revision = 'current';
+  const joinerCapture = vi.fn(() => ({
+    sessionEpoch: 8,
+    coveredRevisions: { target: 'joiner' },
+  }));
+  const joined = runner.run('student', action, undefined, 'course-1', {
+    captureExecutionScope: joinerCapture,
+  });
+
+  expect(joined).toBe(first);
+  await first;
+
+  expect(capture).toHaveBeenCalledOnce();
+  expect(joinerCapture).not.toHaveBeenCalled();
+  expect(execution).toMatchObject({
+    runId: expect.any(String),
+    sessionEpoch: 7,
+    coveredRevisions: { target: 'current' },
+  });
+});
+
+it('reports admission contention as typed deferral without cancelling joined manual work', async () => {
+  const runner = createAcademicTaskRunner();
+  let finish!: () => void;
+  let runningSignal: AbortSignal | undefined;
+  const action = vi.fn(
+    (signal: AbortSignal) =>
+      new Promise<void>((resolve) => {
+        runningSignal = signal;
+        finish = resolve;
+      }),
+  );
+  const manual = runner.run('student', action, undefined, 'courses');
+  await Promise.resolve();
+
+  const consumer = new AbortController();
+  const joined = runner.run('student', action, consumer.signal, 'courses');
+  consumer.abort();
+  await expect(
+    runner.run('student', action, undefined, 'course-b'),
+  ).rejects.toMatchObject({ status: 'deferred', reason: 'busy' });
+
+  expect(joined).toBe(manual);
+  expect(runningSignal?.aborted).toBe(false);
+  finish();
+  await manual;
+});
+
+it('aborts sibling browser jobs after a capability change', async () => {
+  const runner = createAcademicTaskRunner();
+  let siblingSignal: AbortSignal | undefined;
+  let finishSibling!: () => void;
+  const sibling = runner.run(
+    'student',
+    (signal) =>
+      new Promise<void>((resolve) => {
+        siblingSignal = signal;
+        finishSibling = resolve;
+      }),
+    undefined,
+    'course-a',
+  );
+  await Promise.resolve();
+  const capabilityChanged = runner.run(
+    'student',
+    async () => {
+      throw Object.assign(new Error('Capability changed.'), {
+        name: 'BrowserCapabilityChangedError',
+      });
+    },
+    undefined,
+    'course-b',
+  );
+
+  await expect(capabilityChanged).rejects.toMatchObject({
+    name: 'BrowserCapabilityChangedError',
+  });
+
+  expect(siblingSignal?.aborted).toBe(true);
+  finishSibling();
+  await sibling;
+  expect(
+    runner.getActivity('student').find((run) => run.key === 'course-a')?.status,
+  ).toBe('cancelled');
 });

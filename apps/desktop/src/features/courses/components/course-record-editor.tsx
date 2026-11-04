@@ -1,20 +1,65 @@
-import { useId, useMemo } from 'react';
+import { useId, useMemo, useState } from 'react';
+import { RotateCcw } from 'lucide-react';
 import { Controller, useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Button } from '@scholaros/ui/components/button';
 import { Input } from '@scholaros/ui/components/input';
 import { Textarea } from '@scholaros/ui/components/textarea';
 import { LoadingSwap } from '@scholaros/ui/components/loading-swap';
+import { TooltipWrapper } from '@scholaros/ui/components/tooltip-wrapper';
 import { DialogFooter } from '@scholaros/ui/components/dialog';
 import { DateTimePicker } from './date-time-picker';
-import { academicDateFor, isPastDateInput } from '../lib/dates';
+import { academicDateFor, isPastDateInput, legacyDateFrom } from '../lib/dates';
 import {
   editCourseSchema,
   editCourseChildSchema,
   type EditCourseSchema,
   type EditCourseChildSchema,
 } from '../schemas';
-import type { CourseSummary, SavedCourseChild } from '../types';
+import type {
+  CourseChildLocalOverrideField,
+  CourseLocalOverrideField,
+  CourseSummary,
+  SavedCourseChild,
+} from '../types';
+import type {
+  CourseChildLocalOverrideView,
+  CourseLocalOverrideView,
+} from '../services/store';
+
+const ResetSourceButton = ({
+  label,
+  isLoading,
+  disabled,
+  onClick,
+}: {
+  label: string;
+  isLoading: boolean;
+  disabled: boolean;
+  onClick: () => void;
+}) => (
+  <TooltipWrapper content={`Reset ${label} to source`}>
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon"
+      aria-label={`Reset ${label} to source`}
+      disabled={disabled}
+      onClick={onClick}
+    >
+      <LoadingSwap isLoading={isLoading}>
+        <RotateCcw />
+      </LoadingSwap>
+    </Button>
+  </TooltipWrapper>
+);
+
+const SourceUncertaintyNotice = () => (
+  <p className="text-base text-muted-foreground" role="note">
+    Older edits may have replaced source values, so the original values cannot
+    be recovered.
+  </p>
+);
 
 const EditorFooter = ({
   busy,
@@ -39,14 +84,20 @@ const EditorFooter = ({
 
 export const CourseRecordEditor = ({
   course,
+  local,
   onSave,
   onCancel,
+  onReset,
 }: {
-  course?: CourseSummary;
+  course?: CourseSummary & { local?: CourseLocalOverrideView };
+  local?: CourseLocalOverrideView;
   onSave: (values: EditCourseSchema) => Promise<void>;
   onCancel: () => void;
+  onReset?: (fields: CourseLocalOverrideField[]) => Promise<void>;
 }) => {
   const id = useId();
+  const [resettingField, setResettingField] = useState<string | null>(null);
+  const recordLocal = local ?? course?.local;
   const {
     register,
     handleSubmit,
@@ -61,12 +112,24 @@ export const CourseRecordEditor = ({
       description: course?.description ?? '',
     },
   });
+  const resetField = async (field: CourseLocalOverrideField) => {
+    if (!onReset) return;
+    setResettingField(field);
+    try {
+      await onReset([field]);
+    } catch {
+      return;
+    } finally {
+      setResettingField(null);
+    }
+  };
   return (
     <form
       noValidate
       onSubmit={handleSubmit(onSave)}
       className="flex flex-col gap-4"
     >
+      {recordLocal?.sourceUncertain && <SourceUncertaintyNotice />}
       {(
         [
           { name: 'name', label: 'Name' },
@@ -77,7 +140,17 @@ export const CourseRecordEditor = ({
         ] as const
       ).map(({ name, label }) => (
         <div key={name} className="flex flex-col gap-2">
-          <label htmlFor={`${id}-${name}`}>{label}</label>
+          <div className="flex items-center justify-between gap-2">
+            <label htmlFor={`${id}-${name}`}>{label}</label>
+            {recordLocal?.overriddenFields.includes(name) && onReset && (
+              <ResetSourceButton
+                label={label}
+                isLoading={resettingField === name}
+                disabled={isSubmitting || !!resettingField}
+                onClick={() => void resetField(name)}
+              />
+            )}
+          </div>
           {name === 'description' ? (
             <Textarea
               id={`${id}-${name}`}
@@ -119,19 +192,39 @@ export const CourseRecordEditor = ({
   );
 };
 
+const childDateForEditor = (
+  item: SavedCourseChild & { local?: CourseChildLocalOverrideView },
+) => {
+  const hasDateOverride = item.local?.overriddenFields.some(
+    (field) => field === 'dateValue' || field === 'dateText',
+  );
+  return hasDateOverride && item.local
+    ? legacyDateFrom({
+        dateValue: item.local.effective.dateValue,
+        dateText: item.local.effective.dateText,
+      })
+    : academicDateFor(item);
+};
+
 export const CourseChildEditor = ({
   item,
   kind,
+  local,
   onSave,
   onCancel,
+  onReset,
 }: {
-  item?: SavedCourseChild;
+  item?: SavedCourseChild & { local?: CourseChildLocalOverrideView };
   kind: 'assignments' | 'announcements';
+  local?: CourseChildLocalOverrideView;
   onSave: (values: EditCourseChildSchema) => Promise<void>;
   onCancel: () => void;
+  onReset?: (fields: CourseChildLocalOverrideField[]) => Promise<void>;
 }) => {
   const id = useId();
-  const initialDate = (item ? academicDateFor(item) : null)?.original ?? '';
+  const [resettingField, setResettingField] = useState<string | null>(null);
+  const recordLocal = local ?? item?.local;
+  const initialDate = (item ? childDateForEditor(item) : null)?.original ?? '';
   const resolver = useMemo(
     () =>
       zodResolver(
@@ -150,11 +243,13 @@ export const CourseChildEditor = ({
       ),
     [initialDate, item, kind],
   );
-  const body = item?.content
-    ? 'description' in item.content
-      ? item.content.description
-      : item.content.body
-    : item?.body;
+  const body = item?.local
+    ? item.local.effective.body
+    : item?.content
+      ? 'description' in item.content
+        ? item.content.description
+        : item.content.body
+      : item?.body;
   const {
     register,
     control,
@@ -165,79 +260,112 @@ export const CourseChildEditor = ({
     defaultValues: {
       title: item?.title ?? '',
       body: body ?? '',
-      date: (item ? academicDateFor(item) : null)?.original ?? '',
+      date: initialDate,
     },
   });
+  const resetFields = async (
+    fields: readonly CourseChildLocalOverrideField[],
+    fieldKey: string,
+  ) => {
+    if (!onReset) return;
+    setResettingField(fieldKey);
+    try {
+      await onReset([...fields]);
+    } catch {
+      return;
+    } finally {
+      setResettingField(null);
+    }
+  };
   return (
     <form
       noValidate
       onSubmit={handleSubmit(onSave)}
       className="flex flex-col gap-4"
     >
+      {recordLocal?.sourceUncertain && <SourceUncertaintyNotice />}
       {(
         [
-          { name: 'title', label: 'Title' },
+          { name: 'title', label: 'Title', resetFields: ['title'] },
           {
             name: 'body',
             label: kind === 'assignments' ? 'Description' : 'Message',
+            resetFields: ['body'],
           },
           {
             name: 'date',
             label: kind === 'assignments' ? 'Due date' : 'Published date',
+            resetFields: ['dateValue', 'dateText'],
           },
         ] as const
-      ).map(({ name, label }) => (
-        <div key={name} className="flex flex-col gap-2">
-          <label htmlFor={`${id}-${name}`}>{label}</label>
-          {name === 'date' ? (
-            <Controller
-              control={control}
-              name="date"
-              render={({ field }) => (
-                <DateTimePicker
-                  sourceDate={item ? academicDateFor(item) : null}
-                  allowPast={
-                    kind === 'announcements' ||
-                    (!!item && field.value === initialDate)
-                  }
-                  id={`${id}-date`}
-                  value={field.value}
-                  onChange={field.onChange}
+      ).map(({ name, label, resetFields: fields }) => {
+        const typedFields = fields as readonly CourseChildLocalOverrideField[];
+        const overridden = typedFields.some((field) =>
+          recordLocal?.overriddenFields.includes(field),
+        );
+        return (
+          <div key={name} className="flex flex-col gap-2">
+            <div className="flex items-center justify-between gap-2">
+              <label htmlFor={`${id}-${name}`}>{label}</label>
+              {overridden && onReset && (
+                <ResetSourceButton
+                  label={label}
+                  isLoading={resettingField === name}
+                  disabled={isSubmitting || !!resettingField}
+                  onClick={() => void resetFields(typedFields, name)}
                 />
               )}
-            />
-          ) : name === 'body' ? (
-            <Textarea
-              id={`${id}-${name}`}
-              className="w-full text-base"
-              {...register(name)}
-              aria-invalid={!!errors[name]}
-              aria-describedby={
-                errors[name] ? `${id}-${name}-error` : undefined
-              }
-            />
-          ) : (
-            <Input
-              id={`${id}-${name}`}
-              className="w-full text-base"
-              {...register(name)}
-              aria-invalid={!!errors[name]}
-              aria-describedby={
-                errors[name] ? `${id}-${name}-error` : undefined
-              }
-            />
-          )}
-          {errors[name] && (
-            <p
-              id={`${id}-${name}-error`}
-              role="alert"
-              className="text-base text-destructive"
-            >
-              {errors[name].message}
-            </p>
-          )}
-        </div>
-      ))}
+            </div>
+            {name === 'date' ? (
+              <Controller
+                control={control}
+                name="date"
+                render={({ field }) => (
+                  <DateTimePicker
+                    sourceDate={item ? childDateForEditor(item) : null}
+                    allowPast={
+                      kind === 'announcements' ||
+                      (!!item && field.value === initialDate)
+                    }
+                    id={`${id}-date`}
+                    value={field.value}
+                    onChange={field.onChange}
+                  />
+                )}
+              />
+            ) : name === 'body' ? (
+              <Textarea
+                id={`${id}-${name}`}
+                className="w-full text-base"
+                {...register(name)}
+                aria-invalid={!!errors[name]}
+                aria-describedby={
+                  errors[name] ? `${id}-${name}-error` : undefined
+                }
+              />
+            ) : (
+              <Input
+                id={`${id}-${name}`}
+                className="w-full text-base"
+                {...register(name)}
+                aria-invalid={!!errors[name]}
+                aria-describedby={
+                  errors[name] ? `${id}-${name}-error` : undefined
+                }
+              />
+            )}
+            {errors[name] && (
+              <p
+                id={`${id}-${name}-error`}
+                role="alert"
+                className="text-base text-destructive"
+              >
+                {errors[name].message}
+              </p>
+            )}
+          </div>
+        );
+      })}
       <EditorFooter busy={isSubmitting} creating={!item} onCancel={onCancel} />
     </form>
   );

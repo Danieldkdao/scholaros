@@ -4,7 +4,9 @@ import {
   formatAcademicDateResolution,
   formatCourseScanStatus,
   formatCourseSourceState,
+  formatRefreshActivity,
   isPastDate,
+  refreshActivityKinds,
   sortAnnouncements,
   sortAssignments,
 } from '../lib/formatters';
@@ -187,12 +189,19 @@ it('orders normalized local times without assigning a device timezone', () => {
   );
 });
 
-it('reserves refresh warnings for access issues rather than incomplete information', async () => {
-  const { formatRefreshActivity } = await import('../lib/formatters');
+it('labels completed refreshes consistently and separates sign-in issues', () => {
   expect(formatRefreshActivity('complete').label).toBe('Refresh complete');
-  expect(formatRefreshActivity('partial').label).toBe(
-    'Refresh needs attention',
+  expect(formatRefreshActivity('partial').label).toBe('Refresh incomplete');
+  expect(formatRefreshActivity('sign-in-required').label).toBe(
+    'Sign in required',
   );
+  expect(formatRefreshActivity('partial').Icon).toBeTruthy();
+});
+
+it.each(refreshActivityKinds)('formats refresh activity state %s', (state) => {
+  const formatted = formatRefreshActivity(state);
+  expect(formatted.label).not.toBe('');
+  expect(formatted.Icon).toBeTruthy();
 });
 
 it('shows a manually entered local timestamp in a readable format', () => {

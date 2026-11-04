@@ -19,6 +19,7 @@ import {
   CalendarClock,
   CircleHelp,
   Clock,
+  type LucideIcon,
 } from 'lucide-react';
 import { academicDateFor } from './dates';
 import type {
@@ -249,22 +250,35 @@ export const formatCollectionState = (
   }
 };
 
+export const refreshActivityKinds = [
+  'running',
+  'complete',
+  'partial',
+  'sign-in-required',
+  'cancelled',
+  'failed',
+] as const;
+export type RefreshActivityKind = (typeof refreshActivityKinds)[number];
+
 export const formatRefreshActivity = (
-  status: CourseRefreshActivity['status'],
-) => {
+  status: CourseRefreshActivity['status'] | 'partial',
+): { label: string; Icon: LucideIcon; kind: RefreshActivityKind } => {
   switch (status) {
     case 'running':
-      return { label: 'Refreshing courses…', Icon: RefreshLoader };
-    case 'complete':
-      return { label: 'Refresh complete', Icon: RefreshCheck };
-    case 'partial':
       return {
-        label: 'Refresh needs attention',
-        Icon: RefreshAlert,
+        label: 'Refreshing courses…',
+        Icon: RefreshLoader,
+        kind: status,
       };
+    case 'complete':
+      return { label: 'Refresh complete', Icon: RefreshCheck, kind: status };
+    case 'partial':
+      return { label: 'Refresh incomplete', Icon: RefreshAlert, kind: status };
+    case 'sign-in-required':
+      return { label: 'Sign in required', Icon: RefreshAlert, kind: status };
     case 'cancelled':
-      return { label: 'Refresh stopped', Icon: RefreshStop };
+      return { label: 'Refresh stopped', Icon: RefreshStop, kind: status };
     case 'failed':
-      return { label: 'Refresh failed', Icon: RefreshAlert };
+      return { label: 'Refresh failed', Icon: RefreshAlert, kind: status };
   }
 };

@@ -148,6 +148,9 @@ out/
 # Turborepo
 .turbo/
 
+# Isolated local checkouts
+.worktrees/
+
 # Local database files and verification artifacts
 *.sqlite
 *.sqlite-shm

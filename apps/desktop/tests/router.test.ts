@@ -46,7 +46,12 @@ const nestedDashboardPaths = [
     routeId: '/dashboard/courses/$courseId',
   },
   { path: '/dashboard/study', routeId: '/dashboard/study' },
-  { path: '/dashboard/planner', routeId: '/dashboard/planner' },
+  { path: '/dashboard/context', routeId: '/dashboard/context' },
+  {
+    path: '/dashboard/planner',
+    destination: '/dashboard/context',
+    routeId: '/dashboard/context',
+  },
   // The list moved into a folder so the add page can nest beside it, which
   // leaves the list as an index route with a trailing-slash id.
   { path: '/dashboard/connections', routeId: '/dashboard/connections/' },
@@ -133,9 +138,12 @@ describe('nested dashboard pages', () => {
 
   it.each(nestedDashboardPaths)(
     'opens $path for a finished account inside the shared layout',
-    async ({ path, routeId }) => {
+    async (route) => {
+      const { path, routeId } = route;
       const router = await loadRoute(path, finishedUser);
-      expect(router.state.location.pathname).toBe(path);
+      expect(router.state.location.pathname).toBe(
+        'destination' in route ? route.destination : path,
+      );
       expect(allMatchesSucceeded(router)).toBe(true);
       expect(matchedRouteIds(router)).toEqual([
         '__root__',

@@ -1,0 +1,760 @@
+{
+  "observed_at": "2026-11-03T01:46:29.757812+00:00",
+  "repository": "/Users/danieldao/Desktop/scholaros",
+  "branch": "feat/context",
+  "head": "2d5cf6771695dffc1f6ce51e48638fcd48f175d6",
+  "source_state_only": true,
+  "note": "Hashes inventory pre-plan existing work. No fresh suite results are implied; verify current diffs before continuation. Later docs/instruction additions are expected.",
+  "entries": [
+    {
+      "status": " M",
+      "path": "apps/desktop/forge.config.mts",
+      "sha256": "3f1eb640f60b04f53b0249c3d3e457f28ea78c1de1ea4a489eaabbe8f563a837"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/package.json",
+      "sha256": "bc58a1a511f4e7a7597c0c066c787d2a439cf5dd7ec76e52944a0e03d7253dd7"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/db/migrations/meta/_journal.json",
+      "sha256": "9509da61f6eeb5de303955e9197a8322eff87befffb648ba261f8a85dc6dcdd2"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/db/schema/index.ts",
+      "sha256": "9da59ecb383aae7562cb099bee393c3a192fe6968d9315e586a5202ea5edf828"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/db/schema/setting.ts",
+      "sha256": "aeb2b49393bd190af98bfd8aad3a1ebd690883e9e39e86cfa9549079064d7c7d"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/features/courses/components/course-refresh-activity.tsx",
+      "sha256": "f1d6ab131839a4a78ef5835a35bed6ab2989c2acc087cb66a66f71c62ea24a67"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/features/courses/lib/course-content-scan.ts",
+      "sha256": "f43fa5ed4d2ff01e4e28122489faf3708e595fd4ad41091b5f9e93824259c71e"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/features/courses/lib/course-content.ts",
+      "sha256": "345c79953e3395830003fc80ab453644b9e1a8330c0234799ea2b7d04962113a"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/features/courses/lib/formatters.ts",
+      "sha256": "616f086bb7c257d9fa1298bfaf1f2326258dc0bd652174c857316678e27273ee"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/features/courses/services/refresh.ts",
+      "sha256": "446c4aa09f6225ddeee139171b4d05a41eda788a76bb5a88a32bdb43647a801d"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/features/courses/services/store.ts",
+      "sha256": "f40af48f47c5a411c21a2d9fa905326f44758fa938e4196768591a4d0f4ca4f9"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/features/courses/tests/course-content-scan.test.ts",
+      "sha256": "09f8a4d55d6a5aa788c10e197e561a26dab0f11806deea8ab71851076224c30d"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/features/courses/tests/course-formatters.test.ts",
+      "sha256": "0e8cd2f43f0b8172fc1fca8d607d9d04d0f1bd943338ae2b2dc312f330ee53c1"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/features/courses/tests/course-refresh-activity.test.tsx",
+      "sha256": "63fa6bd72fa5188286b434ccbeaeaf852280bf243d8473335d6edd7bf78f537f"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/features/courses/tests/course-refresh.test.ts",
+      "sha256": "779a7e3ce01b449811eab48debe84b910945819c88b52aa199b26b6c8df2bcde"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/features/courses/tests/course-store.test.ts",
+      "sha256": "c22b2677d2e31a5ae2908dd2849a23a8dc16c0752521ee125344928ea6e6c030"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/features/courses/tests/courses-page.test.tsx",
+      "sha256": "87db53f06421ef5624746ebe637723aca329534f65cdae71ed7ac5e801fc0a9a"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/features/courses/types.ts",
+      "sha256": "376497bc7a01d2cb3ea37309b54f20edf091a145e2aa4e65fc19416f9086b871"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/features/dashboard/agent-settings.tsx",
+      "sha256": "e427dace9621b0de06afda68b69370f891c84166505dffab5d360bba422478f1"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/features/dashboard/settings-save-queue.ts",
+      "sha256": "e5152bd6dc29ef34e91ed9df5abfec8b456869a776bf80ddf09981810ae6c56d"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/features/dashboard/tests/agent-settings.test.tsx",
+      "sha256": "019b573127380c8441c04285c2f18c95898ed28962c48b5be7546f80e3f9d74d"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/features/dashboard/tests/dashboard-shell.test.tsx",
+      "sha256": "18aa82389749762a8b145e09a47009338d9d48ad781972159f54400e299d9fa7"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/features/onboarding/components/browser-step.tsx",
+      "sha256": "30e236f19e31df0be1c73bfff107063b5ce884c3a4929fb1a0740469cf3bb242"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/features/onboarding/components/preview-step.tsx",
+      "sha256": "fd756beeb0b4dfcaaeabc4f59f14aecc7846983403a2b0a19ad2b5c056229724"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/features/onboarding/components/welcome-step.tsx",
+      "sha256": "6522ace6bffff3d695028622441acce2636210b63ea37d16c597e0ed2b324b33"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/features/onboarding/hooks/use-onboarding-state.ts",
+      "sha256": "ca26ef6c2d92e84710b70fcaa846a49e9221434fbaeac70d2120152915e424e5"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/features/onboarding/schemas.ts",
+      "sha256": "71be2d0885a2ff70f53b146fe4631060de5db327070b731620dd5f52262513f5"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/features/onboarding/services/academic-tasks.ts",
+      "sha256": "a1f05f5160b9dc143c30d50c8fe05cb113fb12760136bac524157069786e93d3"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/features/onboarding/services/browser-workspace.ts",
+      "sha256": "7ef930a8935f5eda929971816623cc00520a74b9f2f18ac67eddee51ad9e60d4"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/features/onboarding/services/connection-scan.ts",
+      "sha256": "23c6a9dd03678b944ab6a4c018607c9d1f273bfc487485281a380cd19eeecdee"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/features/onboarding/services/discovery.ts",
+      "sha256": "4feb69a7f3b2d78a30ea39a68e008d0df7113df3eafb42c5a527f18f35d9cdfe"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/features/onboarding/services/ipc.ts",
+      "sha256": "c6c91cf957e384c885b3b31cc5d9ed105854c129470da8970324a407aa556cab"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/features/onboarding/services/mission-navigation.ts",
+      "sha256": "155b11e903877d8812a5ab4ce5de86917c4e66878531706372112883c4f8df08"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/features/onboarding/services/mission-traffic.ts",
+      "sha256": "4ed88c9f0cee25a611de1eac6980079eca590d67237dcb47889b6790362a0a0e"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/features/onboarding/services/mission.ts",
+      "sha256": "8c9d8a43840f54cb44274cfa960673be1f2a2174589df96c3f64a2875810e15f"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/features/onboarding/services/preview.ts",
+      "sha256": "87806d817bed77d018d8ac49794950e65da692228c8a07d2fd32b69db02c7a37"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/features/onboarding/services/store.ts",
+      "sha256": "194de90e2f77a4faf487da7244fed77b1ff7ace2f4fa613dd21d585733e9e841"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/features/onboarding/tests/academic-tasks.test.ts",
+      "sha256": "cfee066fc11366632c4609a227336c6bfb3fbd591191e0e3d7f6c5e91d9bf35e"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/features/onboarding/tests/browser-workspace.test.ts",
+      "sha256": "4318282f33d288a9544cf2085040338a18a0ffaf35923ac7ab2b5e0d7df835c6"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/features/onboarding/tests/connection-scan.test.ts",
+      "sha256": "bd700844e524b86b9759d4d5dc2303ca5f48b711be7879150c6d00f5f4a204a8"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/features/onboarding/tests/device-readiness.test.ts",
+      "sha256": "174e451bcb5c336135169bb23ea826e1f08d1aad9621db0b65e4417e1977ab11"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/features/onboarding/tests/discovery-service.test.ts",
+      "sha256": "a40604591d9817429b41d2d4e81e9e7081982b589e7cccb7715e43d29259cc7b"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/features/onboarding/tests/mission-navigation.test.ts",
+      "sha256": "70b51a554803e28aba64d85678a23dbf9cb6bf14b4cb4d987d87cefcb347559c"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/features/onboarding/tests/mission-traffic.test.ts",
+      "sha256": "8df93e10c9ff2115b235900898cfe870d8420dbc134382241924379337d93a28"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/features/onboarding/tests/mission.test.ts",
+      "sha256": "7bd3c74e5b75a5bd1c143ff843981f548b33f953b745be5cce3ba8db9ab51bac"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/features/onboarding/tests/preview-lifecycle.test.ts",
+      "sha256": "448af5d59aa66636715cf8a37d871f555b68b396654ee5aa97f4f7bf94d68580"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/features/onboarding/tests/protected-browsing.integration.test.ts",
+      "sha256": "becabc57090eebcbfde86b978837b6561c1d457f95ba3d0df6b20777249dfde3"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/features/onboarding/types.ts",
+      "sha256": "31adb68a0655ce03354978add8fd5a6be510f00849c21d0cebc62fd9a8ed8f3a"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/lib/session-teardown.ts",
+      "sha256": "5dbd6c34a68d1457501733b581fdf70878b8e509f645b775ab1172bd82e43767"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/main.ts",
+      "sha256": "ad8900ee012de67671b8c34d2a25e31cfa168ab57dca03ddbd2da3a10ecc30c6"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/preload.ts",
+      "sha256": "188d40bdfa78c2bdaa7c8e671d6367cd48a027246c8865188760d841c221ed09"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/routes/dashboard/courses/index.tsx",
+      "sha256": "e2867980bee70a32431afd1b665d09cccdcbc3c0d5ca7b25f101cbb4e7a81d5e"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/routes/dashboard/settings.tsx",
+      "sha256": "f5adea5b8b45aca6bd4046fc04bad555376255975973b7a56c3c6aae01cee702"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/src/services/academic/contracts.ts",
+      "sha256": "0ead79e606d92b20e458dd5a8fd632e921d1e044b82b3872b6f80513c5dc1927"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/tests/academic-lifecycle.test.ts",
+      "sha256": "115a18da76c4d532ed943208bd73f6cc9ba3249586f6b0ad8f163219019c6168"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/tests/ipc-session.test.ts",
+      "sha256": "f8b925cdb621f51093f9d286ea41875d226b85babae5ab66c782e959bd1c002e"
+    },
+    {
+      "status": " M",
+      "path": "apps/desktop/tests/session-teardown.test.ts",
+      "sha256": "aa22ca63c64624cc131bf76bef0c31be4b869c6bc086858575ab39905415acd1"
+    },
+    {
+      "status": " M",
+      "path": "apps/web/.env.example",
+      "sha256": "3a592eb92b74fa9dc281d20407dd45395d62079fc87ecb80fe69e27f96c740a6"
+    },
+    {
+      "status": " M",
+      "path": "apps/web/src/app/api/agent/route.ts",
+      "sha256": "9957746dc507699f3b102577b1c88951157700d6b1295c45100f30a7cc903c39"
+    },
+    {
+      "status": " M",
+      "path": "apps/web/tests/agent-route.test.ts",
+      "sha256": "09cef4c62e4b8f4e32f351f0e894d268988054519df7cb407e5668287b4ab104"
+    },
+    {
+      "status": " M",
+      "path": "docs/SPEC.md",
+      "sha256": "4a3c77d76b6460180e6be5e4c46cbd89888801d693e3871de3d7a8cf45c794e1"
+    },
+    {
+      "status": " M",
+      "path": "packages/env/package.json",
+      "sha256": "c4acf6d7a3e2b601c119fd5e83edd2528ca8ad00240895056f350b524098b38c"
+    },
+    {
+      "status": " M",
+      "path": "packages/env/src/server.ts",
+      "sha256": "f1d45c60294333c2abfb1d16ca3534a62f9a5a221d8717e56cc84fcd86dafe23"
+    },
+    {
+      "status": " M",
+      "path": "packages/services/package.json",
+      "sha256": "273e003ff707a4cf2be5f1a2e604e1826574f9d5b9cb55e5a766d5346eecb50f"
+    },
+    {
+      "status": " M",
+      "path": "packages/services/src/ai/academic.ts",
+      "sha256": "288b2b610f7bff67d4158ba2c41665891f1fe615d49a56d36522a65e7e93680b"
+    },
+    {
+      "status": " M",
+      "path": "packages/services/src/ai/resources/validation.ts",
+      "sha256": "a8ac2f88161f540bf46d69e3ecd2304641758a2e7a18f519a84a929330ba0d63"
+    },
+    {
+      "status": " M",
+      "path": "packages/services/src/ai/schemas.ts",
+      "sha256": "be643f3d996d933e32c2f9a9829fb93b633b87196ddeb4a1b5e11e4374ae9090"
+    },
+    {
+      "status": " M",
+      "path": "packages/services/src/ai/tests/academic.test.ts",
+      "sha256": "fe063731fa9f2824da204a65072719481f1173047957993723fcfb8ff1ed43e5"
+    },
+    {
+      "status": " M",
+      "path": "packages/services/src/ai/tests/resource-validation.test.ts",
+      "sha256": "a7a1e9599399d19078aeabce6cbb2eb36822028e443432ac3f30f463849a0cab"
+    },
+    {
+      "status": " M",
+      "path": "pnpm-lock.yaml",
+      "sha256": "88f9c1d6941e613ea0e6678741cd39e342c754ad0b824f9d26a95512fc49f607"
+    },
+    {
+      "status": "??",
+      "path": ".greptile/config.json",
+      "sha256": "efa53997c2a2e66403e8f7740016b4195b461ea2717589d61fa77fc397c7e053"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/db/migrations/0009_great_talkback.sql",
+      "sha256": "d399483e6bdd3a1735370b44245b507f823de373e53a6c95d563a0c245044b07"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/db/migrations/0010_spicy_lila_cheney.sql",
+      "sha256": "04fe7a57985a93275fdb72962f124cf49c48ae8248faee3143ff92d0eff4967b"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/db/migrations/0011_light_spyke.sql",
+      "sha256": "fb9dd4328435c00e5850530f52bf3f3024fce03e9e6a4cca739b139301e598cb"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/db/migrations/0012_easy_frank_castle.sql",
+      "sha256": "688c6f0e092dfa3c01586f0b39ee5f37574af971cbc1c0c66a28788587e88f88"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/db/migrations/0013_watch-reconciliation.sql",
+      "sha256": "45bd78d8a0a90f58d86033e4d4d94bda2c7ce640215441edea1285291f4563a6"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/db/migrations/meta/0009_snapshot.json",
+      "sha256": "c388295dd0103aded6ce295a26e67198b54c8aff4b933382accaca52eecf1d84"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/db/migrations/meta/0010_snapshot.json",
+      "sha256": "78e080ef2df3cf7aa95bc711395acd92ebcd64f9ac8a1db56b88d307bb851d60"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/db/migrations/meta/0011_snapshot.json",
+      "sha256": "e190b74997d628689e28c6437a78ef435e4db19cde88c834b96510be4fd731b6"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/db/migrations/meta/0012_snapshot.json",
+      "sha256": "ea8a1f24141b90d3bbf0c151b134e56faf25ba7332efa50f8d457b450ab2141b"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/db/migrations/meta/0013_snapshot.json",
+      "sha256": "77da9f9349702ded551f54463ea7abb9b1627e1f202e286d55db7bfc6e671b64"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/db/schema/course-material-chunk.ts",
+      "sha256": "a4a332085bea65fd2cc4763b749eb529bfd161ad8b4acc7ba97c051b8848a158"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/db/schema/course-material.ts",
+      "sha256": "bf9f7e8b1ab1aeb63700167fe41c0d4dc11b3eab8a8ccccef698a0bb355c5ac5"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/db/schema/course-record-tombstone.ts",
+      "sha256": "ec7ad8a4c9e66584b137c8d60b01586b8d801fb0f139d39dcaa8b4e6ea72c356"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/db/schema/navigation-location.ts",
+      "sha256": "1d0e10fd9514701c49b55b034615bbb4b184bedd59b82a15d870d2a67b6c0eaa"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/db/schema/watch-target.ts",
+      "sha256": "458c7633e5e9051d944308f402e3953d974a7fd5e41bba73db15c648937b1f6e"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/context/constants.ts",
+      "sha256": "2c705e35d2c1ff0ae4498a9638b4b04d7ed19d56e59a906ee689ffd11d53d4ab"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/context/lib/context-package.ts",
+      "sha256": "25648f0effd1a36fdc79b88b93ce9a276ae3f764a99f74c5b5769808c121d92d"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/context/lib/material-content.ts",
+      "sha256": "5a90c5a65ea27c07f5cfd7614ad810e415db7fdc9a3c18b0660e192bc91a02b7"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/context/lib/navigation-context.ts",
+      "sha256": "230d7c2d3471c2a330ad462103cbda3c9828db626ade26e1264b805d2c5b8bbe"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/context/schemas.ts",
+      "sha256": "b0ee6daa22be31d4fb1f1c91ea38daf9f511760b93d6fb79cae535a58e13c2a0"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/context/services/material-download.ts",
+      "sha256": "f8167e1c35608f923af4766f3e454ee1fa43b47564e0bafc8abb66ddb724024a"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/context/services/material-refresh.ts",
+      "sha256": "2ff803f1a40230ccef77c3e919883a9dc4d80702217d599750431861ad2a7884"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/context/services/material-store.ts",
+      "sha256": "2cbdede4480e9309e5e7be9ccad48ea3b619eabb08e1b71ccb34c434964e78d1"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/context/services/navigation-store.ts",
+      "sha256": "24f1f68cd5491b076d6ebe81455e884302f10aeb6814b328330dac7c4c59a014"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/context/services/pdf-content.ts",
+      "sha256": "47a5f6155e41ea4384c0ee782210f3250337a4259293ddda4892150f1de72d3a"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/context/services/read-actions.ts",
+      "sha256": "99499bbf707a80a25c7c2eb2bbb1d96cfeb772c8c2317761ebd926e5b44590dc"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/context/tests/context-retrieval.test.ts",
+      "sha256": "9f1adb9ca6e9f20c511189b658bc9589a4d890654355169a38af0690403f7823"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/context/tests/material-content.test.ts",
+      "sha256": "ba7c1d0639b041561ccbb3fd42be09ba153012956604180dce9ce05f085ba7ad"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/context/tests/material-download.test.ts",
+      "sha256": "1718bd10ac85d22235794ed6ce327e278e330abb4dd80887382f3dd31b07de35"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/context/tests/material-refresh.test.ts",
+      "sha256": "60b5168e9e9bf73466a53caebcbb4f9d63e7d497ab446ee72ef1ea8e9ac358eb"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/context/tests/material-store.test.ts",
+      "sha256": "3107f44413af853e48bb60a5fa96299f051d8608a2e681ece447fdf10dbe8561"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/context/tests/navigation-context.test.ts",
+      "sha256": "4cca7e6a0c53ad10be59f6811b6a5d086383fff544795b0a2040fc36b44ff4a5"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/context/tests/navigation-store.test.ts",
+      "sha256": "057a92098439451eddb5991a5c3b144f664bac169039a50147c4984805c64ca6"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/context/tests/pdf-content.test.ts",
+      "sha256": "10b72b547c37fba962b5cb9733785864c1f1b21afa95f95aa30b3c3c9478be4b"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/context/types.ts",
+      "sha256": "b0116954b6fae349bbb7512a3b06c76b60bf6fd9b8ccebdc70b1aae959b81228"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/courses/tests/academic-flow.integration.test.ts",
+      "sha256": "89ea125eea51608e80d588004b964d815e252c8a809bacc59b954f6585074316"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/dashboard/tests/settings-save-queue.test.ts",
+      "sha256": "f77e5e0f699a881033a8f3e57a950cda4727905d1bfa9c4080561daa106835fb"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/onboarding/services/browser-mode.ts",
+      "sha256": "6a4304bffbdbc1586dfd804620aa7fec357098341e2f78ada8c0268d54e19b77"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/onboarding/services/browser-model.ts",
+      "sha256": "1f5ab2abe0aa7d25c32baed3d88abff52c1eb40a106e20643a415c5fffaa8695"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/onboarding/services/browser-navigation.ts",
+      "sha256": "d3b24fa25f14778f67e5076708f9cef75f6ef95010236395a383174966a09f15"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/onboarding/services/decision-navigation.ts",
+      "sha256": "0017bcec9b858f4b042839a365eb2deeef3bb69c778b76c24bb9eb0a6547ae95"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/onboarding/services/inout-navigation.ts",
+      "sha256": "e3ff2cd43955b3d6c41d3103fbeb5d468ced262cf38d530c0627fc75686719f6"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/onboarding/tests/browser-mode.test.ts",
+      "sha256": "5373d96380ac57301cada72eb74f1ce6a7fc69fda9c658d64012716639fecea7"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/onboarding/tests/browser-model.test.ts",
+      "sha256": "c67686f69f40ca88eb65a6a43d994885d7beafab403c72cd67e1d2238440c438"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/onboarding/tests/browser-modes.integration.test.ts",
+      "sha256": "4840d2ce762f18975878e930c6ef02c40c89b84dad45bee8edc8a8d1d595a4dd"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/onboarding/tests/browser-navigation.test.ts",
+      "sha256": "b901a4d261e26019d5b9ddd4d0618cb3a4a0f5ea3e3244a2c9c493c9baf3c191"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/onboarding/tests/use-onboarding-state.test.tsx",
+      "sha256": "bcdc18ecf0d9b47fb4906fa47e4047a10971477ff1926a2ef9ea20172528fb84"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/watch/components/watch-settings.tsx",
+      "sha256": "6ce89ceb574017633627f6ff60decc7678d682661f60a32e135fd6930a212fcc"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/watch/constants.ts",
+      "sha256": "dbeda88b8837568b958b6887850b05713b253a78a8ec2d897abc552eb528cd1d"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/watch/lib/formatters.ts",
+      "sha256": "9623d07d7cff0b19fdeab8810b9787d3313edf7941729c5ed5e8f969e9cc7c9a"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/watch/lib/page-fingerprint.ts",
+      "sha256": "7cc4b72a957c5e950ae583892b2f7a5ec000751cf367bb05225c670307ddbbd1"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/watch/lib/watch-url.ts",
+      "sha256": "81d1df0921988fab9a0e92dbe76a269474dcb383cbbc2fe69f7f6ab44e487c8b"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/watch/schemas.ts",
+      "sha256": "63e0c99cba148ede541e5b8233834ba13881b181337da8ee19678f0a7e9d58d3"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/watch/services/browser-session.ts",
+      "sha256": "3149bd5d0eaaacc004160df85f6f5ad957ddc5e4b3ba470376a3b1c76b545f02"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/watch/services/controller.ts",
+      "sha256": "29d0cbae66ad4d1bf167fe727f3f74e7eec2c724678bbb98a51f61661a883cb5"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/watch/services/lifecycle.ts",
+      "sha256": "cbd048160db764eba62eb55486f76db23133e32f83e8f96223e773997702f9d6"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/watch/services/page-observer.ts",
+      "sha256": "68a228f4c19160c997a3158c7bd03a005da1ee22b1937768085fe8a3c8ca70f3"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/watch/services/refresh.ts",
+      "sha256": "1cfd4f85c5ac56c19ab63199945abda3832b752b18e9c1939bdf5b4da6c13e43"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/watch/services/runtime.ts",
+      "sha256": "7fc2e548d2ef71409cfee76fb2b7d8a547f2cdf6efb8a74c60bb5caba8a93bbb"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/watch/services/store.ts",
+      "sha256": "f5863e806221f66fe4b78909bd21dbecd7aadbfda2df5dd01a2a859758a9dfa6"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/watch/tests/browser-session.test.ts",
+      "sha256": "8668743bdb464bcb9e303a148882f40660b96d9549522e6241ae79ff897b74ef"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/watch/tests/controller.test.ts",
+      "sha256": "603cd4fb2f9791b78a3fafb2584cbd9db49fab9ca6116f7b77da9467b4b0d0d9"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/watch/tests/page-fingerprint.test.ts",
+      "sha256": "3da3108ae82425d0e15b823a3527c8c88f52844c8fd76cef6b0284bfab05b3ac"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/watch/tests/page-observer.test.ts",
+      "sha256": "3196fd6156b32b3c6350dacbfde2216292effda0bcc8b68ae51dbbc7f349aace"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/watch/tests/runtime.test.ts",
+      "sha256": "85106abc9c485abcbc2861dd8c831d2362b8c0afe31698df39124d6fa9f90e28"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/watch/tests/watch-lifecycle.test.ts",
+      "sha256": "16b6cb274b54167026eeb488f261acf1e53aabd7adbf30f12667f4f05078ad38"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/watch/tests/watch-refresh.test.ts",
+      "sha256": "4681774dfce665a1f477c066854fa790f1a779dda6fbb025275c45915f8158dd"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/watch/tests/watch-settings.test.tsx",
+      "sha256": "df7fa626dc39d6592efbffe7c58585887bb7e8cb5c47346f9392411c714e9067"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/watch/tests/watch-store.test.ts",
+      "sha256": "af0930ec26642136eb77401ef47f8f42e54117127a2afba3c9c127251f544cbb"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/watch/tests/watch-url.test.ts",
+      "sha256": "010807067e74278065a2d1b48431eb0e2e04d65b60d24b954c54a2b45f73683c"
+    },
+    {
+      "status": "??",
+      "path": "apps/desktop/src/features/watch/types.ts",
+      "sha256": "ca30ab34aa34ba12ff8637ad292ac4a96a17feff245f32d30eef7bc0de8932c2"
+    },
+    {
+      "status": "??",
+      "path": "packages/env/src/browser-navigation.ts",
+      "sha256": "3bd689c932de297156f0ca77c68dcef0058692959b13971846b8590ea1e13944"
+    },
+    {
+      "status": "??",
+      "path": "packages/services/src/ai/browser-model.ts",
+      "sha256": "a6cb816839329f0836821f959f4b294a0112a7ed6de026d98758010f55609145"
+    },
+    {
+      "status": "??",
+      "path": "packages/services/src/ai/browser-schemas.ts",
+      "sha256": "7e78c138a07e9b3fdec861bda4658e7be9f95c443f1859a3d770b890da886ea8"
+    },
+    {
+      "status": "??",
+      "path": "packages/services/src/ai/resources/identity.ts",
+      "sha256": "c6dae7e9139baec745938fd15cb5d516c792f920f7b2e41548b1c72abe6ae808"
+    },
+    {
+      "status": "??",
+      "path": "packages/services/src/ai/resources/material.ts",
+      "sha256": "1c3f93bfcb003cd039e005198966a49ed49155e248734945f5701d4a6eb36880"
+    },
+    {
+      "status": "??",
+      "path": "packages/services/src/ai/tests/browser-model.test.ts",
+      "sha256": "3fdd6a33507b8dd8af87399cc1ef6e3ac6c3f6b2c7a75c7e20a613afca3d79c1"
+    },
+    {
+      "status": "??",
+      "path": "packages/services/src/ai/tests/material-extraction.test.ts",
+      "sha256": "44cfafe1ead7ac50d6e4e495f4cee08fdda9eed1e43ff25f91fa746cc91320bd"
+    },
+    {
+      "status": "??",
+      "path": "packages/services/src/ai/tests/resource-identity.test.ts",
+      "sha256": "fa50037388f2cc3ad4b2d7631410f8d4c60f20a312832285d1c269456791ef73"
+    }
+  ]
+}

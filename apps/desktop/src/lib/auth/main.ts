@@ -1,7 +1,58 @@
-import { net } from 'electron';
+import { net, protocol, type BrowserWindow } from 'electron';
 import { authClient } from './client';
+import {
+  clearOfflineAccountGrant,
+  readOfflineAccountGrant,
+  saveOfflineAccountGrant,
+} from '../offline-account';
 import { clientEnv } from '../../data/env/client';
 import type { CurrentUser } from '../../features/onboarding/types';
+
+type SetupAuthMainOptions = {
+  getWindow: () => BrowserWindow | null;
+  registerActivityScheme: (
+    registerSchemesAsPrivileged: typeof protocol.registerSchemesAsPrivileged,
+  ) => void;
+};
+
+type PrivilegedSchemes = Parameters<
+  typeof protocol.registerSchemesAsPrivileged
+>[0];
+
+let authMainSetup = false;
+
+export const setupAuthMain = ({
+  getWindow,
+  registerActivityScheme,
+}: SetupAuthMainOptions) => {
+  if (authMainSetup)
+    throw new Error('Authentication main process is already set up.');
+  authMainSetup = true;
+
+  const registerSchemes = protocol.registerSchemesAsPrivileged.bind(protocol);
+  const originalRegistrar = protocol.registerSchemesAsPrivileged;
+  const privilegedSchemes: PrivilegedSchemes = [];
+  const collectSchemeRegistrations = (schemes: PrivilegedSchemes) => {
+    privilegedSchemes.push(...schemes);
+  };
+
+  // Better Auth registers auth and avatar schemes separately; Electron requires
+  // those and the activity scheme in one pre-ready registration call.
+  try {
+    protocol.registerSchemesAsPrivileged = collectSchemeRegistrations;
+    authClient.setupMain({
+      csp: true,
+      scheme: true,
+      bridges: false,
+      getWindow,
+    });
+    registerActivityScheme(collectSchemeRegistrations);
+  } finally {
+    protocol.registerSchemesAsPrivileged = originalRegistrar;
+  }
+
+  registerSchemes(privilegedSchemes);
+};
 
 export const accountRequest = async (
   route: '/api/me' | '/api/onboarding' | '/api/agent',
@@ -36,6 +87,7 @@ export const accountRequest = async (
   }
   if (response.status === 401) {
     invalidateAccountCache();
+    await clearOfflineAccountGrant(cookie);
     if (authClient.getCookie() === cookie) locallySignedOutCookie = cookie;
     if (route === '/api/agent')
       throw new Error(
@@ -89,7 +141,10 @@ export const markLocalSignOut = () => {
   }
 };
 
-export const getCurrentUser = async (): Promise<CurrentUser | null> => {
+export const getCurrentUser = async (
+  isDeviceReady: (accountId: string) => boolean | Promise<boolean> = () =>
+    false,
+): Promise<CurrentUser | null> => {
   // Signing out clears the local cookie first; a missing cookie is a
   // confirmed signed-out state, not an account-service outage.
   let cookie = '';
@@ -107,12 +162,34 @@ export const getCurrentUser = async (): Promise<CurrentUser | null> => {
   if (cachedAccount?.cookie === cookie && cachedAccount.expiresAt > Date.now())
     return cachedAccount.user;
   const epoch = cacheEpoch;
-  const result = await accountRequest('/api/me');
+  let result: Awaited<ReturnType<typeof accountRequest>>;
+  try {
+    result = await accountRequest('/api/me');
+  } catch (error) {
+    if (!(error instanceof Error) || error.cause === undefined) throw error;
+    const offlineUser = await readOfflineAccountGrant(cookie);
+    const ready = offlineUser
+      ? await Promise.resolve()
+          .then(() => isDeviceReady(offlineUser.id))
+          .catch(() => false)
+      : false;
+    if (
+      offlineUser &&
+      ready &&
+      epoch === cacheEpoch &&
+      isAccountSessionCurrent(cookie)
+    )
+      return offlineUser;
+    throw error;
+  }
   const currentCookie = authClient.getCookie();
   if (!currentCookie.trim() || locallySignedOutCookie === cookie) return null;
   if (currentCookie !== cookie)
     throw new Error('Your session changed; please try again.');
-  if (!result?.user?.id) return null;
+  if (!result?.user?.id) {
+    await clearOfflineAccountGrant(cookie);
+    return null;
+  }
   if (epoch !== cacheEpoch)
     throw new Error('Your session changed; please try again.');
   const user: CurrentUser = {
@@ -122,7 +199,16 @@ export const getCurrentUser = async (): Promise<CurrentUser | null> => {
     image: typeof result.user.image === 'string' ? result.user.image : null,
     hasCompletedOnboarding: result.user.hasCompletedOnboarding === true,
   };
-  if (epoch === cacheEpoch)
-    cachedAccount = { cookie, user, expiresAt: Date.now() + 30_000 };
+  const ready = await Promise.resolve()
+    .then(() => isDeviceReady(user.id))
+    .catch(() => false);
+  if (epoch !== cacheEpoch || !isAccountSessionCurrent(cookie))
+    throw new Error('Your session changed; please try again.');
+  if (ready) await saveOfflineAccountGrant(user, cookie).catch(() => false);
+  if (epoch !== cacheEpoch || !isAccountSessionCurrent(cookie)) {
+    await clearOfflineAccountGrant(cookie);
+    throw new Error('Your session changed; please try again.');
+  }
+  cachedAccount = { cookie, user, expiresAt: Date.now() + 30_000 };
   return user;
 };

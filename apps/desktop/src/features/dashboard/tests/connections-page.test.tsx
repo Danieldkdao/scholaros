@@ -75,6 +75,7 @@ beforeEach(() => {
   Element.prototype.releasePointerCapture = () => undefined;
   window.scrollTo = () => undefined;
   window.scholar = {
+    onAcademicReconnect: vi.fn(() => () => {}),
     getCurrentUser: vi.fn(async () => ({ id: 'student' })),
     getState: vi.fn(async () => state),
     onBackgroundSyncChange: vi.fn(() => () => {}),

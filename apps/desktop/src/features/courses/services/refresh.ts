@@ -1,11 +1,18 @@
 import { accountRequest } from '../../../lib/auth/main';
 import { composeAgentNotes } from '../../onboarding/lib/agent-notes';
-import { isReadNavigation } from '../../onboarding/lib/browser-policy';
+import {
+  academicPageIdentity,
+  isReadNavigation,
+} from '../../onboarding/lib/browser-policy';
 import { outcomeFromError } from '../../onboarding/lib/discovery-outcomes';
-import { academicTasks } from '../../onboarding/services/academic-tasks';
+import {
+  academicTasks,
+  type AcademicTaskExecutionContext,
+} from '../../onboarding/services/academic-tasks';
 import { getWorkspace } from '../../onboarding/services/browser-workspace';
 import { scanConnection } from '../../onboarding/services/connection-scan';
 import { createMissionNavigator } from '../../onboarding/services/mission-navigation';
+import type { ResourceExtractionRequest } from '../../onboarding/services/browser-navigation';
 import {
   applyAcademicDiscovery,
   getOnboardingState,
@@ -25,6 +32,16 @@ import {
   getCoursesSnapshot,
 } from './store';
 import { scanCourseCollection } from '../lib/course-content-scan';
+import {
+  getNavigationLocations,
+  saveNavigationLocation,
+} from '../../context/services/navigation-store';
+import { refreshCourseMaterials } from '../../context/services/material-refresh';
+import {
+  getExistingResourceIdentities,
+  getNavigationContextForTask,
+} from '../../context/services/read-actions';
+import type { AgentRequestSchema } from '@scholaros/services/ai/schemas';
 import type { CourseListContext } from '../../onboarding/services/connection-scan';
 import type { ConnectionOutcome } from '../../onboarding/lib/discovery-outcomes';
 import type {
@@ -37,17 +54,242 @@ import type {
   CourseScanStatus,
   CourseSourceScan,
   ObservedCourse,
+  CourseDetail,
 } from '../types';
 
-type SourceContent = { courses: ObservedCourse[]; incomplete: boolean };
+type SourceContent = {
+  courses: ObservedCourse[];
+  incomplete: boolean;
+  materialRefreshStatus: 'complete' | 'partial';
+};
+
+export type CourseRefreshCollectionOutcome = {
+  connectionId: string;
+  courseId: string | null;
+  kind: 'courses' | 'assignments' | 'announcements' | 'materials';
+  status: CourseScanStatus;
+};
+
+export type CourseRefreshExecutionReceipt = {
+  runId: string;
+  sessionEpoch: number;
+  coveredRevisions: Readonly<Record<string, string>>;
+  status: 'complete' | 'partial' | 'sign-in-required';
+  collections: CourseRefreshCollectionOutcome[];
+};
+
+export type CourseRefreshExecution<TResult> = {
+  result: TResult;
+  receipt: CourseRefreshExecutionReceipt;
+};
+
+export type CourseRefreshExecutionScope = {
+  sessionEpoch: number;
+  coveredRevisions: Readonly<Record<string, string>>;
+};
+
+type CaptureRefreshScope = () => CourseRefreshExecutionScope;
+
+type BrowserCapabilityChangedError = Error & {
+  name: 'BrowserCapabilityChangedError';
+};
+
+const isBrowserCapabilityChangedError = (
+  error: unknown,
+): error is BrowserCapabilityChangedError =>
+  error instanceof Error && error.name === 'BrowserCapabilityChangedError';
+
+const getCourseMemory = (
+  userId: string,
+  connectionId: string,
+  courseId: string,
+  kind: 'assignments' | 'announcements',
+): NonNullable<AgentRequestSchema['memory']> => {
+  const identities = getExistingResourceIdentities({
+    userId,
+    connectionId,
+    courseId,
+    kind,
+  });
+  const navigation = getNavigationContextForTask({
+    userId,
+    connectionId,
+    courseId,
+    purpose: kind,
+  });
+  const serialized = navigation?.serialized ?? '';
+  return {
+    navigation: serialized.slice(0, 8000),
+    resources: (identities ?? [])
+      .sort((a, b) => Number(b.active) - Number(a.active))
+      .slice(0, 40)
+      .map(({ id, title, sourceId, url, active }) => ({
+        id,
+        title,
+        sourceId,
+        url,
+        active,
+      })),
+    truncated:
+      identities === null ||
+      navigation === null ||
+      !!navigation.truncated ||
+      serialized.length > 8000 ||
+      (identities?.length ?? 0) > 40,
+  };
+};
+
+const requestWithNavigation = (
+  context: CourseListContext,
+  body: ResourceExtractionRequest,
+  signal: AbortSignal,
+) => {
+  academicTasks.recordMetric(signal, 'modelCalls');
+  return context.navigation
+    ? context.navigation.extract(body)
+    : accountRequest('/api/agent', body, signal);
+};
+
+const createScanMetricReporter = (signal: AbortSignal) => {
+  let previousCandidates = 0;
+  return (scan: CourseChildScan, final = false) => {
+    const metrics = scan.metrics;
+    if (!metrics) return;
+    academicTasks.recordMetric(
+      signal,
+      'candidatesExtracted',
+      Math.max(0, metrics.candidatesExtracted - previousCandidates),
+    );
+    previousCandidates = metrics.candidatesExtracted;
+    if (scan.items.length) academicTasks.markFirstFinding(signal);
+    if (!final) return;
+    academicTasks.recordMetric(
+      signal,
+      'duplicatesReconciled',
+      metrics.duplicatesReconciled,
+    );
+    academicTasks.recordMetric(
+      signal,
+      'ambiguousIdentityConflicts',
+      metrics.ambiguousIdentityConflicts,
+    );
+    academicTasks.recordMetric(
+      signal,
+      'knownDestinationsReused',
+      metrics.knownDestinationsReused,
+    );
+    academicTasks.recordMetric(
+      signal,
+      'navigationRepairs',
+      metrics.navigationRepairs,
+    );
+  };
+};
+
+const recordStoreMetrics = (
+  signal: AbortSignal,
+  metrics: {
+    recordsCreated: number;
+    recordsUpdated: number;
+    recordsRetired: number;
+  },
+) => {
+  academicTasks.recordMetric(signal, 'recordsCreated', metrics.recordsCreated);
+  academicTasks.recordMetric(signal, 'recordsUpdated', metrics.recordsUpdated);
+  academicTasks.recordMetric(signal, 'recordsRetired', metrics.recordsRetired);
+};
 
 export type CourseRefreshResult = {
   state: OnboardingState;
   snapshot: CoursesSnapshot;
   attemptedConnectionIds: string[];
+  materialRefreshStatus: 'complete' | 'partial';
+  status: CourseRefreshExecutionReceipt['status'];
 };
 
 const pendingScan = (): CourseChildScan => ({ status: 'pending', items: [] });
+
+const createExecutionReceipt = (
+  execution: AcademicTaskExecutionContext,
+  collections: CourseRefreshCollectionOutcome[],
+): CourseRefreshExecutionReceipt => ({
+  ...execution,
+  collections,
+  status: collections.some(
+    (collection) => collection.status === 'needs-sign-in',
+  )
+    ? 'sign-in-required'
+    : collections.length > 0 &&
+        collections.every((collection) => collection.status === 'complete')
+      ? 'complete'
+      : 'partial',
+});
+
+const collectionsFromFullSnapshot = (
+  snapshot: CoursesSnapshot,
+  attemptedConnectionIds: string[],
+  scans: CourseSourceScan[],
+  materialStatuses: Map<string, CourseScanStatus>,
+  materialStatusesByConnection: Map<string, 'complete' | 'partial'>,
+): CourseRefreshCollectionOutcome[] => {
+  const attempted = new Set(attemptedConnectionIds);
+  const collections: CourseRefreshCollectionOutcome[] = snapshot.sources
+    .filter((source) => attempted.has(source.connectionId))
+    .map((source) => ({
+      connectionId: source.connectionId,
+      courseId: null,
+      kind: 'courses',
+      status: source.outcome,
+    }));
+  for (const scan of scans)
+    for (const observedCourse of scan.courses) {
+      const course = snapshot.courses.find(
+        (item) =>
+          item.connectionId === scan.connectionId &&
+          item.url === observedCourse.url,
+      );
+      if (!course) continue;
+      if (observedCourse.assignments.status !== 'pending')
+        collections.push({
+          connectionId: scan.connectionId,
+          courseId: course.id,
+          kind: 'assignments',
+          status: course.assignmentsStatus,
+        });
+      if (observedCourse.announcements.status !== 'pending')
+        collections.push({
+          connectionId: scan.connectionId,
+          courseId: course.id,
+          kind: 'announcements',
+          status: course.announcementsStatus,
+        });
+      const materialStatus = materialStatuses.get(course.id);
+      if (materialStatus)
+        collections.push({
+          connectionId: scan.connectionId,
+          courseId: course.id,
+          kind: 'materials',
+          status: materialStatus,
+        });
+    }
+  for (const [connectionId, status] of materialStatusesByConnection)
+    if (
+      status === 'partial' &&
+      !collections.some(
+        (collection) =>
+          collection.connectionId === connectionId &&
+          collection.kind === 'materials' &&
+          collection.status !== 'complete',
+      )
+    )
+      collections.push({
+        connectionId,
+        courseId: null,
+        kind: 'materials',
+        status: 'partial',
+      });
+  return collections;
+};
 
 const sourceStatusFrom = (
   outcome: ConnectionOutcome,
@@ -80,6 +322,7 @@ const sourceStatusFrom = (
 };
 
 const readCourseContent = async ({
+  userId,
   connection,
   hosts,
   context,
@@ -87,7 +330,9 @@ const readCourseContent = async ({
   isCurrent,
   signal,
   save,
+  materialStatuses,
 }: {
+  userId: string;
   connection: AcademicConnection;
   hosts: string[];
   context: CourseListContext;
@@ -95,11 +340,17 @@ const readCourseContent = async ({
   isCurrent: () => boolean;
   signal: AbortSignal;
   save: (course: ObservedCourse) => void;
+  materialStatuses: Map<string, CourseScanStatus>;
 }): Promise<SourceContent> => {
   const listPage = context.observed;
   const wanted = context.entries.filter((entry) => entry.role === 'course');
   if (!listPage || !wanted.length)
-    return { courses: [], incomplete: wanted.length > 0 };
+    return {
+      courses: [],
+      incomplete: wanted.length > 0,
+      materialRefreshStatus: wanted.length ? 'partial' : 'complete',
+    };
+  let materialRefreshStatus: 'complete' | 'partial' = 'complete';
   const listPages = context.pages ?? [listPage];
   const exposed = new Set(
     listPages.flatMap((page) => page.links.map((link) => link.url)),
@@ -131,6 +382,7 @@ const readCourseContent = async ({
       throw error;
     }
   };
+  for (const course of courses) persist(course);
   const metadata = (async () => {
     for (const page of listPages) {
       const links = page.links.filter((link) =>
@@ -154,7 +406,11 @@ const readCourseContent = async ({
           const result = validateResourceExtraction(
             body,
             'courses',
-            await accountRequest('/api/agent', body, signal),
+            await requestWithNavigation(
+              context,
+              body as ResourceExtractionRequest,
+              signal,
+            ),
           );
           signal.throwIfAborted();
           if (!isCurrent())
@@ -166,67 +422,218 @@ const readCourseContent = async ({
             persist(course);
           }
         } catch (error) {
-          if (error === persistenceError || signal.aborted || !isCurrent())
+          if (
+            error === persistenceError ||
+            signal.aborted ||
+            !isCurrent() ||
+            isBrowserCapabilityChangedError(error)
+          )
             throw error;
         }
       }
     }
   })();
-  const tasks = courses.flatMap((course) =>
-    (['assignments', 'announcements'] as const).map(
+  const tasks = courses.flatMap((course) => {
+    const origin = listPages.find((page) =>
+      page.links.some((link) => link.url === course.url),
+    )!;
+    const existingCourse = getCoursesSnapshot(userId).courses.find(
+      (item) => item.connectionId === connection.id && item.url === course.url,
+    );
+    const locationScope = existingCourse
+      ? { userId, courseId: existingCourse.id }
+      : undefined;
+    const collectionTasks = (['assignments', 'announcements'] as const).map(
       (kind) => () =>
         context
-          .withCoursePage(course.url, async (courseContext) => {
-            signal.throwIfAborted();
-            if (!isCurrent())
-              throw new Error('Your session changed; sign in again.');
-            const origin = listPages.find((page) =>
-              page.links.some((link) => link.url === course.url),
-            )!;
-            const coursePage =
-              courseContext.observed ??
-              (await courseContext.openFrom(origin, course.url));
-            course.overview = 'complete';
-            academicTasks.report(signal, `Reading ${kind} for ${course.name}`);
-            course[kind] = await scanCourseCollection({
-              from: coursePage,
-              kind,
-              host: connection.host,
-              allowedHosts: hosts,
-              courseName: course.name,
-              excludedUrls: [
-                ...listPages.map((page) => page.url),
-                ...courseEntries
-                  .filter((entry) => entry.url !== course.url)
-                  .map((entry) => entry.url),
-              ],
-              notes: composeAgentNotes(connection.host, connection.notes, notes)
-                .notes,
-              context: courseContext,
-              signal,
-              isCurrent,
-              request: (body) => accountRequest('/api/agent', body, signal),
-              onProgress: (scan) => {
-                course[kind] = scan;
+          .withCoursePage(
+            course.url,
+            async (courseContext) => {
+              signal.throwIfAborted();
+              if (!isCurrent())
+                throw new Error('Your session changed; sign in again.');
+              persist(course);
+              if (!existingCourse)
+                throw new Error('The course could not be saved locally.');
+              const localCourse = existingCourse;
+              materialStatuses.set(localCourse.id, 'partial');
+              const knownNavigationLocations =
+                getNavigationLocations({
+                  userId,
+                  connectionId: connection.id,
+                  courseId: localCourse.id,
+                  purpose: kind,
+                }) ?? [];
+              const coursePage =
+                courseContext.observed ??
+                (await courseContext.openFrom(origin, course.url));
+              if (kind === 'assignments') {
+                const materialRefresh = await refreshCourseMaterials({
+                  userId,
+                  connectionId: connection.id,
+                  courseId: localCourse.id,
+                  courseUrl: course.url,
+                  courseName: course.name,
+                  host: connection.host,
+                  allowedHosts: hosts,
+                  notes: composeAgentNotes(
+                    connection.host,
+                    connection.notes,
+                    notes,
+                  ).notes,
+                  from: coursePage,
+                  context: courseContext,
+                  runOnCoursePage: (run) =>
+                    context.withCoursePage(course.url, async (freshContext) => {
+                      const freshCoursePage =
+                        freshContext.observed ??
+                        (await freshContext.openFrom(origin, course.url));
+                      await run({ ...freshContext, observed: freshCoursePage });
+                    }),
+                  request: (body) => {
+                    academicTasks.recordMetric(signal, 'modelCalls');
+                    return accountRequest('/api/agent', body, signal);
+                  },
+                  signal,
+                  isCurrent,
+                });
+                if (materialRefresh.status === 'partial')
+                  materialRefreshStatus = 'partial';
+                materialStatuses.set(
+                  localCourse.id,
+                  materialRefresh.status === 'complete'
+                    ? 'complete'
+                    : 'partial',
+                );
                 academicTasks.report(
                   signal,
-                  `Saved ${scan.items.length} ${kind} for ${course.name}`,
+                  `Read ${materialRefresh.materialsSaved} course materials`,
+                  materialRefresh.status === 'partial',
                 );
-                persist(course);
-              },
-            });
-            persist(course);
-          })
+              }
+              course.overview = 'complete';
+              academicTasks.report(signal, `Reading ${kind}`);
+              const reportMetrics = createScanMetricReporter(signal);
+              const childScan = await scanCourseCollection({
+                from: coursePage,
+                kind,
+                host: connection.host,
+                identityScope: {
+                  accountId: userId,
+                  connectionId: connection.id,
+                  courseId: localCourse.id,
+                },
+                knownNavigationLocations,
+                memory: getCourseMemory(
+                  userId,
+                  connection.id,
+                  localCourse.id,
+                  kind,
+                ),
+                onNavigationVerified: (location) => {
+                  const navigationIdentity = academicPageIdentity(
+                    location.destinationUrl,
+                  );
+                  const existingNavigationLocation =
+                    navigationIdentity &&
+                    knownNavigationLocations.find(
+                      (candidate) =>
+                        candidate.userId === userId &&
+                        candidate.connectionId === connection.id &&
+                        candidate.courseId === localCourse.id &&
+                        candidate.purpose === kind &&
+                        candidate.status === 'verified' &&
+                        candidate.destinationKind === 'collection' &&
+                        !!candidate.parentUrl &&
+                        candidate.parentUrl === candidate.evidence.sourceUrl &&
+                        isReadNavigation(candidate.destinationUrl, [
+                          connection.host,
+                        ]) &&
+                        academicPageIdentity(candidate.destinationUrl) ===
+                          navigationIdentity,
+                    );
+                  if (existingNavigationLocation)
+                    return existingNavigationLocation;
+                  const observation = location.parentUrl
+                    ? {
+                        ...location,
+                        evidence: {
+                          ...location.evidence,
+                          sourceUrl: location.parentUrl,
+                          excerpts: location.label?.trim()
+                            ? [location.label.trim()]
+                            : [],
+                        },
+                      }
+                    : location;
+                  return saveNavigationLocation(userId, connection.id, {
+                    ...observation,
+                    courseId: localCourse.id,
+                  });
+                },
+                onModelCall: () =>
+                  academicTasks.recordMetric(signal, 'modelCalls'),
+                onError: () =>
+                  academicTasks.report(
+                    signal,
+                    'Some course data could not be read.',
+                    true,
+                  ),
+                allowedHosts: hosts,
+                courseName: course.name,
+                excludedUrls: [
+                  ...listPages.map((page) => page.url),
+                  ...courseEntries
+                    .filter((entry) => entry.url !== course.url)
+                    .map((entry) => entry.url),
+                ],
+                notes: composeAgentNotes(
+                  connection.host,
+                  connection.notes,
+                  notes,
+                ).notes,
+                context: courseContext,
+                signal,
+                isCurrent,
+                request: (body) =>
+                  requestWithNavigation(
+                    courseContext,
+                    body as ResourceExtractionRequest,
+                    signal,
+                  ),
+                onProgress: (scan) => {
+                  reportMetrics(scan);
+                  course[kind] = scan;
+                  academicTasks.report(
+                    signal,
+                    `Saved ${scan.items.length} ${kind}`,
+                  );
+                  persist(course);
+                },
+              });
+              reportMetrics(childScan, true);
+              course[kind] = childScan;
+              persist(course);
+            },
+            locationScope,
+          )
           .catch((error) => {
-            if (error === persistenceError || signal.aborted || !isCurrent())
+            if (
+              error === persistenceError ||
+              signal.aborted ||
+              !isCurrent() ||
+              isBrowserCapabilityChangedError(error)
+            )
               throw error;
             const failed = outcomeFromError(error);
+            if (kind === 'assignments') materialRefreshStatus = 'partial';
             if (course.overview !== 'complete') course.overview = failed;
             course[kind] = { status: failed, items: [] };
             persist(course);
           }),
-    ),
-  );
+    );
+    return collectionTasks;
+  });
   let next = 0;
   const workers = await Promise.allSettled([
     metadata,
@@ -240,30 +647,48 @@ const readCourseContent = async ({
   ]);
   const failed = workers.find((worker) => worker.status === 'rejected');
   if (failed?.status === 'rejected') throw failed.reason;
-  return { courses, incomplete: courseEntries.length !== wanted.length };
+  return {
+    courses,
+    incomplete: courseEntries.length !== wanted.length,
+    materialRefreshStatus,
+  };
 };
 
 const performCourseRefresh = async (
   userId: string,
+  execution: AcademicTaskExecutionContext,
   isCurrent: () => boolean = () => true,
   externalSignal?: AbortSignal,
-): Promise<CourseRefreshResult> => {
+  connectionId?: string,
+): Promise<CourseRefreshExecution<CourseRefreshResult>> => {
   const state = getOnboardingState(userId);
   if (!state.settings.consent)
     throw new Error('Approve academic access first.');
   if (!state.workspace?.ready)
     throw new Error('Set up and verify your study browser first.');
   const marked = state.connections.filter(
-    (connection) => connection.isCourseResource,
+    (connection) =>
+      connection.isCourseResource &&
+      (!connectionId || connection.id === connectionId),
   );
   if (!marked.length)
-    throw new Error('Choose which connections hold your courses first.');
+    throw new Error(
+      connectionId
+        ? 'This course resource connection is no longer available.'
+        : 'Choose which connections hold your courses first.',
+    );
   const hosts = state.connections.map((connection) => connection.host);
   const signal = externalSignal ?? new AbortController().signal;
   const discoveryResults: AcademicDiscoveryResult[] = [];
   const scans: CourseSourceScan[] = [];
   const attemptedConnectionIds: string[] = [];
+  const materialStatuses = new Map<string, CourseScanStatus>();
+  const materialStatusesByConnection = new Map<
+    string,
+    'complete' | 'partial'
+  >();
   let persisted = false;
+  let materialRefreshStatus: 'complete' | 'partial' = 'complete';
   try {
     const workspace = await getWorkspace(
       userId,
@@ -276,17 +701,15 @@ const performCourseRefresh = async (
       blockedDomains: [],
     });
     const navigatePage = createMissionNavigator(
-      workspace.browser.context,
+      () => workspace.browser.context,
       hosts,
       signal,
       isCurrent,
       {
         scopeId: userId,
-        onNavigate: (url) =>
-          academicTasks.report(
-            signal,
-            `Opening ${new URL(url).hostname}${new URL(url).pathname}`,
-          ),
+        onPageOpened: () => academicTasks.recordMetric(signal, 'pagesOpened'),
+        onNavigate: () =>
+          academicTasks.report(signal, 'Opening a connected academic page'),
         onWait: () =>
           academicTasks.report(signal, 'Waiting before the next page'),
       },
@@ -297,7 +720,7 @@ const performCourseRefresh = async (
           throw new Error('Your session changed; sign in again.');
         signal.throwIfAborted();
         attemptedConnectionIds.push(connection.id);
-        academicTasks.report(signal, `Finding courses on ${connection.name}`);
+        academicTasks.report(signal, 'Checking a connected academic source');
         const scan = await scanConnection<SourceContent>({
           connection,
           workspace,
@@ -306,26 +729,34 @@ const performCourseRefresh = async (
           navigatePage,
           isCurrent,
           signal,
-          maxPages: Infinity,
+          maxPages: 4,
           withCourseList: (context) =>
             readCourseContent({
+              userId,
               connection,
               hosts,
               context,
               notes: state.settings.notes,
               isCurrent,
               signal,
+              materialStatuses,
               save: (course) => {
                 if (!isCurrent())
                   throw new Error('Your session changed; sign in again.');
-                applyCourseRefresh(userId, [
+                applyCourseRefresh(
+                  userId,
+                  [
+                    {
+                      connectionId: connection.id,
+                      outcome: 'partial',
+                      message: null,
+                      courses: [course],
+                    },
+                  ],
                   {
-                    connectionId: connection.id,
-                    outcome: 'partial',
-                    message: null,
-                    courses: [course],
+                    onMetrics: (metrics) => recordStoreMetrics(signal, metrics),
                   },
-                ]);
+                );
               },
             }),
         });
@@ -337,6 +768,28 @@ const performCourseRefresh = async (
           outcome: scan.outcome,
           entries: scan.entries,
         });
+        materialStatusesByConnection.set(
+          connection.id,
+          scan.followed?.materialRefreshStatus ?? 'partial',
+        );
+        if (!scan.followed || scan.followed.materialRefreshStatus === 'partial')
+          materialRefreshStatus = 'partial';
+        if (scan.outcome === 'needs-sign-in')
+          academicTasks.reportSignInRequired(signal, 'Sign-in required.');
+        if (
+          scan.followed?.courses.some(
+            (course) =>
+              course.assignments.status === 'needs-sign-in' ||
+              course.announcements.status === 'needs-sign-in',
+          )
+        )
+          academicTasks.reportSignInRequired(signal, 'Sign-in required.');
+        if (scan.message)
+          academicTasks.report(
+            signal,
+            'Some course data could not be read.',
+            true,
+          );
         // Retirement needs a list we are sure is whole: no pagination, and no
         // course entry we had to refuse.
         const listComplete =
@@ -377,13 +830,30 @@ const performCourseRefresh = async (
         'A source could not be accessed; check its connection and try again.',
         true,
       );
-    const snapshot = applyCourseRefresh(userId, scans);
+    const snapshot = applyCourseRefresh(userId, scans, {
+      onMetrics: (metrics) => recordStoreMetrics(signal, metrics),
+    });
     persisted = true;
-    return {
+    const receipt = createExecutionReceipt(
+      execution,
+      collectionsFromFullSnapshot(
+        snapshot,
+        attemptedConnectionIds,
+        scans,
+        materialStatuses,
+        materialStatusesByConnection,
+      ),
+    );
+    const result: CourseRefreshResult = {
       state: applyAcademicDiscovery(userId, discoveryResults),
       snapshot,
       attemptedConnectionIds,
+      materialRefreshStatus,
+      status: receipt.status,
     };
+    if (receipt.status === 'sign-in-required')
+      academicTasks.reportSignInRequired(signal, 'Sign-in required.');
+    return { result, receipt };
   } catch (error) {
     // A stopped or failed run still records the attempt, but nothing it could
     // not verify is retired or replaced.
@@ -404,43 +874,104 @@ const performCourseRefresh = async (
         (connection) =>
           !scans.some((scan) => scan.connectionId === connection.id),
       );
-      applyCourseRefresh(userId, [
-        ...scans,
-        ...unfinished.map((connection) => ({
-          connectionId: connection.id,
-          outcome: (cancelled ? 'cancelled' : 'blocked') as CourseScanStatus,
-          message: null,
-          courses: [],
-        })),
-      ]);
+      applyCourseRefresh(
+        userId,
+        [
+          ...scans,
+          ...unfinished.map((connection) => ({
+            connectionId: connection.id,
+            outcome: (cancelled ? 'cancelled' : 'blocked') as CourseScanStatus,
+            message: null,
+            courses: [],
+          })),
+        ],
+        {
+          onMetrics: (metrics) => recordStoreMetrics(signal, metrics),
+        },
+      );
     }
     throw error;
   }
 };
+
+const runCourseRefresh = (
+  userId: string,
+  isCurrent: () => boolean,
+  signal: AbortSignal | undefined,
+  connectionId: string | undefined,
+  captureExecutionScope?: CaptureRefreshScope,
+) =>
+  academicTasks.run<CourseRefreshExecution<CourseRefreshResult>>(
+    userId,
+    (taskSignal, execution) =>
+      performCourseRefresh(
+        userId,
+        execution,
+        isCurrent,
+        taskSignal,
+        connectionId,
+      ),
+    signal,
+    connectionId ? `connection:${connectionId}` : 'courses',
+    {
+      exclusive: connectionId ? true : undefined,
+      captureExecutionScope,
+      classifyOutcome: (execution) =>
+        execution.receipt.status === 'complete' ? 'complete' : 'partial',
+    },
+  );
 
 export const startCourseRefresh = (
   userId: string,
   isCurrent: () => boolean = () => true,
   signal?: AbortSignal,
 ) =>
-  academicTasks.run(
+  runCourseRefresh(userId, isCurrent, signal, undefined).then(
+    ({ result }) => result,
+  );
+
+export const startConnectionRefresh = (
+  userId: string,
+  connectionId: string,
+  isCurrent: () => boolean = () => true,
+  signal?: AbortSignal,
+) =>
+  runCourseRefresh(userId, isCurrent, signal, connectionId).then(
+    ({ result }) => result,
+  );
+
+export const startConnectionRefreshWithReceipt = (
+  userId: string,
+  connectionId: string,
+  captureExecutionScope: CaptureRefreshScope,
+  isCurrent: () => boolean = () => true,
+  signal?: AbortSignal,
+) =>
+  runCourseRefresh(
     userId,
-    (taskSignal) => performCourseRefresh(userId, isCurrent, taskSignal),
+    isCurrent,
     signal,
-    'courses',
+    connectionId,
+    captureExecutionScope,
   );
 
 export const cancelCourseRefresh = (userId?: string, courseId?: string) =>
   academicTasks.cancel(userId, courseId);
 
-export const refreshSingleCourse = (
+const runSingleCourseRefresh = (
   userId: string,
   courseId: string,
   isCurrent: () => boolean = () => true,
-) =>
+  externalSignal?: AbortSignal,
+  captureExecutionScope?: CaptureRefreshScope,
+): Promise<
+  CourseRefreshExecution<
+    (CourseDetail & { materialRefreshStatus: 'complete' | 'partial' }) | null
+  >
+> =>
   academicTasks.run(
     userId,
-    async (signal) => {
+    async (signal, execution) => {
       const state = getOnboardingState(userId);
       if (!state.settings.consent)
         throw new Error('Approve academic access first.');
@@ -463,17 +994,15 @@ export const refreshSingleCourse = (
         () => isCurrent() && !signal.aborted,
       );
       const navigatePage = createMissionNavigator(
-        workspace.browser.context,
+        () => workspace.browser.context,
         hosts,
         signal,
         isCurrent,
         {
           scopeId: userId,
-          onNavigate: (url) =>
-            academicTasks.report(
-              signal,
-              `Opening ${new URL(url).hostname}${new URL(url).pathname}`,
-            ),
+          onPageOpened: () => academicTasks.recordMetric(signal, 'pagesOpened'),
+          onNavigate: () =>
+            academicTasks.report(signal, 'Opening a connected academic page'),
           onWait: () =>
             academicTasks.report(signal, 'Waiting before the next page'),
         },
@@ -485,6 +1014,7 @@ export const refreshSingleCourse = (
         announcements: pendingScan(),
       };
       let persistenceError: unknown;
+      let materialRefreshStatus: 'complete' | 'partial' = 'partial';
       const save = () => {
         if (!isCurrent())
           throw new Error('Your session changed; sign in again.');
@@ -506,12 +1036,14 @@ export const refreshSingleCourse = (
           isCurrent,
           signal,
           courseUrl: existingCourse.url,
+          locationScope: { userId, courseId },
           withCourseList: async (context) => {
             if (!context.observed)
               throw new Error('The course page could not be read.');
+            const coursePage = context.observed;
             course.overview = 'complete';
             const body = resourceRequest({
-              page: context.observed,
+              page: coursePage,
               kind: 'courses',
               goal: 'Read explicit metadata for this course only.',
               notes: composeAgentNotes(
@@ -527,7 +1059,11 @@ export const refreshSingleCourse = (
               const result = validateResourceExtraction(
                 body,
                 'courses',
-                await accountRequest('/api/agent', body, signal),
+                await requestWithNavigation(
+                  context,
+                  body as ResourceExtractionRequest,
+                  signal,
+                ),
               );
               signal.throwIfAborted();
               if (!isCurrent())
@@ -538,46 +1074,175 @@ export const refreshSingleCourse = (
               if (content)
                 Object.assign(course, courseFieldsFromExtraction(content));
             } catch (error) {
-              if (signal.aborted || !isCurrent()) throw error;
+              if (
+                signal.aborted ||
+                !isCurrent() ||
+                isBrowserCapabilityChangedError(error)
+              )
+                throw error;
             }
+            const materialRefresh = await refreshCourseMaterials({
+              userId,
+              connectionId: connection.id,
+              courseId,
+              courseUrl: course.url,
+              courseName: course.name,
+              host: connection.host,
+              allowedHosts: hosts,
+              notes: composeAgentNotes(
+                connection.host,
+                connection.notes,
+                state.settings.notes,
+              ).notes,
+              from: coursePage,
+              context,
+              runOnCoursePage: (run) => context.withCoursePage(course.url, run),
+              request: (request) => {
+                academicTasks.recordMetric(signal, 'modelCalls');
+                return accountRequest('/api/agent', request, signal);
+              },
+              signal,
+              isCurrent,
+            });
+            materialRefreshStatus = materialRefresh.status;
+            academicTasks.report(
+              signal,
+              `Read ${materialRefresh.materialsSaved} course materials`,
+              materialRefreshStatus === 'partial',
+            );
             for (const kind of ['assignments', 'announcements'] as const) {
-              academicTasks.report(
-                signal,
-                `Reading ${kind} for ${course.name}`,
-              );
-              course[kind] = await scanCourseCollection({
-                from: context.observed,
-                kind,
-                host: connection.host,
-                allowedHosts: hosts,
-                courseName: course.name,
-                excludedUrls: getCoursesSnapshot(userId)
-                  .courses.filter((item) => item.id !== courseId)
-                  .map((item) => item.url),
-                notes: composeAgentNotes(
-                  connection.host,
-                  connection.notes,
-                  state.settings.notes,
-                ).notes,
-                context,
-                signal,
-                isCurrent,
-                request: (body) => accountRequest('/api/agent', body, signal),
-                onProgress: (progress) => {
-                  course[kind] = progress;
-                  academicTasks.report(
+              academicTasks.report(signal, `Reading ${kind}`);
+              const reportMetrics = createScanMetricReporter(signal);
+              const knownNavigationLocations =
+                getNavigationLocations({
+                  userId,
+                  connectionId: connection.id,
+                  courseId,
+                  purpose: kind,
+                }) ?? [];
+              let childScan!: CourseChildScan;
+              await context.withCoursePage(
+                course.url,
+                async (purposeContext) => {
+                  const from =
+                    purposeContext.observed ??
+                    (await purposeContext.openFrom(coursePage, course.url));
+                  childScan = await scanCourseCollection({
+                    from,
+                    kind,
+                    onError: () =>
+                      academicTasks.report(
+                        signal,
+                        'Some course data could not be read.',
+                        true,
+                      ),
+                    host: connection.host,
+                    identityScope: {
+                      accountId: userId,
+                      connectionId: connection.id,
+                      courseId,
+                    },
+                    knownNavigationLocations,
+                    memory: getCourseMemory(
+                      userId,
+                      connection.id,
+                      courseId,
+                      kind,
+                    ),
+                    onNavigationVerified: (location) => {
+                      const navigationIdentity = academicPageIdentity(
+                        location.destinationUrl,
+                      );
+                      const existingNavigationLocation =
+                        navigationIdentity &&
+                        knownNavigationLocations.find(
+                          (candidate) =>
+                            candidate.userId === userId &&
+                            candidate.connectionId === connection.id &&
+                            candidate.courseId === courseId &&
+                            candidate.purpose === kind &&
+                            candidate.status === 'verified' &&
+                            candidate.destinationKind === 'collection' &&
+                            !!candidate.parentUrl &&
+                            candidate.parentUrl ===
+                              candidate.evidence.sourceUrl &&
+                            isReadNavigation(candidate.destinationUrl, [
+                              connection.host,
+                            ]) &&
+                            academicPageIdentity(candidate.destinationUrl) ===
+                              navigationIdentity,
+                        );
+                      if (existingNavigationLocation)
+                        return existingNavigationLocation;
+                      const observation = location.parentUrl
+                        ? {
+                            ...location,
+                            evidence: {
+                              ...location.evidence,
+                              sourceUrl: location.parentUrl,
+                              excerpts: location.label?.trim()
+                                ? [location.label.trim()]
+                                : [],
+                            },
+                          }
+                        : location;
+                      return saveNavigationLocation(userId, connection.id, {
+                        ...observation,
+                        courseId,
+                      });
+                    },
+                    onModelCall: () =>
+                      academicTasks.recordMetric(signal, 'modelCalls'),
+                    allowedHosts: hosts,
+                    courseName: course.name,
+                    excludedUrls: getCoursesSnapshot(userId)
+                      .courses.filter((item) => item.id !== courseId)
+                      .map((item) => item.url),
+                    notes: composeAgentNotes(
+                      connection.host,
+                      connection.notes,
+                      state.settings.notes,
+                    ).notes,
+                    context: purposeContext,
                     signal,
-                    `Saved ${progress.items.length} ${kind} for ${course.name}`,
-                  );
-                  save();
+                    isCurrent,
+                    request: (body) =>
+                      requestWithNavigation(
+                        purposeContext,
+                        body as ResourceExtractionRequest,
+                        signal,
+                      ),
+                    onProgress: (progress) => {
+                      reportMetrics(progress);
+                      course[kind] = progress;
+                      academicTasks.report(
+                        signal,
+                        `Saved ${progress.items.length} ${kind}`,
+                      );
+                      save();
+                    },
+                  });
                 },
-              });
+              );
+              reportMetrics(childScan, true);
+              course[kind] = childScan;
               save();
             }
             return true;
           },
         });
         if (!scan.followed) {
+          if (scan.outcome === 'needs-sign-in')
+            academicTasks.reportSignInRequired(
+              signal,
+              scan.message ?? 'Sign in again.',
+            );
+          else if (scan.message)
+            academicTasks.report(
+              signal,
+              'The course page could not be read.',
+              true,
+            );
           const status = outcomeFromError(
             new Error(
               scan.message ??
@@ -591,8 +1256,18 @@ export const refreshSingleCourse = (
           if (course.overview !== 'complete') course.overview = status;
         }
       } catch (error) {
-        if (error === persistenceError || signal.aborted || !isCurrent())
+        if (
+          error === persistenceError ||
+          signal.aborted ||
+          !isCurrent() ||
+          isBrowserCapabilityChangedError(error)
+        )
           throw error;
+        academicTasks.report(
+          signal,
+          'Some course data could not be read.',
+          true,
+        );
         for (const kind of ['assignments', 'announcements'] as const) {
           if (course[kind].status === 'pending')
             course[kind] = { status: outcomeFromError(error), items: [] };
@@ -607,11 +1282,75 @@ export const refreshSingleCourse = (
           'A source could not be accessed; check its connection and try again.',
           true,
         );
+      if (
+        course.assignments.status === 'needs-sign-in' ||
+        course.announcements.status === 'needs-sign-in'
+      )
+        academicTasks.reportSignInRequired(signal, 'Sign-in required.');
       save();
       signal.throwIfAborted();
       if (!isCurrent()) throw new Error('Your session changed; sign in again.');
-      return getCourseDetail(userId, courseId);
+      const detail = getCourseDetail(userId, courseId);
+      const result = detail ? { ...detail, materialRefreshStatus } : null;
+      const collections: CourseRefreshCollectionOutcome[] = detail
+        ? [
+            {
+              connectionId: connection.id,
+              courseId,
+              kind: 'assignments',
+              status: detail.assignmentsStatus,
+            },
+            {
+              connectionId: connection.id,
+              courseId,
+              kind: 'announcements',
+              status: detail.announcementsStatus,
+            },
+            {
+              connectionId: connection.id,
+              courseId,
+              kind: 'materials',
+              status: materialRefreshStatus,
+            },
+          ]
+        : [];
+      const receipt = createExecutionReceipt(execution, collections);
+      if (receipt.status === 'sign-in-required')
+        academicTasks.reportSignInRequired(signal, 'Sign-in required.');
+      return { result, receipt };
     },
-    undefined,
+    externalSignal,
     courseId,
+    {
+      captureExecutionScope,
+      classifyOutcome: (execution) =>
+        execution.receipt.status === 'complete' ? 'complete' : 'partial',
+    },
+  );
+
+export const refreshSingleCourse = (
+  userId: string,
+  courseId: string,
+  isCurrent: () => boolean = () => true,
+  externalSignal?: AbortSignal,
+): Promise<
+  (CourseDetail & { materialRefreshStatus: 'complete' | 'partial' }) | null
+> =>
+  runSingleCourseRefresh(userId, courseId, isCurrent, externalSignal).then(
+    ({ result }) => result,
+  );
+
+export const refreshSingleCourseWithReceipt = (
+  userId: string,
+  courseId: string,
+  captureExecutionScope: CaptureRefreshScope,
+  isCurrent: () => boolean = () => true,
+  externalSignal?: AbortSignal,
+) =>
+  runSingleCourseRefresh(
+    userId,
+    courseId,
+    isCurrent,
+    externalSignal,
+    captureExecutionScope,
   );

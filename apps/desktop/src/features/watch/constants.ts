@@ -1,0 +1,10 @@
+export const maxWatchUrls = 20;
+export const maxWatchUrlLength = 2048;
+export const watchIntervalMs = 5 * 60_000;
+export const maxWatchedPages = 2;
+export const mutationQuietMs = 1000;
+export const maxMutationSettleMs = 5000;
+export const watchRetryBackoffMs = [60_000, 5 * 60_000, 15 * 60_000] as const;
+export const maxWatchFailures = 3;
+export const courseReconcileIntervalMs = 24 * 60 * 60_000;
+export const watchTargetStatuses = ['active', 'blocked', 'suspended'] as const;

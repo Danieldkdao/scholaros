@@ -79,6 +79,89 @@ it('preserves valid records while invalid evidence or unobserved URLs makes the 
   expect(result.assignments).toHaveLength(1);
   expect(result.coverage).toBe('partial');
 });
+it('reconciles exact duplicate records across one extracted batch', () => {
+  const item = assignment({
+    sourceId: '123',
+    evidence: {
+      sourceUrl: url,
+      excerpts: ['Lab report due October 31, 2026'],
+      targetIds: ['1'],
+    },
+  });
+
+  const result = validateResourceExtraction(input, 'assignments', {
+    assignments: [item, assignment({ ...item })],
+    coverage: 'complete',
+  });
+
+  expect(result).toMatchObject({ coverage: 'complete' });
+  expect(result.assignments).toHaveLength(1);
+});
+it('preserves conflicting verified IDs sharing a URL and downgrades coverage', () => {
+  const conflictingInput = {
+    ...input,
+    pages: [
+      {
+        ...input.pages[0]!,
+        text: `${input.pages[0]!.text} Lab report 123. Essay 456.`,
+      },
+    ],
+  };
+  const first = assignment({
+    sourceId: '123',
+    due: null,
+    evidence: {
+      sourceUrl: url,
+      excerpts: ['Lab report 123'],
+      targetIds: ['1'],
+    },
+  });
+  const second = assignment({
+    title: 'Essay',
+    sourceId: '456',
+    due: null,
+    evidence: {
+      sourceUrl: url,
+      excerpts: ['Essay 456'],
+      targetIds: ['1'],
+    },
+  });
+
+  const result = validateResourceExtraction(conflictingInput, 'assignments', {
+    assignments: [first, second],
+    coverage: 'complete',
+  });
+
+  expect(result.coverage).toBe('partial');
+  expect(result.assignments).toHaveLength(2);
+});
+
+it('keeps an explicit ID separate from a conflicting URL ID and lowers coverage', () => {
+  const detailUrl = 'https://school.example/assignments/456';
+  const detailInput: AgentRequestSchema = {
+    ...input,
+    pages: [{ ...input.pages[0]!, text: 'Lab report source-123.' }],
+    targets: [{ id: '456', label: 'Lab report', url: detailUrl }],
+  };
+  const item = assignment({
+    sourceId: 'source-123',
+    url: detailUrl,
+    due: null,
+    evidence: {
+      sourceUrl: url,
+      excerpts: ['Lab report source-123'],
+      targetIds: ['456'],
+    },
+  });
+
+  const result = validateResourceExtraction(detailInput, 'assignments', {
+    assignments: [item],
+    coverage: 'complete',
+  });
+
+  expect(result.coverage).toBe('partial');
+  expect(result.assignments).toEqual([item]);
+});
 it.each([
   { due: { kind: 'date', date: '2026-02-30', original: 'February 30' } },
   {

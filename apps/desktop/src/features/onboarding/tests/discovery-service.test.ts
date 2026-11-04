@@ -48,6 +48,9 @@ vi.mock('../services/page-readiness', () => ({
 vi.mock('../../../lib/auth/main', () => ({
   accountRequest: async () => ({ courses: [] }),
 }));
+vi.mock('../services/browser-mode', () => ({
+  getBrowserNavigationMode: async () => 'decision',
+}));
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.order.length = 0;

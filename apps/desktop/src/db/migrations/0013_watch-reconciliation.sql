@@ -1,0 +1,1 @@
+ALTER TABLE `settings` ADD `watch_reconciled_at` text;

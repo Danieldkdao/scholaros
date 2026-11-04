@@ -88,7 +88,9 @@ it('serializes pending saves across settings remounts', async () => {
 
   await change(firstContainer, '0');
   expect(save).not.toHaveBeenCalled();
-  expect(firstContainer.textContent).toContain('greater than zero');
+  expect(firstContainer.textContent).toContain('0.5 to 5 seconds');
+  await change(firstContainer, '0.4');
+  expect(save).not.toHaveBeenCalled();
   await change(firstContainer, '5.1');
   expect(save).not.toHaveBeenCalled();
   await change(firstContainer, '0.5');
@@ -118,6 +120,29 @@ it('serializes pending saves across settings remounts', async () => {
     { decisionTimeSeconds: 3 },
   ]);
   await act(async () => secondRoot.unmount());
+});
+
+it('labels navigation delay and enforces the supported range', async () => {
+  (
+    globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+  ).IS_REACT_ACT_ENVIRONMENT = true;
+  const save = vi.fn(async () => undefined);
+  const { container, root } = await mountSettings('student-delay-range', save);
+  const input = container.querySelector('input')!;
+
+  expect(container.textContent).toContain('Navigation delay in seconds');
+  expect(input.min).toBe('0.5');
+  expect(input.max).toBe('5');
+  expect(input.step).toBe('0.1');
+  await changeDecisionTime(container, '0.4');
+  expect(save).not.toHaveBeenCalled();
+  expect(container.textContent).toContain('0.5 to 5 seconds');
+  await changeDecisionTime(container, '5.1');
+  expect(save).not.toHaveBeenCalled();
+  await changeDecisionTime(container, '0.5');
+  expect(save).toHaveBeenCalledOnce();
+
+  await act(async () => root.unmount());
 });
 
 it('keeps queued settings writes bound to their account', async () => {

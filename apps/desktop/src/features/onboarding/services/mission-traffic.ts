@@ -6,17 +6,28 @@ type TrafficOptions = {
   intervalMs?: number;
 };
 
+type HostTrafficState = {
+  cooldownUntil: number;
+  lastStartedAt: number | null;
+  queue: Promise<void>;
+};
+
 export const createMissionTrafficController = ({
   now = Date.now,
   sleep = (milliseconds, signal) => delay(milliseconds, undefined, { signal }),
   intervalMs = 1000,
 }: TrafficOptions = {}) => {
-  const schools = new Map<string, { nextAt: number; cooldownUntil: number }>();
+  const schools = new Map<string, HostTrafficState>();
+  let intervalController = new AbortController();
   const stateFor = (url: string) => {
     const host = new URL(url).hostname;
     let state = schools.get(host);
     if (!state) {
-      state = { nextAt: 0, cooldownUntil: 0 };
+      state = {
+        cooldownUntil: 0,
+        lastStartedAt: null,
+        queue: Promise.resolve(),
+      };
       schools.set(host, state);
     }
     return state;
@@ -47,24 +58,69 @@ export const createMissionTrafficController = ({
     );
     return cooldownError(state.cooldownUntil);
   };
-  const waitForTurn = async (
+  const runTurn = async <T>(
     url: string,
     signal: AbortSignal,
+    action: () => Promise<T>,
     onWait?: (milliseconds: number) => void,
   ) => {
     signal.throwIfAborted();
     const state = stateFor(url);
-    if (state.cooldownUntil > now()) throw cooldownError(state.cooldownUntil);
-    const scheduledAt = Math.max(now(), state.nextAt);
-    state.nextAt = scheduledAt + intervalMs;
-    const milliseconds = scheduledAt - now();
-    if (milliseconds > 0) {
-      onWait?.(milliseconds);
-      await sleep(milliseconds, signal);
-    }
-    signal.throwIfAborted();
-    if (state.cooldownUntil > now()) throw cooldownError(state.cooldownUntil);
+    const reserveTurn = async () => {
+      while (true) {
+        signal.throwIfAborted();
+        const currentTime = now();
+        if (state.cooldownUntil > currentTime)
+          throw cooldownError(state.cooldownUntil);
+        const earliestStart =
+          state.lastStartedAt === null
+            ? currentTime
+            : state.lastStartedAt + intervalMs;
+        const milliseconds = Math.max(0, earliestStart - currentTime);
+        if (milliseconds > 0) {
+          onWait?.(milliseconds);
+          const configurationSignal = intervalController.signal;
+          try {
+            await sleep(
+              milliseconds,
+              AbortSignal.any([signal, configurationSignal]),
+            );
+          } catch (error) {
+            signal.throwIfAborted();
+            if (!configurationSignal.aborted) throw error;
+          }
+          continue;
+        }
+        signal.throwIfAborted();
+        const startedAt = now();
+        if (state.cooldownUntil > startedAt)
+          throw cooldownError(state.cooldownUntil);
+        if (
+          state.lastStartedAt !== null &&
+          startedAt - state.lastStartedAt < intervalMs
+        )
+          continue;
+        state.lastStartedAt = startedAt;
+        try {
+          return await action();
+        } finally {
+          // Reserve through dispatch so slow browser validation cannot bunch clicks.
+          state.lastStartedAt = now();
+        }
+      }
+    };
+    const turn = state.queue.then(reserveTurn, reserveTurn);
+    state.queue = turn.then(
+      () => undefined,
+      () => undefined,
+    );
+    return turn;
   };
+  const waitForTurn = (
+    url: string,
+    signal: AbortSignal,
+    onWait?: (milliseconds: number) => void,
+  ) => runTurn(url, signal, async () => undefined, onWait);
   const assertPageContent = (url: string, text: string) => {
     if (
       /\b(?:too many requests|rate limit (?:exceeded|reached)|request limit exceeded)\b/i.test(
@@ -74,14 +130,19 @@ export const createMissionTrafficController = ({
       throw recordRateLimit(url);
   };
   const setIntervalSeconds = (seconds: number) => {
-    if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 5)
+    if (!Number.isFinite(seconds) || seconds < 0.5 || seconds > 5)
       throw new Error(
-        'Decision time must be greater than zero and at most five seconds.',
+        'Navigation delay must be between half a second and five seconds.',
       );
-    intervalMs = seconds * 1000;
+    const updatedIntervalMs = seconds * 1000;
+    if (updatedIntervalMs === intervalMs) return;
+    intervalMs = updatedIntervalMs;
+    intervalController.abort();
+    intervalController = new AbortController();
   };
   return {
     waitForTurn,
+    runTurn,
     recordRateLimit,
     assertPageContent,
     setIntervalSeconds,

@@ -1,13 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { extractAcademicEvidence } from '../academic';
 
 const { serverEnv } = vi.hoisted(() => ({
   serverEnv: {
-    BASETEN_API_KEY: 'test-key',
     META_API_KEY: 'test-key',
-    INFERENCE_PROVIDER: 'baseten',
-    BASETEN_MODEL: 'meta-models/muse-spark-open-1026',
-    META_MODEL: 'muse-spark-1.3-contributor',
+    META_MODEL: 'muse-spark-1.3',
   },
 }));
 vi.mock('@scholaros/env/server', () => ({ serverEnv }));
@@ -30,10 +27,7 @@ const course = {
   url,
   evidence,
 };
-describe.each(['baseten', 'meta'])('%s resource extraction', (provider) => {
-  beforeEach(() => {
-    serverEnv.INFERENCE_PROVIDER = provider;
-  });
+describe('Meta resource extraction', () => {
   it.each([
     ['courses', { courses: [course], coverage: 'detail' }],
     [

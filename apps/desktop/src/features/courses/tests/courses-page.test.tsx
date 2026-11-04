@@ -108,6 +108,7 @@ beforeEach(() => {
   };
   Element.prototype.scrollIntoView = () => undefined;
   window.scholar = {
+    onAcademicReconnect: vi.fn(() => () => {}),
     onCoursesChange: vi.fn(() => () => {}),
     getCurrentUser: vi.fn(async () => ({ id: 'student' })),
     getState: vi.fn(async () => state()),
@@ -168,6 +169,16 @@ const searchCourses = async (value: string) => {
     input!.dispatchEvent(new Event('input', { bubbles: true }));
   });
 };
+
+it('links to the watcher setting from Courses even when watching is unavailable', async () => {
+  connections = [];
+  await open();
+  const link = document.querySelector<HTMLAnchorElement>(
+    'a[aria-label="Watch settings"]',
+  );
+  expect(link?.getAttribute('href')).toContain('/dashboard/settings');
+  expect(link?.getAttribute('href')).toContain('section=watch');
+});
 
 it('debounces course search, resets the delay while typing, and restores courses when cleared', async () => {
   snapshot.courses.push(

@@ -10,7 +10,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Providers } from '../../../components/providers';
 import { getCurrentUser } from '../../../lib/auth/helpers';
 import { routeTree } from '../../../route-tree.gen';
-import type { CurrentUser } from '../../onboarding/types';
+import {
+  clearSettingsSaveState,
+  getSettingsSaveState,
+  queueSettingsSave,
+} from '../settings-save-queue';
+import type { CurrentUser, OnboardingState } from '../../onboarding/types';
+import type { LearningProgress } from '@scholaros/services/learning/memory-contracts';
+import type { NotificationSettings as NotificationSettingsValue } from '@scholaros/services/learning/notification-contracts';
+import type { NotificationPermission } from '../../notifications/services/notification-policy';
+import { createDefaultNotificationSettings } from '../../notifications/services/notification-policy';
 
 vi.mock('../../../lib/auth/helpers', () => ({ getCurrentUser: vi.fn() }));
 
@@ -53,6 +62,29 @@ const finishedUser: CurrentUser = {
   hasCompletedOnboarding: true,
 };
 
+const emptyProgress: LearningProgress = {
+  courseId: null,
+  strengths: [],
+  practiceTopics: [],
+  recentChanges: [],
+  unknownCount: 0,
+  revision: 0,
+};
+
+type TestSettingsBridge = Omit<
+  typeof window.scholar,
+  'requestNotificationPermission' | 'deleteLocalAcademicData'
+> & {
+  getNotificationPermissionState?: () => Promise<NotificationPermission>;
+  requestNotificationPermission?: (
+    input: Record<string, never>,
+  ) => Promise<{ state: NotificationPermission }>;
+  deleteLocalAcademicData?: (input: {
+    requestId: string;
+    scope: 'account-local';
+  }) => Promise<void>;
+};
+
 const bridge = {
   getCurrentUser: vi.fn(),
   getState: vi.fn(async () => ({
@@ -62,12 +94,57 @@ const bridge = {
     discovery: {},
     preferences: {},
   })),
+  getWatchSettings: vi.fn(async () => ({ watchEnabled: false, watchUrls: [] })),
+  getWatchRuntimeState: vi.fn(async () => ({ enabled: false, status: 'off' })),
+  saveWatchSettings: vi.fn(async (settings) => settings),
+  onWatchChange: vi.fn(() => () => undefined),
   onCoursesChange: vi.fn(() => () => undefined),
   onBackgroundSyncChange: vi.fn(() => () => undefined),
   onConnectChange: vi.fn(() => () => undefined),
   getConnectRun: vi.fn(async () => ({ status: 'idle', accountId: null })),
   signOut: vi.fn(async () => undefined),
-} as unknown as typeof window.scholar;
+  getNotificationSettings: vi.fn(async () =>
+    createDefaultNotificationSettings(),
+  ),
+  saveNotificationSettings: vi.fn(async (input) => ({
+    ...input.settings,
+    revision: input.expectedRevision + 1,
+  })),
+  getNotificationPermissionState: vi.fn(async () => 'unknown' as const),
+  requestNotificationPermission: vi.fn(async () => ({
+    state: 'granted' as const,
+  })),
+  deleteLocalAcademicData: vi.fn(async () => undefined),
+} as unknown as TestSettingsBridge;
+
+const makeSettingsState = (): OnboardingState =>
+  ({
+    accountId: 'student-a',
+    settings: {
+      step: 'review',
+      consent: true,
+      launchAtLogin: false,
+      backgroundSync: false,
+      decisionTimeSeconds: 1,
+      blockedWords: [],
+      notes: '',
+      localSetupCompletedAt: null,
+    },
+    workspace: null,
+    connections: [],
+    primaryLms: null,
+    discovery: {
+      status: 'pending',
+      message: null,
+      discoveredAt: null,
+      coverage: {},
+      entries: [],
+    },
+    preferences: {
+      launchAtLogin: { status: 'off', message: null },
+      backgroundSync: { status: 'off', message: null, lastSyncedAt: null },
+    },
+  }) as unknown as OnboardingState;
 
 const buildRouter = (path: string) =>
   createRouter({
@@ -106,8 +183,6 @@ const navigate = async (path: string) => {
 
 const heading = () => document.querySelector('h1');
 
-const pageRegion = () => heading()?.parentElement;
-
 const navLinks = () => [
   ...document.querySelectorAll<HTMLElement>('[data-slot="sidebar-content"] a'),
 ];
@@ -136,8 +211,73 @@ beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(getCurrentUser).mockResolvedValue(finishedUser);
   bridge.getCurrentUser = vi.fn(async () => finishedUser);
+  bridge.getState = vi.fn(async () => makeSettingsState());
+  bridge.getWatchSettings = vi.fn(async () => ({
+    watchEnabled: false,
+    watchUrls: [],
+  }));
+  bridge.getWatchRuntimeState = vi.fn(async () => ({
+    enabled: false,
+    status: 'off' as const,
+  }));
+  bridge.saveWatchSettings = vi.fn(async (settings) => settings);
+  bridge.onWatchChange = vi.fn(() => () => undefined);
+  bridge.onAcademicReconnect = vi.fn(() => () => undefined);
+  bridge.onProductEvent = vi.fn(() => () => undefined);
+  bridge.onCoursesChange = vi.fn(() => () => undefined);
+  bridge.onBackgroundSyncChange = vi.fn(() => () => undefined);
+  bridge.onConnectChange = vi.fn(() => () => undefined);
+  bridge.getConnectRun = vi.fn(async () => ({
+    status: 'idle' as const,
+    accountId: null,
+    awaiting: null,
+    events: [],
+    results: [],
+  }));
+  bridge.getCourses = vi.fn(async () => ({
+    courses: [],
+    sources: [],
+    lastSuccessfulAt: null,
+  }));
+  bridge.listContextItems = vi.fn(async () => ({
+    items: [],
+    nextCursor: null,
+    revision: 0,
+  }));
+  bridge.listStudySessions = vi.fn(async () => ({
+    items: [],
+    nextCursor: null,
+    revision: 0,
+  }));
+  bridge.getLearningProgress = vi.fn<typeof bridge.getLearningProgress>(
+    async ({ courseId }) => ({ ...emptyProgress, courseId: courseId ?? null }),
+  );
+  bridge.getTodayOverview = vi.fn(async () => ({
+    attention: [],
+    freshness: [],
+    upcoming: [],
+    announcements: [],
+    recentCourses: [],
+    recentMaterials: [],
+    recentSessions: [],
+    progress: emptyProgress,
+    recommendations: [],
+    revision: 0,
+  }));
+  bridge.getNotificationSettings = vi.fn(async () =>
+    createDefaultNotificationSettings(),
+  );
+  bridge.saveNotificationSettings = vi.fn(async (input) => ({
+    ...input.settings,
+    revision: input.expectedRevision + 1,
+  }));
+  bridge.getNotificationPermissionState = vi.fn(async () => 'unknown' as const);
+  bridge.requestNotificationPermission = vi.fn(async () => ({
+    state: 'granted' as const,
+  }));
+  bridge.deleteLocalAcademicData = vi.fn(async () => undefined);
   bridge.signOut = vi.fn(async () => undefined);
-  window.scholar = bridge;
+  window.scholar = bridge as unknown as typeof window.scholar;
   window.onAuthenticated = vi.fn(() => () => undefined);
   window.onUserUpdated = vi.fn(() => () => undefined);
 });
@@ -158,7 +298,7 @@ describe('dashboard shell', () => {
   it.each([
     ['/dashboard/courses', 'Courses'],
     ['/dashboard/study', 'Study'],
-    ['/dashboard/planner', 'Planner'],
+    ['/dashboard/context', 'Context'],
     ['/dashboard/connections', 'Connections'],
     ['/dashboard/settings', 'Settings'],
   ])('renders %s as a refreshed deep link', async (path, title) => {
@@ -166,10 +306,122 @@ describe('dashboard shell', () => {
     expect(heading()?.textContent).toBe(title);
   });
 
+  it('redirects the retired Planner deep link to Context without a Planner sidebar entry', async () => {
+    await openRoute('/dashboard/planner');
+    expect(activeRouter?.state.location.pathname).toBe('/dashboard/context');
+    expect(heading()?.textContent).toBe('Context');
+    expect(currentNavLink()?.getAttribute('href')).toBe('/dashboard/context');
+    expect(
+      navLinks().some(
+        (link) => link.getAttribute('href') === '/dashboard/planner',
+      ),
+    ).toBe(false);
+  });
+
+  it('focuses the watcher section after loading its settings deep link', async () => {
+    await openRoute('/dashboard/settings?section=watch');
+    const section = await vi.waitFor(() => {
+      const target = document.querySelector('#watch-course-pages');
+      expect(target).toBeTruthy();
+      return target;
+    });
+    expect(document.activeElement).toBe(section);
+  });
+
+  it('loads notification settings without prompting and autosaves with a revision fence', async () => {
+    const initialSettings: NotificationSettingsValue =
+      createDefaultNotificationSettings();
+    bridge.getNotificationSettings = vi.fn(async () => initialSettings);
+    bridge.saveNotificationSettings = vi.fn(async (input) => ({
+      ...input.settings,
+      revision: input.expectedRevision + 1,
+    }));
+    await openRoute('/dashboard/settings?section=notifications');
+
+    await vi.waitFor(() =>
+      expect(
+        document.querySelector(
+          '[aria-labelledby="notification-settings-title"]',
+        ),
+      ).toBeTruthy(),
+    );
+    expect(bridge.getNotificationSettings).toHaveBeenCalledOnce();
+    expect(bridge.getNotificationPermissionState).toHaveBeenCalledOnce();
+    expect(bridge.requestNotificationPermission).not.toHaveBeenCalled();
+
+    await dispatchPointerClick(
+      document.querySelector('[aria-label="Sync completed"]')!,
+    );
+    await vi.waitFor(() =>
+      expect(bridge.saveNotificationSettings).toHaveBeenCalledOnce(),
+    );
+    expect(bridge.saveNotificationSettings).toHaveBeenCalledWith({
+      settings: expect.objectContaining({
+        enabled: false,
+        categories: expect.objectContaining({ 'sync-completed': true }),
+      }),
+      expectedRevision: 0,
+    });
+    expect(document.querySelector('button[type="submit"]')).toBeNull();
+  });
+
+  it('deletes local data through the scoped bridge and clears pending settings saves', async () => {
+    clearSettingsSaveState(finishedUser.id);
+    void queueSettingsSave(
+      finishedUser.id,
+      { decisionTimeSeconds: 2 },
+      () => new Promise<void>(() => undefined),
+    );
+    await vi.waitFor(() =>
+      expect(getSettingsSaveState(finishedUser.id).draft).toEqual({
+        decisionTimeSeconds: 2,
+      }),
+    );
+    const deleteLocalAcademicData = vi.fn(async () => undefined);
+    bridge.deleteLocalAcademicData = deleteLocalAcademicData;
+    await openRoute('/dashboard/settings?section=local-data');
+
+    const reviewButton = await vi.waitFor(() => {
+      const button = [...document.querySelectorAll('button')].find((item) =>
+        item.textContent?.includes('Review local data removal'),
+      );
+      expect(button).toBeTruthy();
+      return button!;
+    });
+    expect(reviewButton.disabled).toBe(false);
+    expect(document.body.textContent).not.toContain(
+      'Local data removal is unavailable until the product adapter is connected.',
+    );
+    await dispatchPointerClick(reviewButton);
+
+    const confirmButton = await vi.waitFor(() => {
+      const button = [...document.querySelectorAll('button')].find((item) =>
+        item.textContent?.includes('Remove local data'),
+      );
+      expect(button).toBeTruthy();
+      return button!;
+    });
+    await dispatchPointerClick(confirmButton);
+    await vi.waitFor(() =>
+      expect(deleteLocalAcademicData).toHaveBeenCalledOnce(),
+    );
+    expect(deleteLocalAcademicData).toHaveBeenCalledWith({
+      requestId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+      scope: 'account-local',
+    });
+    await vi.waitFor(() =>
+      expect(getSettingsSaveState(finishedUser.id)).toMatchObject({
+        pending: 0,
+        draft: {},
+      }),
+    );
+    clearSettingsSaveState(finishedUser.id);
+  });
+
   it.each([
     ['/dashboard/courses', 'Courses'],
     ['/dashboard/study', 'Study'],
-    ['/dashboard/planner', 'Planner'],
+    ['/dashboard/context', 'Context'],
     ['/dashboard/connections', 'Connections'],
   ])('opens %s from its sidebar link', async (path, title) => {
     await openRoute('/dashboard');
@@ -186,7 +438,7 @@ describe('dashboard shell', () => {
     await openRoute('/dashboard');
     const shell = document.querySelector('[data-slot="sidebar-wrapper"]');
     expect(shell).toBeTruthy();
-    await navigate('/dashboard/planner');
+    await navigate('/dashboard/context');
     expect(document.querySelector('[data-slot="sidebar-wrapper"]')).toBe(shell);
   });
 
@@ -206,34 +458,38 @@ describe('dashboard shell', () => {
   });
 
   it('keeps the branding link out of the current page on nested pages', async () => {
-    await openRoute('/dashboard/planner');
+    await openRoute('/dashboard/context');
     const brand = document.querySelector('[data-slot="sidebar-header"] a');
     expect(brand).toBeTruthy();
     expect(brand?.getAttribute('aria-current')).toBeNull();
   });
 
   it('keeps the header to the sidebar toggle and theme control', async () => {
-    await openRoute('/dashboard/planner');
+    await openRoute('/dashboard/context');
     const header = document.querySelector('[data-slot="dashboard-header"]');
     expect(header?.querySelector('[data-slot="sidebar-trigger"]')).toBeTruthy();
     expect(header?.querySelector('button[aria-haspopup="menu"]')).toBeTruthy();
-    expect(heading()?.textContent).toBe('Planner');
+    expect(heading()?.textContent).toBe('Context');
   });
 
-  it('keeps every page body down to its title', async () => {
-    // Only the remaining placeholder pages have no content beyond their title.
-    for (const path of [
-      '/dashboard',
-      '/dashboard/study',
-      '/dashboard/planner',
-    ]) {
+  it.each([
+    ['/dashboard', 'Today', 'No courses saved yet', 'getTodayOverview'],
+    ['/dashboard/study', 'Study', 'No study sessions yet', 'listStudySessions'],
+    [
+      '/dashboard/context',
+      'Context',
+      'Your Context is empty',
+      'listContextItems',
+    ],
+  ] as const)(
+    'renders the real content and empty state at %s',
+    async (path, title, emptyState, readMethod) => {
       await openRoute(path);
-      expect(pageRegion()?.children).toHaveLength(1);
-      expect(pageRegion()?.textContent?.trim()).toBe(heading()?.textContent);
-      act(() => root?.unmount());
-      document.body.replaceChildren();
-    }
-  });
+      expect(heading()?.textContent).toBe(title);
+      expect(document.body.textContent).toContain(emptyState);
+      expect(bridge[readMethod]).toHaveBeenCalled();
+    },
+  );
 
   it('leaves the retired setup and discovery content out of the shell', async () => {
     await openRoute('/dashboard');
