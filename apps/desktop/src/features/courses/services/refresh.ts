@@ -108,6 +108,10 @@ const refreshReadFailureMessage = (error: unknown) => {
       : error instanceof Error
         ? error.message
         : '';
+  if (/your school asked us to slow down/i.test(message))
+    return 'Your school asked us to slow down. Wait briefly before refreshing again.';
+  if (/the browser model request is unsupported/i.test(message))
+    return 'Course reading could not start because the browser request was invalid. Update the app and retry.';
   if (/\b429\b|rate.?limit|quota|usage limit/i.test(message))
     return 'The AI provider usage limit was reached. Retry after the limit resets.';
   if (/timed? ?out|timeout/i.test(message))
@@ -128,7 +132,11 @@ const refreshReadFailureMessage = (error: unknown) => {
     )
   )
     return 'The AI service returned unreadable course data. Retry the refresh.';
-  if (/outside.*(?:scope|approved)|navigation.*not allowed/i.test(message))
+  if (
+    /outside.*(?:scope|approved|connected academic resources)|navigation.*not allowed/i.test(
+      message,
+    )
+  )
     return 'A page was outside the approved course access. Review the connection settings.';
   return 'Some course data could not be read.';
 };

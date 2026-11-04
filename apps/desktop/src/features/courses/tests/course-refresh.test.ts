@@ -1880,6 +1880,18 @@ it('keeps source error details out of refresh activity events', async () => {
 
 it.each([
   [
+    'Your school asked us to slow down. Wait about 30 seconds before trying again.',
+    'Your school asked us to slow down. Wait briefly before refreshing again.',
+  ],
+  [
+    'The browser model request is unsupported: invalid_type',
+    'Course reading could not start because the browser request was invalid. Update the app and retry.',
+  ],
+  [
+    'This destination is outside your connected academic resources.',
+    'A page was outside the approved course access. Review the connection settings.',
+  ],
+  [
     'Meta API HTTP 429 quota exceeded',
     'The AI provider usage limit was reached. Retry after the limit resets.',
   ],
