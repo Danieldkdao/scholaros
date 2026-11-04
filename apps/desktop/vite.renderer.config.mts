@@ -20,6 +20,10 @@ export default defineConfig({
     react(),
     tailwindcss(),
   ],
+  build: {
+    // Keep AudioWorklet modules file-backed in the packaged renderer.
+    assetsInlineLimit: 0,
+  },
   optimizeDeps: {
     entries: ['src/renderer.tsx'],
   },

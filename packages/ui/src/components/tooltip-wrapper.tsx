@@ -1,7 +1,7 @@
-"use client";
+'use client';
 
-import type { ComponentProps, ReactElement } from "react";
-import { Tooltip, TooltipContent, TooltipTrigger } from "./tooltip";
+import type { ComponentProps, ReactElement } from 'react';
+import { Tooltip, TooltipContent, TooltipTrigger } from './tooltip';
 
 type TooltipWrapperProps = {
   children: ReactElement;
