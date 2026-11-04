@@ -8,6 +8,10 @@ import type {
   PracticeSnapshot,
 } from '@scholaros/services/learning/practice-contracts';
 import { PracticeView } from '../components/practice-view';
+import {
+  usePracticeAttempt,
+  type UsePracticeAttemptResult,
+} from '../hooks/use-practice-attempt';
 
 (
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -80,6 +84,7 @@ let bridge: {
 const renderPractice = async (
   initialAttempt = attempt(),
   onAttemptChange?: (attemptId: string) => void,
+  readOnly = false,
 ) => {
   bridge = {
     getPracticeAttempt: vi.fn(async () => initialAttempt),
@@ -99,12 +104,31 @@ const renderPractice = async (
         sessionId: 'session-1',
         attemptId: initialAttempt.id,
         onAttemptChange,
+        readOnly,
       }),
     );
     await Promise.resolve();
     await Promise.resolve();
   });
   return container;
+};
+
+const rerenderPractice = async (
+  initialAttempt: PracticeSnapshot,
+  readOnly: boolean,
+  onAttemptChange?: (attemptId: string) => void,
+) => {
+  await act(async () =>
+    root?.render(
+      createElement(PracticeView, {
+        accountId: 'account-1',
+        sessionId: 'session-1',
+        attemptId: initialAttempt.id,
+        onAttemptChange,
+        readOnly,
+      }),
+    ),
+  );
 };
 
 const buttonWithText = (text: string) =>
@@ -581,4 +605,384 @@ it('keeps an earlier attempt and notifies the conversation when retry creates a 
   );
   expect(onAttemptChange).toHaveBeenCalledWith('attempt-2');
   expect(view.textContent).toContain('Repeated practice');
+});
+
+it('keeps cached practice visible while host read-only mode blocks in-progress actions', async () => {
+  const cachedAnswer = {
+    questionId: numericQuestion.id,
+    revision: 1,
+    value: '2',
+    savedAt: '2026-11-03T12:00:00Z',
+  };
+  const cachedAttempt = attempt({
+    questions: [numericQuestion],
+    answers: [cachedAnswer],
+    revision: 1,
+  });
+  const view = await renderPractice(cachedAttempt, undefined, true);
+  await vi.waitFor(() =>
+    expect(view.textContent).toContain('What is one plus one?'),
+  );
+
+  const answerInput = view.querySelector<HTMLInputElement>(
+    'input[aria-label="Answer for question 1"]',
+  );
+  expect(answerInput?.value).toBe('2');
+  expect(answerInput?.disabled).toBe(true);
+  expect(view.textContent).toContain(
+    'Reconnect online to save pending answers',
+  );
+  expect(buttonWithText('Submit answers')?.disabled).toBe(true);
+  expect(buttonWithText('Switch to guided practice')?.disabled).toBe(true);
+
+  await act(async () =>
+    view
+      .querySelector('form')
+      ?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })),
+  );
+  await clickButton('Switch to guided practice');
+
+  expect(bridge.getPracticeAttempt).toHaveBeenCalledOnce();
+  expect(bridge.savePracticeAnswer).not.toHaveBeenCalled();
+  expect(bridge.submitPracticeAttempt).not.toHaveBeenCalled();
+  expect(bridge.switchPracticeToGuided).not.toHaveBeenCalled();
+  expect(bridge.retryPracticeAttempt).not.toHaveBeenCalled();
+});
+
+it('ignores a stale offline practice snapshot after reconnecting to a fresh attempt', async () => {
+  const initialAttempt = attempt({
+    questions: [{ ...numericQuestion, prompt: 'Original practice prompt' }],
+  });
+  const offlineAttempt = attempt({
+    questions: [{ ...numericQuestion, prompt: 'Stale offline prompt' }],
+    revision: 1,
+  });
+  const onlineAttempt = attempt({
+    questions: [{ ...numericQuestion, prompt: 'Fresh online prompt' }],
+    revision: 2,
+  });
+  const view = await renderPractice(initialAttempt);
+  let resolveOffline!: (value: PracticeSnapshot) => void;
+  bridge.getPracticeAttempt
+    .mockImplementationOnce(
+      () =>
+        new Promise<PracticeSnapshot>((resolve) => {
+          resolveOffline = resolve;
+        }),
+    )
+    .mockResolvedValueOnce(onlineAttempt);
+
+  await rerenderPractice(initialAttempt, true);
+  expect(view.textContent).toContain('Original practice prompt');
+  await rerenderPractice(initialAttempt, false);
+  await vi.waitFor(() =>
+    expect(view.textContent).toContain('Fresh online prompt'),
+  );
+
+  await act(async () => resolveOffline(offlineAttempt));
+  expect(view.textContent).toContain('Fresh online prompt');
+  expect(view.textContent).not.toContain('Stale offline prompt');
+});
+
+it('cancels answer autosave while read-only and resumes it after reconnect', async () => {
+  const initialAttempt = attempt({ questions: [numericQuestion] });
+  const view = await renderPractice(initialAttempt);
+  const offlineSnapshot = attempt({
+    questions: [numericQuestion],
+    answers: [
+      {
+        questionId: numericQuestion.id,
+        revision: 1,
+        value: '1',
+        savedAt: '2026-11-03T12:00:00Z',
+      },
+    ],
+    revision: 1,
+  });
+  const onlineSnapshot = attempt({
+    questions: [numericQuestion],
+    answers: [
+      {
+        questionId: numericQuestion.id,
+        revision: 2,
+        value: '1',
+        savedAt: '2026-11-03T12:01:00Z',
+      },
+    ],
+    revision: 2,
+  });
+  bridge.getPracticeAttempt
+    .mockResolvedValueOnce(offlineSnapshot)
+    .mockResolvedValueOnce(onlineSnapshot);
+  const answerInput = view.querySelector<HTMLInputElement>(
+    'input[aria-label="Answer for question 1"]',
+  )!;
+  await typeInto(answerInput, '2');
+  await rerenderPractice(initialAttempt, true);
+  await act(async () => vi.advanceTimersByTimeAsync(1_000));
+
+  expect(bridge.savePracticeAnswer).not.toHaveBeenCalled();
+  expect(answerInput.value).toBe('2');
+  expect(answerInput.disabled).toBe(true);
+
+  const savedAttempt = attempt({
+    questions: [numericQuestion],
+    answers: [
+      {
+        questionId: numericQuestion.id,
+        revision: 3,
+        value: '2',
+        savedAt: '2026-11-03T12:02:00Z',
+      },
+    ],
+    revision: 3,
+  });
+  bridge.savePracticeAnswer.mockResolvedValue(savedAttempt);
+  await rerenderPractice(initialAttempt, false);
+  await act(async () => vi.advanceTimersByTimeAsync(500));
+
+  expect(bridge.savePracticeAnswer).toHaveBeenCalledOnce();
+  expect(bridge.getPracticeAttempt).toHaveBeenCalledTimes(3);
+  expect(bridge.savePracticeAnswer).toHaveBeenCalledWith(
+    expect.objectContaining({
+      expectedRevision: 2,
+      questionId: numericQuestion.id,
+      value: '2',
+    }),
+  );
+  expect(answerInput.disabled).toBe(false);
+});
+
+it('does not flush queued answer writes after a read-only transition', async () => {
+  const initialAttempt = attempt({ questions: [numericQuestion] });
+  const firstSavedAttempt = attempt({
+    questions: [numericQuestion],
+    answers: [
+      {
+        questionId: numericQuestion.id,
+        revision: 1,
+        value: '1',
+        savedAt: '2026-11-03T12:00:00Z',
+      },
+    ],
+    revision: 1,
+  });
+  const secondSavedAttempt = attempt({
+    questions: [numericQuestion],
+    answers: [
+      {
+        questionId: numericQuestion.id,
+        revision: 2,
+        value: '2',
+        savedAt: '2026-11-03T12:01:00Z',
+      },
+    ],
+    revision: 2,
+  });
+  const view = await renderPractice(initialAttempt);
+  let resolveFirstSave!: (value: PracticeSnapshot) => void;
+  bridge.savePracticeAnswer
+    .mockImplementationOnce(
+      () =>
+        new Promise<PracticeSnapshot>((resolve) => {
+          resolveFirstSave = resolve;
+        }),
+    )
+    .mockResolvedValueOnce(secondSavedAttempt);
+  const answerInput = view.querySelector<HTMLInputElement>(
+    'input[aria-label="Answer for question 1"]',
+  )!;
+  await typeInto(answerInput, '1');
+  await act(async () => vi.advanceTimersByTimeAsync(500));
+  expect(bridge.savePracticeAnswer).toHaveBeenCalledOnce();
+
+  await typeInto(answerInput, '2');
+  await act(async () => vi.advanceTimersByTimeAsync(500));
+  expect(bridge.savePracticeAnswer).toHaveBeenCalledOnce();
+  await rerenderPractice(initialAttempt, true);
+
+  await act(async () => {
+    resolveFirstSave(firstSavedAttempt);
+    for (let hop = 0; hop < 8; hop += 1) await Promise.resolve();
+  });
+  expect(bridge.savePracticeAnswer).toHaveBeenCalledOnce();
+  expect(answerInput.value).toBe('2');
+
+  await rerenderPractice(initialAttempt, false);
+  await act(async () => vi.advanceTimersByTimeAsync(500));
+  expect(bridge.savePracticeAnswer).toHaveBeenCalledTimes(2);
+  expect(bridge.savePracticeAnswer).toHaveBeenLastCalledWith(
+    expect.objectContaining({ value: '2' }),
+  );
+});
+
+it('guards practice answer, submit, and guided callbacks in host read-only mode', async () => {
+  const cachedAttempt = attempt({
+    questions: [numericQuestion],
+    answers: [
+      {
+        questionId: numericQuestion.id,
+        revision: 1,
+        value: '2',
+        savedAt: '2026-11-03T12:00:00Z',
+      },
+    ],
+    revision: 1,
+  });
+  bridge = {
+    getPracticeAttempt: vi.fn(async () => cachedAttempt),
+    savePracticeAnswer: vi.fn(async () => cachedAttempt),
+    submitPracticeAttempt: vi.fn(async () => cachedAttempt),
+    switchPracticeToGuided: vi.fn(async () => cachedAttempt),
+    retryPracticeAttempt: vi.fn(async () => cachedAttempt),
+  };
+  window.scholar = bridge as unknown as typeof window.scholar;
+  let practice: UsePracticeAttemptResult | null = null;
+  const Probe = () => {
+    practice = usePracticeAttempt({
+      accountId: 'account-1',
+      sessionId: 'session-1',
+      attemptId: cachedAttempt.id,
+      readOnly: true,
+    });
+    return createElement('div', null, practice.snapshot?.id ?? 'Loading');
+  };
+  container = document.createElement('div');
+  document.body.append(container);
+  root = createRoot(container);
+  await act(async () => root?.render(createElement(Probe)));
+  await vi.waitFor(() => expect(container.textContent).toBe(cachedAttempt.id));
+
+  await act(async () => {
+    practice!.changeAnswer(numericQuestion.id, '3');
+    practice!.retryAnswerSave(numericQuestion.id);
+    await practice!.submit();
+    await practice!.switchToGuided();
+  });
+
+  expect(practice!.answerDrafts[numericQuestion.id]).toBe('2');
+  expect(bridge.savePracticeAnswer).not.toHaveBeenCalled();
+  expect(bridge.submitPracticeAttempt).not.toHaveBeenCalled();
+  expect(bridge.switchPracticeToGuided).not.toHaveBeenCalled();
+});
+
+it('blocks retry callbacks while host read-only even when an attempt is complete', async () => {
+  const completedAttempt = attempt({
+    status: 'evaluated',
+    answers: [answer],
+    revision: 1,
+  });
+  bridge = {
+    getPracticeAttempt: vi.fn(async () => completedAttempt),
+    savePracticeAnswer: vi.fn(async () => completedAttempt),
+    submitPracticeAttempt: vi.fn(async () => completedAttempt),
+    switchPracticeToGuided: vi.fn(async () => completedAttempt),
+    retryPracticeAttempt: vi.fn(async () => completedAttempt),
+  };
+  window.scholar = bridge as unknown as typeof window.scholar;
+  const onAttemptChange = vi.fn();
+  let practice: UsePracticeAttemptResult | null = null;
+  const Probe = () => {
+    practice = usePracticeAttempt({
+      accountId: 'account-1',
+      sessionId: 'session-1',
+      attemptId: completedAttempt.id,
+      onAttemptChange,
+      readOnly: true,
+    });
+    return createElement('div', null, practice.snapshot?.id ?? 'Loading');
+  };
+  container = document.createElement('div');
+  document.body.append(container);
+  root = createRoot(container);
+  await act(async () => root?.render(createElement(Probe)));
+  await vi.waitFor(() =>
+    expect(container.textContent).toBe(completedAttempt.id),
+  );
+
+  await act(async () => practice!.retry());
+
+  expect(bridge.retryPracticeAttempt).not.toHaveBeenCalled();
+  expect(onAttemptChange).not.toHaveBeenCalled();
+});
+
+it('keeps evaluated practice feedback readable while read-only blocks retry', async () => {
+  const completedAttempt = attempt({
+    status: 'evaluated',
+    answers: [answer],
+    feedback: [evaluation],
+    revision: 2,
+  });
+  const view = await renderPractice(completedAttempt, undefined, true);
+
+  expect(view.textContent).toContain(evaluation.explanation);
+  expect(buttonWithText('Try again')?.disabled).toBe(true);
+  await clickButton('Try again');
+  expect(bridge.retryPracticeAttempt).not.toHaveBeenCalled();
+});
+
+it('defers practice attempt-link changes until the host is writable again', async () => {
+  const completedAttempt = attempt({
+    status: 'evaluated',
+    answers: [answer],
+    revision: 1,
+  });
+  const nextAttempt = attempt({
+    id: 'attempt-2',
+    priorAttemptId: 'attempt-1',
+    revision: 0,
+  });
+  let resolveRetry!: (value: PracticeSnapshot) => void;
+  bridge = {
+    getPracticeAttempt: vi.fn(async () => completedAttempt),
+    savePracticeAnswer: vi.fn(async () => completedAttempt),
+    submitPracticeAttempt: vi.fn(async () => completedAttempt),
+    switchPracticeToGuided: vi.fn(async () => completedAttempt),
+    retryPracticeAttempt: vi.fn(
+      () =>
+        new Promise<PracticeSnapshot>((resolve) => {
+          resolveRetry = resolve;
+        }),
+    ),
+  };
+  window.scholar = bridge as unknown as typeof window.scholar;
+  const onAttemptChange = vi.fn();
+  let practice: UsePracticeAttemptResult | null = null;
+  const Probe = ({ readOnly }: { readOnly: boolean }) => {
+    practice = usePracticeAttempt({
+      accountId: 'account-1',
+      sessionId: 'session-1',
+      attemptId: completedAttempt.id,
+      onAttemptChange,
+      readOnly,
+    });
+    return createElement('div', null, practice.snapshot?.id ?? 'Loading');
+  };
+  container = document.createElement('div');
+  document.body.append(container);
+  root = createRoot(container);
+  await act(async () =>
+    root?.render(createElement(Probe, { readOnly: false })),
+  );
+  await vi.waitFor(() =>
+    expect(container.textContent).toBe(completedAttempt.id),
+  );
+
+  let retryPromise!: Promise<void>;
+  await act(async () => {
+    retryPromise = practice!.retry();
+    await Promise.resolve();
+  });
+  await act(async () => root?.render(createElement(Probe, { readOnly: true })));
+  await act(async () => {
+    resolveRetry(nextAttempt);
+    await retryPromise;
+  });
+
+  expect(onAttemptChange).not.toHaveBeenCalled();
+  await act(async () =>
+    root?.render(createElement(Probe, { readOnly: false })),
+  );
+  expect(onAttemptChange).toHaveBeenCalledOnce();
+  expect(onAttemptChange).toHaveBeenCalledWith('attempt-2');
 });

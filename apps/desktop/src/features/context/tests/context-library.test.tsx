@@ -92,6 +92,8 @@ const mount = async (
   libraryApi = api(),
   accountId: string | null = 'account-a',
   courses: ContextCourse[] = [],
+  readOnly = false,
+  refreshEpoch = 0,
 ) => {
   await act(async () => {
     root.render(
@@ -99,6 +101,8 @@ const mount = async (
         accountId,
         api: libraryApi,
         courses,
+        refreshEpoch,
+        readOnly,
         subscribeToEvents: subscribe,
       }),
     );
@@ -818,4 +822,225 @@ it('ignores stale account responses and unrelated account events', async () => {
       });
   });
   expect(vi.mocked(libraryApi.listContextItems).mock.calls.length).toBe(before);
+});
+
+it('keeps cached Context readable while host read-only mode blocks mutations', async () => {
+  const libraryApi = api();
+  const cachedItem = item({
+    id: 'cached-file',
+    title: 'Cached study guide',
+    kind: 'document',
+    status: 'failed',
+    courseIds: ['course-1'],
+  });
+  vi.mocked(libraryApi.listContextItems).mockResolvedValueOnce(
+    page([cachedItem]),
+  );
+  await mount(
+    libraryApi,
+    'account-a',
+    [
+      {
+        id: 'course-1',
+        name: 'Biology 101',
+        url: 'https://example.edu/course',
+      },
+    ],
+    true,
+  );
+
+  expect(document.body.textContent).toContain('Cached study guide');
+  expect(
+    document.querySelector<HTMLButtonElement>(
+      'button[aria-label="Add to Context"]',
+    )?.disabled,
+  ).toBe(true);
+  expect(
+    document.querySelector(
+      'button[aria-label="Actions for Cached study guide"]',
+    ),
+  ).toBeNull();
+  expect(
+    document.querySelector<HTMLButtonElement>(
+      'button[aria-label="Preview Cached study guide"]',
+    )?.disabled,
+  ).not.toBe(true);
+  expect(
+    document.querySelector<HTMLButtonElement>(
+      'button[aria-label="Open Biology 101"]',
+    )?.disabled,
+  ).not.toBe(true);
+  expect(libraryApi.createContextNote).not.toHaveBeenCalled();
+  expect(libraryApi.updateContextItem).not.toHaveBeenCalled();
+  expect(libraryApi.linkContextItem).not.toHaveBeenCalled();
+  expect(libraryApi.removeContextItem).not.toHaveBeenCalled();
+  expect(libraryApi.retryContextIngestion).not.toHaveBeenCalled();
+  expect(libraryApi.chooseContextFiles).not.toHaveBeenCalled();
+});
+
+it('refreshes its scoped snapshot across offline-local and online transitions', async () => {
+  const libraryApi = api();
+  let resolveOnline!: (result: Page<ContextItemDTO>) => void;
+  vi.mocked(libraryApi.listContextItems)
+    .mockImplementationOnce(
+      () => new Promise((resolve) => (resolveOnline = resolve)),
+    )
+    .mockResolvedValueOnce(
+      page([item({ id: 'offline-cache', title: 'Offline cached note' })], 2),
+    )
+    .mockResolvedValueOnce(
+      page([item({ id: 'reconnected', title: 'Fresh online note' })], 3),
+    );
+  await mount(libraryApi, 'account-a', [], false);
+
+  await act(async () => {
+    root.render(
+      createElement(ContextLibrary, {
+        accountId: 'account-a',
+        api: libraryApi,
+        courses: [],
+        readOnly: true,
+        subscribeToEvents: subscribe,
+      }),
+    );
+  });
+  await vi.waitFor(() =>
+    expect(document.body.textContent).toContain('Offline cached note'),
+  );
+  await act(async () =>
+    resolveOnline(
+      page([item({ id: 'stale-online', title: 'Stale online note' })], 1),
+    ),
+  );
+  expect(document.body.textContent).not.toContain('Stale online note');
+
+  await act(async () => {
+    root.render(
+      createElement(ContextLibrary, {
+        accountId: 'account-a',
+        api: libraryApi,
+        courses: [],
+        readOnly: false,
+        subscribeToEvents: subscribe,
+      }),
+    );
+  });
+  await vi.waitFor(() =>
+    expect(document.body.textContent).toContain('Fresh online note'),
+  );
+  expect(libraryApi.listContextItems).toHaveBeenCalledTimes(3);
+});
+
+it('refreshes Context snapshots without discarding an open note draft', async () => {
+  const libraryApi = api();
+  await mount(libraryApi);
+  await click(document.querySelector('button[aria-label="Add to Context"]'));
+  const addNote = [...document.querySelectorAll('[role="menuitem"]')].find(
+    (entry) => entry.textContent?.includes('Text or note'),
+  );
+  await click(addNote ?? null);
+  await setFieldValue(
+    document.querySelector('input[name="title"]'),
+    'Pending note title',
+  );
+  await setFieldValue(
+    document.querySelector('textarea[name="text"]'),
+    'Pending note body',
+  );
+
+  await mount(libraryApi, 'account-a', [], false, 1);
+  await vi.waitFor(() =>
+    expect(libraryApi.listContextItems).toHaveBeenCalledTimes(2),
+  );
+  expect(
+    document.querySelector<HTMLInputElement>('input[name="title"]')?.value,
+  ).toBe('Pending note title');
+  expect(
+    document.querySelector<HTMLTextAreaElement>('textarea[name="text"]')?.value,
+  ).toBe('Pending note body');
+});
+
+it('preserves an open note draft and blocks its save during a read-only transition', async () => {
+  const libraryApi = api();
+  await mount(libraryApi);
+  await click(document.querySelector('button[aria-label="Add to Context"]'));
+  const addNote = [...document.querySelectorAll('[role="menuitem"]')].find(
+    (entry) => entry.textContent?.includes('Text or note'),
+  );
+  await click(addNote ?? null);
+  await setFieldValue(
+    document.querySelector('input[name="title"]'),
+    'Offline draft',
+  );
+  await setFieldValue(
+    document.querySelector('textarea[name="text"]'),
+    'Keep this note for reconnect.',
+  );
+
+  await act(async () => {
+    root.render(
+      createElement(ContextLibrary, {
+        accountId: 'account-a',
+        api: libraryApi,
+        courses: [],
+        readOnly: true,
+        subscribeToEvents: subscribe,
+      }),
+    );
+  });
+  expect(
+    document.querySelector<HTMLInputElement>('input[name="title"]')?.value,
+  ).toBe('Offline draft');
+  expect(
+    document.querySelector<HTMLButtonElement>('button[type="submit"]')
+      ?.disabled,
+  ).toBe(true);
+  await act(async () => {
+    document
+      .querySelector('form')
+      ?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+  });
+  expect(libraryApi.createContextNote).not.toHaveBeenCalled();
+
+  await act(async () => {
+    root.render(
+      createElement(ContextLibrary, {
+        accountId: 'account-a',
+        api: libraryApi,
+        courses: [],
+        readOnly: false,
+        subscribeToEvents: subscribe,
+      }),
+    );
+  });
+  expect(
+    document.querySelector<HTMLInputElement>('input[name="title"]')?.value,
+  ).toBe('Offline draft');
+  await act(async () => {
+    document
+      .querySelector('form')
+      ?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+  });
+  expect(libraryApi.createContextNote).toHaveBeenCalledOnce();
+});
+
+it('cancels a pending removal confirmation when entering read-only mode', async () => {
+  const libraryApi = api();
+  vi.mocked(libraryApi.listContextItems).mockResolvedValue(page([item()]));
+  await mount(libraryApi);
+  await click(
+    document.querySelector('button[aria-label="Actions for Biology notes"]'),
+  );
+  const removeItem = [...document.querySelectorAll('[role="menuitem"]')].find(
+    (entry) => entry.textContent?.includes('Remove from Context'),
+  );
+  await click(removeItem ?? null);
+  expect(document.querySelector('[role="alertdialog"]')).not.toBeNull();
+
+  await mount(libraryApi, 'account-a', [], true);
+  expect(document.querySelector('[role="alertdialog"]')).toBeNull();
+  await mount(libraryApi, 'account-a', [], false);
+
+  expect(document.querySelector('[role="alertdialog"]')).toBeNull();
+  expect(libraryApi.removeContextItem).not.toHaveBeenCalled();
 });

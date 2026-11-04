@@ -108,6 +108,8 @@ export const useContextLibrary = (
   accountId: string | null,
   api: ContextLibraryApi,
   subscribeToEvents: ContextEventSubscription,
+  readOnly = false,
+  refreshEpoch = 0,
 ) => {
   const [query, setQuery] = useState('');
   const [debouncedQuery] = useDebouncedValue(query, { wait: 250 });
@@ -130,7 +132,7 @@ export const useContextLibrary = (
   const requests = useRef(0);
   const accountRef = useRef(accountId);
   const requiredRevision = useRef(0);
-  const scopeKey = `${accountId ?? ''}\u0000${normalizedQuery}\u0000${courseFilter}`;
+  const scopeKey = `${accountId ?? ''}\u0000${normalizedQuery}\u0000${courseFilter}\u0000${readOnly}`;
   const snapshot =
     snapshotState?.scopeKey === scopeKey ? snapshotState.page : null;
   const loading =
@@ -326,7 +328,7 @@ export const useContextLibrary = (
 
   useEffect(() => {
     void loadFirstPage();
-  }, [accountId, loadFirstPage]);
+  }, [accountId, loadFirstPage, refreshEpoch]);
 
   const items = snapshot?.items ?? [];
   const visibleItems = items.filter(

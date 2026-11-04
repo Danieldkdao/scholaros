@@ -112,6 +112,8 @@ type ContextLibraryProps = {
   accountId: string | null;
   api: ContextLibraryApi;
   courses: ContextCourse[];
+  refreshEpoch?: number;
+  readOnly?: boolean;
   subscribeToEvents: ContextEventSubscription;
 };
 
@@ -391,9 +393,17 @@ export const ContextLibrary = ({
   accountId,
   api,
   courses,
+  refreshEpoch = 0,
+  readOnly = false,
   subscribeToEvents,
 }: ContextLibraryProps) => {
-  const library = useContextLibrary(accountId, api, subscribeToEvents);
+  const library = useContextLibrary(
+    accountId,
+    api,
+    subscribeToEvents,
+    readOnly,
+    refreshEpoch,
+  );
   const [dialogMode, setDialogMode] = useState<ContextDialogMode | null>(null);
   const [editingItem, setEditingItem] = useState<ContextItemDTO | null>(null);
   const [editText, setEditText] = useState<string | undefined>();
@@ -421,6 +431,7 @@ export const ContextLibrary = ({
   const [removing, setRemoving] = useState(false);
   const confirmation = useConfirm<ContextItemDTO>();
   const accountRef = useRef(accountId);
+  const readOnlyRef = useRef(readOnly);
   const operationScope = useRef(0);
   const previewRequest = useRef(0);
   const addMenuButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -432,6 +443,7 @@ export const ContextLibrary = ({
     operationScope.current += 1;
     previewRequest.current += 1;
   }
+  readOnlyRef.current = readOnly;
 
   useEffect(() => {
     dialogFinalFocus.current = addMenuButtonRef.current;
@@ -456,6 +468,12 @@ export const ContextLibrary = ({
     confirmation.cancel();
   }, [accountId]);
 
+  useEffect(() => {
+    if (!readOnly) return;
+    setRemovalError(null);
+    confirmation.cancel();
+  }, [confirmation.cancel, readOnly]);
+
   const closeDialog = () => {
     setDialogMode(null);
     setEditingItem(null);
@@ -464,6 +482,8 @@ export const ContextLibrary = ({
   };
 
   const openNote = () => {
+    if (readOnlyRef.current || !accountId || accountRef.current !== accountId)
+      return;
     dialogFinalFocus.current = addMenuButtonRef.current;
     setEditingItem(null);
     setEditText('');
@@ -472,6 +492,8 @@ export const ContextLibrary = ({
   };
 
   const openPreference = () => {
+    if (readOnlyRef.current || !accountId || accountRef.current !== accountId)
+      return;
     dialogFinalFocus.current = addMenuButtonRef.current;
     setEditingItem(null);
     setDialogMode('preference');
@@ -483,6 +505,10 @@ export const ContextLibrary = ({
     courseId: string | null;
   }) => {
     const scope = operationScope.current;
+    if (readOnlyRef.current)
+      throw new Error('Reconnect online to save Context changes.');
+    if (accountRef.current !== accountId)
+      throw new Error('Your account changed. Reopen Context to save.');
     if (!accountId) throw new Error('Sign in to add Context.');
     if (editingItem) {
       await api.updateContextItem({
@@ -514,6 +540,10 @@ export const ContextLibrary = ({
     courseId: string | null;
   }) => {
     const scope = operationScope.current;
+    if (readOnlyRef.current)
+      throw new Error('Reconnect online to save Context changes.');
+    if (accountRef.current !== accountId)
+      throw new Error('Your account changed. Reopen Context to save.');
     if (!accountId) throw new Error('Sign in to add a preference.');
     await api.upsertExplicitPreference({
       requestId: crypto.randomUUID(),
@@ -526,7 +556,8 @@ export const ContextLibrary = ({
   };
 
   const importFiles = async () => {
-    if (!accountId) return;
+    if (!accountId || accountRef.current !== accountId || readOnlyRef.current)
+      return;
     const scope = operationScope.current;
     const courseId = library.courseFilter.startsWith('course:')
       ? library.courseFilter.slice('course:'.length)
@@ -559,6 +590,8 @@ export const ContextLibrary = ({
       actionButtonRefs.current.get(item.id) ?? addMenuButtonRef.current;
     if (
       !accountId ||
+      accountRef.current !== accountId ||
+      readOnlyRef.current ||
       item.kind !== 'note' ||
       item.provenance !== 'user-authored'
     )
@@ -567,7 +600,7 @@ export const ContextLibrary = ({
     try {
       const details = await api.getContextItem({ itemId: item.id });
       if (!details) throw new Error('Could not load this note.');
-      if (scope !== operationScope.current) return;
+      if (scope !== operationScope.current || readOnlyRef.current) return;
       setEditingItem(details.item);
       setCanEditText(
         details.preview.kind === 'text' && !details.preview.partial,
@@ -585,7 +618,7 @@ export const ContextLibrary = ({
   };
 
   const openPreview = async (item: ContextItemDTO) => {
-    if (!accountId) return;
+    if (!accountId || accountRef.current !== accountId) return;
     const request = ++previewRequest.current;
     const scope = operationScope.current;
     setPreviewItem(item);
@@ -649,7 +682,8 @@ export const ContextLibrary = ({
   };
 
   const changePreviewVersion = async (versionId: string) => {
-    if (!previewDetails || !previewItem) return;
+    if (!previewDetails || !previewItem || accountRef.current !== accountId)
+      return;
     const request = ++previewRequest.current;
     const scope = operationScope.current;
     setSelectedVersionId(versionId);
@@ -690,7 +724,8 @@ export const ContextLibrary = ({
   };
 
   const retryIngestion = async (item: ContextItemDTO) => {
-    if (!accountId) return;
+    if (!accountId || accountRef.current !== accountId || readOnlyRef.current)
+      return;
     const scope = operationScope.current;
     const previewRequestAtRetry = previewRequest.current;
     const refreshOpenPreview = previewItem?.id === item.id;
@@ -725,7 +760,13 @@ export const ContextLibrary = ({
     item: ContextItemDTO,
     courseId: string | null,
   ) => {
-    if (!accountId || item.courseIds[0] === courseId) return;
+    if (
+      !accountId ||
+      accountRef.current !== accountId ||
+      readOnlyRef.current ||
+      item.courseIds[0] === courseId
+    )
+      return;
     const scope = operationScope.current;
     setLinkingItemId(item.id);
     try {
@@ -750,7 +791,7 @@ export const ContextLibrary = ({
   };
 
   const openCourse = async (course: ContextCourse) => {
-    if (!accountId) return;
+    if (!accountId || accountRef.current !== accountId) return;
     const scope = operationScope.current;
     setOpeningCourseId(course.id);
     try {
@@ -764,6 +805,7 @@ export const ContextLibrary = ({
   };
 
   const requestRemoval = (item: ContextItemDTO) => {
+    if (readOnlyRef.current || accountRef.current !== accountId) return;
     removalFinalFocus.current =
       actionButtonRefs.current.get(item.id) ?? addMenuButtonRef.current;
     setRemovalError(null);
@@ -772,7 +814,13 @@ export const ContextLibrary = ({
 
   const removeItem = async () => {
     const item = confirmation.pending;
-    if (!accountId || !item) return;
+    if (
+      !accountId ||
+      accountRef.current !== accountId ||
+      !item ||
+      readOnlyRef.current
+    )
+      return;
     const scope = operationScope.current;
     setRemoving(true);
     setRemovalError(null);
@@ -833,9 +881,14 @@ export const ContextLibrary = ({
             Keep notes and learning materials together, with their course and
             source details.
           </p>
+          {readOnly && (
+            <p role="status" className="text-base text-muted-foreground">
+              Reconnect online to make Context changes.
+            </p>
+          )}
         </div>
         <ContextAddMenu
-          disabled={!accountId || importing}
+          disabled={!accountId || readOnly || importing}
           triggerRef={addMenuButtonRef}
           onCreateNote={openNote}
           onCreatePreference={openPreference}
@@ -965,7 +1018,9 @@ export const ContextLibrary = ({
           </EmptyHeader>
           <EmptyContent>
             {emptyLibrary ? (
-              <Button onClick={openNote}>Add a note</Button>
+              <Button disabled={readOnly} onClick={openNote}>
+                Add a note
+              </Button>
             ) : (
               <div className="flex flex-wrap justify-center gap-2">
                 {library.hasMore && (
@@ -1040,52 +1095,58 @@ export const ContextLibrary = ({
                         <Search aria-hidden="true" />
                       </Button>
                     </TooltipWrapper>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger
-                        render={
-                          <Button
-                            ref={(button) => {
-                              if (button)
-                                actionButtonRefs.current.set(item.id, button);
-                              else actionButtonRefs.current.delete(item.id);
-                            }}
-                            variant="ghost"
-                            size="icon"
-                            aria-label={`Actions for ${item.title}`}
-                          />
-                        }
-                      >
-                        <MoreHorizontal aria-hidden="true" />
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        {editableNote && (
-                          <DropdownMenuItem onClick={() => void openEdit(item)}>
-                            <Pencil aria-hidden="true" />
-                            Edit note
-                          </DropdownMenuItem>
-                        )}
-                        {canRetry && (
-                          <DropdownMenuItem
-                            disabled={retryingItemId === item.id}
-                            onClick={() => void retryIngestion(item)}
-                          >
-                            <LoadingSwap isLoading={retryingItemId === item.id}>
-                              <span className="flex items-center gap-2">
-                                <RefreshCw aria-hidden="true" />
-                                Try reading again
-                              </span>
-                            </LoadingSwap>
-                          </DropdownMenuItem>
-                        )}
-                        <DropdownMenuItem
-                          variant="destructive"
-                          onClick={() => requestRemoval(item)}
+                    {!readOnly && (
+                      <DropdownMenu>
+                        <DropdownMenuTrigger
+                          render={
+                            <Button
+                              ref={(button) => {
+                                if (button)
+                                  actionButtonRefs.current.set(item.id, button);
+                                else actionButtonRefs.current.delete(item.id);
+                              }}
+                              variant="ghost"
+                              size="icon"
+                              aria-label={`Actions for ${item.title}`}
+                            />
+                          }
                         >
-                          <Trash2 aria-hidden="true" />
-                          Remove from Context
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
+                          <MoreHorizontal aria-hidden="true" />
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          {editableNote && (
+                            <DropdownMenuItem
+                              onClick={() => void openEdit(item)}
+                            >
+                              <Pencil aria-hidden="true" />
+                              Edit note
+                            </DropdownMenuItem>
+                          )}
+                          {canRetry && (
+                            <DropdownMenuItem
+                              disabled={retryingItemId === item.id}
+                              onClick={() => void retryIngestion(item)}
+                            >
+                              <LoadingSwap
+                                isLoading={retryingItemId === item.id}
+                              >
+                                <span className="flex items-center gap-2">
+                                  <RefreshCw aria-hidden="true" />
+                                  Try reading again
+                                </span>
+                              </LoadingSwap>
+                            </DropdownMenuItem>
+                          )}
+                          <DropdownMenuItem
+                            variant="destructive"
+                            onClick={() => requestRemoval(item)}
+                          >
+                            <Trash2 aria-hidden="true" />
+                            Remove from Context
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    )}
                   </ItemActions>
                 </CardHeader>
                 <CardContent className="flex min-w-0 flex-col gap-4">
@@ -1148,7 +1209,7 @@ export const ContextLibrary = ({
                     <ContextCourseSelect
                       item={item}
                       courses={courses}
-                      disabled={linkingItemId === item.id}
+                      disabled={readOnly || linkingItemId === item.id}
                       onChange={(courseId) => void changeCourse(item, courseId)}
                     />
                     {course && (
@@ -1208,6 +1269,7 @@ export const ContextLibrary = ({
           }}
           finalFocus={dialogFinalFocus}
           courses={courses}
+          readOnly={readOnly}
           onSave={savePreference}
         />
       ) : (
@@ -1220,6 +1282,7 @@ export const ContextLibrary = ({
             }}
             finalFocus={dialogFinalFocus}
             courses={courses}
+            readOnly={readOnly}
             item={
               dialogMode === 'edit-note'
                 ? (editingItem ?? undefined)
@@ -1248,6 +1311,7 @@ export const ContextLibrary = ({
         preview={previewError ? null : previewData}
         loading={previewLoading}
         retrying={previewRetrying}
+        readOnly={readOnly}
         onVersionChange={(versionId) => void changePreviewVersion(versionId)}
         onRetry={() => {
           if (previewItem) void retryIngestion(previewItem);
@@ -1259,7 +1323,7 @@ export const ContextLibrary = ({
         </p>
       )}
       <AlertDialog
-        open={!!confirmation.pending}
+        open={!!confirmation.pending && !readOnly}
         onOpenChange={(open) => {
           if (!open && !removing) {
             confirmation.cancel();
@@ -1287,7 +1351,7 @@ export const ContextLibrary = ({
             <AlertDialogCancel disabled={removing}>Cancel</AlertDialogCancel>
             <Button
               variant="destructive"
-              disabled={removing}
+              disabled={readOnly || removing}
               onClick={() => void removeItem()}
             >
               <LoadingSwap isLoading={removing}>Remove</LoadingSwap>

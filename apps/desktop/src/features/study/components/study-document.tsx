@@ -79,12 +79,14 @@ type ActivityHostProps = {
   versionId: string;
   attemptId: string;
   presentation: 'inline' | 'expanded';
+  readOnly: boolean;
   onExpand?: () => void;
 };
 type PracticeViewProps = {
   accountId: string;
   sessionId: string;
   attemptId: string;
+  readOnly: boolean;
 };
 type ProgressSummaryProps = {
   accountId: string;
@@ -108,6 +110,8 @@ type StudyDocumentRenderersProviderProps = {
 type StudyDocumentProps = {
   accountId: string;
   sessionId: string;
+  refreshEpoch?: number;
+  readOnly?: boolean;
 };
 type SessionStatusPresentation = {
   label: string;
@@ -265,8 +269,13 @@ const SessionLoadError = ({
   </main>
 );
 
-export const StudyDocument = ({ accountId, sessionId }: StudyDocumentProps) => {
-  const study = useStudySession(accountId, sessionId);
+export const StudyDocument = ({
+  accountId,
+  sessionId,
+  refreshEpoch = 0,
+  readOnly = false,
+}: StudyDocumentProps) => {
+  const study = useStudySession(accountId, sessionId, readOnly, refreshEpoch);
   const renderers = useContext(StudyDocumentRenderersContext);
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const [selectedSource, setSelectedSource] = useState<SourceReference | null>(
@@ -435,6 +444,7 @@ export const StudyDocument = ({ accountId, sessionId }: StudyDocumentProps) => {
             versionId={part.versionId}
             attemptId={part.attemptId}
             presentation="inline"
+            readOnly={readOnly}
           />
           <Button
             type="button"
@@ -461,6 +471,7 @@ export const StudyDocument = ({ accountId, sessionId }: StudyDocumentProps) => {
           accountId={accountId}
           sessionId={sessionId}
           attemptId={part.practiceAttemptId}
+          readOnly={readOnly}
         />
       ) : null;
     }
@@ -476,6 +487,7 @@ export const StudyDocument = ({ accountId, sessionId }: StudyDocumentProps) => {
           timer={session.timer}
           summary="Your planned study time has ended."
           actions={study.timerActions}
+          readOnly={readOnly}
         />
       );
     }
@@ -628,6 +640,7 @@ export const StudyDocument = ({ accountId, sessionId }: StudyDocumentProps) => {
             sessionId={sessionId}
             timer={session.timer}
             actions={study.timerActions}
+            readOnly={readOnly}
           />
           <TooltipWrapper content="Inspect sources">
             <Button
@@ -657,6 +670,15 @@ export const StudyDocument = ({ accountId, sessionId }: StudyDocumentProps) => {
           )}
         </div>
       </header>
+      {readOnly && (
+        <p
+          role="status"
+          className="border-b px-4 py-2 text-base text-muted-foreground"
+        >
+          Reconnect online to send messages, update practice, or change study
+          time.
+        </p>
+      )}
       {study.refreshErrorCode && (
         <div
           className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b px-4 py-2"
@@ -737,6 +759,7 @@ export const StudyDocument = ({ accountId, sessionId }: StudyDocumentProps) => {
                       versionId={expandedActivity.part.versionId}
                       attemptId={expandedActivity.part.attemptId}
                       presentation="expanded"
+                      readOnly={readOnly}
                     />
                   </div>
                 </aside>
@@ -750,6 +773,7 @@ export const StudyDocument = ({ accountId, sessionId }: StudyDocumentProps) => {
         sessionId={sessionId}
         initialDraft={session.draft}
         offline={study.offline}
+        readOnly={readOnly}
         activeTurn={snapshot.activeTurn}
         failedTurnId={failedTurnMessage?.turnId ?? null}
         attachmentRevision={snapshot.revision}

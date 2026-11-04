@@ -20,9 +20,11 @@ import type {
   StudySessionDTO,
   StudyTimerDTO,
 } from '@scholaros/services/learning/study-contracts';
+import type { PracticeSnapshot } from '@scholaros/services/learning/practice-contracts';
 import type { ProductEventV1 } from '@scholaros/services/learning/product-contracts';
 import type { CurrentUser } from '../../onboarding/types';
 import type { CourseDetail } from '../../courses/types';
+import { PracticeView as ActualPracticeView } from '../../practice/components/practice-view';
 
 vi.mock('@tanstack/react-router', () => ({
   Link: ({
@@ -176,18 +178,34 @@ const renderers: StudyDocumentRenderers = {
     artifactId,
     attemptId,
     presentation,
+    readOnly,
   }: {
     artifactId: string;
     attemptId: string;
     presentation: 'inline' | 'expanded';
+    readOnly: boolean;
   }) =>
     createElement(
       'div',
-      { 'data-slot': 'test-activity', 'data-presentation': presentation },
+      {
+        'data-slot': 'test-activity',
+        'data-presentation': presentation,
+        'data-read-only': String(readOnly),
+      },
       `${artifactId}:${attemptId}`,
     ),
-  PracticeView: ({ attemptId }) =>
-    createElement('div', { 'data-slot': 'test-practice' }, attemptId),
+  PracticeView: ({
+    attemptId,
+    readOnly,
+  }: {
+    attemptId: string;
+    readOnly?: boolean;
+  }) =>
+    createElement(
+      'div',
+      { 'data-slot': 'test-practice', 'data-read-only': String(readOnly) },
+      attemptId,
+    ),
   DictationControl: ({ onProvisional, onFinal, onCancel }) =>
     createElement(
       'div',
@@ -274,7 +292,12 @@ const bridge = (getStudySession = vi.fn(async () => snapshot())) => {
 };
 
 const mountDocument = async (
-  props: { accountId?: string; sessionId?: string } = {},
+  props: {
+    accountId?: string;
+    sessionId?: string;
+    refreshEpoch?: number;
+    readOnly?: boolean;
+  } = {},
   bridgeOverride = bridge(),
   renderersOverride: StudyDocumentRenderers = renderers,
 ) => {
@@ -289,6 +312,8 @@ const mountDocument = async (
         createElement(StudyDocument, {
           accountId: props.accountId ?? 'student-a',
           sessionId: props.sessionId ?? 'session-1',
+          refreshEpoch: props.refreshEpoch ?? 0,
+          readOnly: props.readOnly ?? false,
         }),
       ),
     ),
@@ -336,6 +361,39 @@ afterEach(() => {
 });
 
 describe('StudyDocument', () => {
+  it('reloads the saved session for a new route epoch without losing the composer draft', async () => {
+    const getStudySession = vi.fn(async () => snapshot());
+    const currentBridge = bridge(getStudySession);
+    const { container } = await mountDocument({}, currentBridge);
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea');
+    if (!textarea) throw new Error('Expected the study composer.');
+    const setter = Object.getOwnPropertyDescriptor(
+      HTMLTextAreaElement.prototype,
+      'value',
+    )?.set;
+    await act(async () => {
+      setter?.call(textarea, 'Keep this unsaved question during refresh.');
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    await act(async () => {
+      root?.render(
+        createElement(
+          StudyDocumentRenderersProvider,
+          { renderers },
+          createElement(StudyDocument, {
+            accountId: 'student-a',
+            sessionId: 'session-1',
+            readOnly: false,
+            refreshEpoch: 1,
+          }),
+        ),
+      );
+    });
+    await vi.waitFor(() => expect(getStudySession).toHaveBeenCalledTimes(2));
+    expect(textarea.value).toBe('Keep this unsaved question during refresh.');
+  });
+
   it('renders chronological messages and their parts in persisted order', async () => {
     const first = message('message-1', 1, 'student', [
       { kind: 'text', text: 'First question' },
@@ -900,6 +958,241 @@ describe('StudyDocument', () => {
       requestId: expect.any(String),
     });
   });
+
+  it('keeps cached study navigation readable while blocking offline-local mutations', async () => {
+    const expiredTimer: StudyTimerDTO = {
+      deadlineAt: '2026-11-03T11:59:00.000Z',
+      revision: 2,
+      expiredRevision: 2,
+      resolvedExpiredRevision: null,
+      finishedAt: null,
+    };
+    const failedTurn = message(
+      'student-message',
+      1,
+      'student',
+      [{ kind: 'text', text: 'Saved study question' }],
+      { turnId: 'turn-failed', status: 'failed' },
+    );
+    const savedLesson = message('tutor-message', 2, 'tutor', [
+      { kind: 'text', text: 'Cached explanation.' },
+      {
+        kind: 'activity',
+        artifactId: 'activity-1',
+        versionId: 'version-1',
+        attemptId: 'attempt-1',
+      },
+      { kind: 'practice', practiceAttemptId: 'practice-1' },
+      { kind: 'citation', reference: sourceReference },
+      {
+        kind: 'status',
+        code: 'study-timer-expired',
+        label: 'Study timer expired',
+      },
+    ]);
+    const currentBridge = bridge(
+      vi.fn(async () =>
+        snapshot({
+          session: session({
+            draft: { text: 'Saved study question', revision: 4 },
+            timer: expiredTimer,
+          }),
+          messages: [failedTurn, savedLesson],
+          hasMoreBefore: true,
+          sourceReferences: [sourceReference],
+        }),
+      ),
+    );
+    const { container } = await mountDocument(
+      { readOnly: true },
+      currentBridge,
+    );
+
+    expect(container.textContent).toContain('Saved study question');
+    expect(container.textContent).toContain('Cached explanation.');
+    expect(
+      container
+        .querySelector('[data-slot="test-activity"]')
+        ?.getAttribute('data-read-only'),
+    ).toBe('true');
+    expect(
+      container.querySelector<HTMLTextAreaElement>('textarea')?.readOnly,
+    ).toBe(true);
+    expect(
+      container.querySelector<HTMLButtonElement>(
+        'button[aria-label="Inspect sources"]',
+      )?.disabled,
+    ).not.toBe(true);
+    expect(
+      container.querySelector<HTMLButtonElement>(
+        'button[aria-label="Add attachment"]',
+      )?.disabled,
+    ).toBe(true);
+    expect(
+      container.querySelector<HTMLButtonElement>(
+        'button[aria-label="Send message"]',
+      )?.disabled,
+    ).toBe(true);
+    expect(
+      [...container.querySelectorAll<HTMLButtonElement>('button')].find(
+        (button) => button.textContent?.includes('Retry response'),
+      )?.disabled,
+    ).toBe(true);
+    expect(
+      container
+        .querySelector('[data-slot="test-practice"]')
+        ?.getAttribute('data-read-only'),
+    ).toBe('true');
+    expect(
+      container.querySelector('[data-slot="study-timer-expiry-summary"]'),
+    ).not.toBeNull();
+    expect(currentBridge.getGradeSettings).not.toHaveBeenCalled();
+    expect(currentBridge.saveStudyDraft).not.toHaveBeenCalled();
+    expect(currentBridge.sendStudyTurn).not.toHaveBeenCalled();
+    expect(currentBridge.retryStudyTurn).not.toHaveBeenCalled();
+    expect(currentBridge.cancelStudyTurn).not.toHaveBeenCalled();
+    expect(currentBridge.chooseContextFiles).not.toHaveBeenCalled();
+    expect(currentBridge.reconcileStudyDeadline).not.toHaveBeenCalled();
+  });
+
+  it('keeps the real PracticeView readable and non-mutating in read-only StudyDocument mode', async () => {
+    const practiceAttempt: PracticeSnapshot = {
+      id: 'practice-1',
+      courseId: 'course-1',
+      sessionId: 'session-1',
+      mode: 'quiz',
+      feedbackMode: 'end',
+      status: 'in-progress',
+      revision: 1,
+      assisted: false,
+      priorAttemptId: null,
+      questions: [
+        {
+          id: 'practice-question-1',
+          kind: 'numeric',
+          prompt: 'What is one plus one?',
+          options: null,
+          unit: null,
+          objectiveIds: ['objective-1'],
+          sourceReferences: [],
+        },
+      ],
+      answers: [
+        {
+          questionId: 'practice-question-1',
+          revision: 1,
+          value: '2',
+          savedAt: '2026-11-03T12:00:00.000Z',
+        },
+      ],
+      feedback: [],
+    };
+    const getPracticeAttempt = vi.fn(async () => practiceAttempt);
+    const savePracticeAnswer = vi.fn(async () => practiceAttempt);
+    const submitPracticeAttempt = vi.fn(async () => practiceAttempt);
+    const switchPracticeToGuided = vi.fn(async () => practiceAttempt);
+    const retryPracticeAttempt = vi.fn(async () => practiceAttempt);
+    const practiceMessage = message('practice-message', 1, 'tutor', [
+      { kind: 'practice', practiceAttemptId: practiceAttempt.id },
+    ]);
+    const currentBridge = bridge(
+      vi.fn(async () => snapshot({ messages: [practiceMessage] })),
+    );
+    Object.assign(window.scholar, {
+      getPracticeAttempt,
+      savePracticeAnswer,
+      submitPracticeAttempt,
+      switchPracticeToGuided,
+      retryPracticeAttempt,
+    });
+    const renderersWithPractice: StudyDocumentRenderers = {
+      ...renderers,
+      PracticeView: ({ accountId, sessionId, attemptId, readOnly }) =>
+        createElement(ActualPracticeView, {
+          accountId,
+          sessionId,
+          attemptId,
+          readOnly,
+        }),
+    };
+    const { container } = await mountDocument(
+      { readOnly: true },
+      currentBridge,
+      renderersWithPractice,
+    );
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain('What is one plus one?'),
+    );
+
+    const answerInput = container.querySelector<HTMLInputElement>(
+      'input[aria-label="Answer for question 1"]',
+    );
+    expect(answerInput?.value).toBe('2');
+    expect(answerInput?.disabled).toBe(true);
+    expect(container.textContent).toContain(
+      'Reconnect online to save pending answers',
+    );
+    expect(getPracticeAttempt).toHaveBeenCalledOnce();
+
+    await act(async () =>
+      container
+        .querySelector('section[aria-labelledby^="practice-title-"] form')
+        ?.dispatchEvent(
+          new Event('submit', { bubbles: true, cancelable: true }),
+        ),
+    );
+    expect(savePracticeAnswer).not.toHaveBeenCalled();
+    expect(submitPracticeAttempt).not.toHaveBeenCalled();
+    expect(switchPracticeToGuided).not.toHaveBeenCalled();
+    expect(retryPracticeAttempt).not.toHaveBeenCalled();
+  });
+
+  it('refreshes a fresh study snapshot when host read-only mode changes and reconnects', async () => {
+    const getStudySession = vi
+      .fn()
+      .mockResolvedValueOnce(
+        snapshot({ session: session({ title: 'Online snapshot' }) }),
+      )
+      .mockResolvedValueOnce(
+        snapshot({ session: session({ title: 'Offline cached snapshot' }) }),
+      )
+      .mockResolvedValueOnce(
+        snapshot({ session: session({ title: 'Fresh online snapshot' }) }),
+      );
+    const currentBridge = bridge(getStudySession);
+    const container = document.createElement('div');
+    document.body.append(container);
+    root = createRoot(container);
+    const render = (readOnly: boolean) =>
+      createElement(
+        StudyDocumentRenderersProvider,
+        { renderers },
+        createElement(StudyDocument, {
+          accountId: 'student-a',
+          sessionId: 'session-1',
+          readOnly,
+        }),
+      );
+
+    await act(async () => root?.render(render(false)));
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain('Online snapshot'),
+    );
+    expect(currentBridge.getGradeSettings).toHaveBeenCalledOnce();
+
+    await act(async () => root?.render(render(true)));
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain('Offline cached snapshot'),
+    );
+    expect(currentBridge.getGradeSettings).toHaveBeenCalledOnce();
+
+    await act(async () => root?.render(render(false)));
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain('Fresh online snapshot'),
+    );
+    expect(getStudySession).toHaveBeenCalledTimes(3);
+    expect(currentBridge.getGradeSettings).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('useStudySession account and session fences', () => {
@@ -1024,5 +1317,100 @@ describe('useStudySession account and session fences', () => {
     await act(drain);
 
     expect(getStudySession).toHaveBeenCalledTimes(initialCalls + 1);
+  });
+
+  it('preserves cached grade settings while read-only refresh skips refetching', async () => {
+    const currentBridge = bridge();
+    let study: ReturnType<typeof useStudySession> | null = null;
+    const View = ({ readOnly }: { readOnly: boolean }) => {
+      study = useStudySession('student-a', 'session-1', readOnly);
+      return createElement(
+        'div',
+        null,
+        study.snapshot?.session.title ?? 'Loading',
+      );
+    };
+    const container = document.createElement('div');
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () =>
+      root?.render(createElement(View, { readOnly: false })),
+    );
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain('Cell biology review'),
+    );
+    const cachedGradeSettings = study!.gradeSettings;
+    expect(cachedGradeSettings).not.toBeNull();
+
+    await act(async () =>
+      root?.render(createElement(View, { readOnly: true })),
+    );
+    await vi.waitFor(() =>
+      expect(currentBridge.getStudySession).toHaveBeenCalledTimes(2),
+    );
+
+    expect(currentBridge.getGradeSettings).toHaveBeenCalledOnce();
+    expect(study!.gradeSettings).toEqual(cachedGradeSettings);
+  });
+
+  it('guards every study mutation callback in host read-only mode', async () => {
+    const currentBridge = bridge();
+    let study: ReturnType<typeof useStudySession> | null = null;
+    const View = () => {
+      study = useStudySession('student-a', 'session-1', true);
+      return createElement(
+        'div',
+        null,
+        study.snapshot?.session.title ?? 'Loading',
+      );
+    };
+    const container = document.createElement('div');
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => root?.render(createElement(View)));
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain('Cell biology review'),
+    );
+
+    await expect(study!.saveDraft('offline edit', 0)).rejects.toMatchObject({
+      code: 'host-read-only',
+    });
+    await expect(
+      study!.sendTurn({
+        text: 'offline message',
+        attachmentIds: [],
+        expectedDraftRevision: 0,
+        composerRevision: 0,
+      }),
+    ).rejects.toMatchObject({ code: 'host-read-only' });
+    await expect(study!.retryTurn('turn-1')).rejects.toMatchObject({
+      code: 'host-read-only',
+    });
+    await expect(study!.stopTurn('turn-1')).rejects.toMatchObject({
+      code: 'host-read-only',
+    });
+    await expect(study!.timerActions.reconcile()).rejects.toMatchObject({
+      code: 'host-read-only',
+    });
+    await expect(study!.timerActions.finish()).rejects.toMatchObject({
+      code: 'host-read-only',
+    });
+    await expect(study!.timerActions.extend(15)).rejects.toMatchObject({
+      code: 'host-read-only',
+    });
+    await expect(study!.timerActions.continueUntimed()).rejects.toMatchObject({
+      code: 'host-read-only',
+    });
+    await expect(study!.addAttachments()).resolves.toEqual([]);
+
+    expect(currentBridge.saveStudyDraft).not.toHaveBeenCalled();
+    expect(currentBridge.sendStudyTurn).not.toHaveBeenCalled();
+    expect(currentBridge.retryStudyTurn).not.toHaveBeenCalled();
+    expect(currentBridge.cancelStudyTurn).not.toHaveBeenCalled();
+    expect(currentBridge.reconcileStudyDeadline).not.toHaveBeenCalled();
+    expect(currentBridge.finishStudySession).not.toHaveBeenCalled();
+    expect(currentBridge.extendStudySession).not.toHaveBeenCalled();
+    expect(currentBridge.continueStudyUntimed).not.toHaveBeenCalled();
+    expect(currentBridge.chooseContextFiles).not.toHaveBeenCalled();
   });
 });

@@ -31,11 +31,13 @@ type StudyTimerProps = {
   sessionId: string;
   timer: StudyTimerDTO;
   actions: StudyTimerActions;
+  readOnly?: boolean;
 };
 type StudyTimerResolutionProps = {
   timer: StudyTimerDTO;
   summary: string;
   actions: StudyTimerActions;
+  readOnly?: boolean;
 };
 type TimerResolutionAction = 'finish' | 'extend' | 'untimed';
 
@@ -99,7 +101,12 @@ const timerStatusOf = (timer: StudyTimerDTO, now: number): TimerStatus => {
   return now >= deadline ? 'expired' : 'running';
 };
 
-export const StudyTimer = ({ sessionId, timer, actions }: StudyTimerProps) => {
+export const StudyTimer = ({
+  sessionId,
+  timer,
+  actions,
+  readOnly = false,
+}: StudyTimerProps) => {
   const [now, setNow] = useState(() => Date.now());
   const [reconcileError, setReconcileError] = useState<string | null>(null);
   const [reconciling, setReconciling] = useState(false);
@@ -135,6 +142,7 @@ export const StudyTimer = ({ sessionId, timer, actions }: StudyTimerProps) => {
   }, [scopeKey]);
 
   const reconcile = useCallback(async () => {
+    if (readOnly) return;
     const key = scopeKey;
     if (pendingKeyRef.current === key || reconciledKeyRef.current === key)
       return;
@@ -158,10 +166,11 @@ export const StudyTimer = ({ sessionId, timer, actions }: StudyTimerProps) => {
         if (mountedRef.current) setReconciling(false);
       }
     }
-  }, [actions.reconcile, scopeKey]);
+  }, [actions.reconcile, readOnly, scopeKey]);
 
   useEffect(() => {
     if (
+      readOnly ||
       status !== 'expired' ||
       timer.resolvedExpiredRevision === timer.revision ||
       timer.expiredRevision === timer.revision
@@ -170,6 +179,7 @@ export const StudyTimer = ({ sessionId, timer, actions }: StudyTimerProps) => {
     void reconcile();
   }, [
     status,
+    readOnly,
     timer.expiredRevision,
     timer.resolvedExpiredRevision,
     timer.revision,
@@ -203,6 +213,7 @@ export const StudyTimer = ({ sessionId, timer, actions }: StudyTimerProps) => {
             type="button"
             size="sm"
             variant="outline"
+            disabled={readOnly}
             onClick={() => void reconcile()}
           >
             Retry timer update
@@ -217,6 +228,7 @@ export const StudyTimerResolution = ({
   timer,
   summary,
   actions,
+  readOnly = false,
 }: StudyTimerResolutionProps) => {
   const [durationText, setDurationText] = useState('15');
   const [activeAction, setActiveAction] =
@@ -252,7 +264,7 @@ export const StudyTimerResolution = ({
     actionName: TimerResolutionAction,
     action: () => Promise<unknown>,
   ) => {
-    if (busyRef.current) return;
+    if (readOnly || busyRef.current) return;
     busyRef.current = true;
     setActiveAction(actionName);
     setError(null);
@@ -308,6 +320,7 @@ export const StudyTimerResolution = ({
               max={240}
               step={1}
               value={durationText}
+              disabled={readOnly}
               onChange={(event) => setDurationText(event.target.value)}
             />
             <span
@@ -322,7 +335,7 @@ export const StudyTimerResolution = ({
             variant="outline"
             aria-label="Extend session"
             aria-busy={activeAction === 'extend'}
-            disabled={busy || !validDuration}
+            disabled={readOnly || busy || !validDuration}
             onClick={() =>
               void run('extend', () => actions.extend(durationMinutes))
             }
@@ -338,7 +351,7 @@ export const StudyTimerResolution = ({
           type="button"
           variant="default"
           aria-busy={activeAction === 'finish'}
-          disabled={busy}
+          disabled={readOnly || busy}
           onClick={() => void run('finish', actions.finish)}
         >
           <LoadingSwap isLoading={activeAction === 'finish'}>
@@ -350,7 +363,7 @@ export const StudyTimerResolution = ({
           variant="outline"
           aria-label="Continue indefinitely"
           aria-busy={activeAction === 'untimed'}
-          disabled={busy}
+          disabled={readOnly || busy}
           onClick={() => void run('untimed', actions.continueUntimed)}
         >
           <LoadingSwap isLoading={activeAction === 'untimed'}>

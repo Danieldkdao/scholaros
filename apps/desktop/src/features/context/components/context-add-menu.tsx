@@ -37,19 +37,39 @@ export const ContextAddMenu = ({
       }
     />
     <DropdownMenuContent align="end" className="w-auto">
-      <DropdownMenuItem onClick={onCreateNote}>
+      <DropdownMenuItem
+        disabled={disabled}
+        onClick={() => {
+          if (!disabled) onCreateNote();
+        }}
+      >
         <FileText aria-hidden="true" />
         Text or note
       </DropdownMenuItem>
-      <DropdownMenuItem onClick={onCreatePreference}>
+      <DropdownMenuItem
+        disabled={disabled}
+        onClick={() => {
+          if (!disabled) onCreatePreference();
+        }}
+      >
         <Lightbulb aria-hidden="true" />
         Personal preference or context
       </DropdownMenuItem>
-      <DropdownMenuItem onClick={onImport}>
+      <DropdownMenuItem
+        disabled={disabled}
+        onClick={() => {
+          if (!disabled) onImport();
+        }}
+      >
         <Upload aria-hidden="true" />
         Document or PDF
       </DropdownMenuItem>
-      <DropdownMenuItem onClick={onImport}>
+      <DropdownMenuItem
+        disabled={disabled}
+        onClick={() => {
+          if (!disabled) onImport();
+        }}
+      >
         <ImagePlus aria-hidden="true" />
         Image or screenshot
       </DropdownMenuItem>

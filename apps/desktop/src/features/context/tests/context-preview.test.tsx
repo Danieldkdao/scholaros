@@ -240,3 +240,40 @@ it('explains removed originals and preserves the historical preview state', asyn
   );
   expect(document.body.textContent).toContain('Earlier version');
 });
+
+it('preserves source inspection while hiding retry in host read-only mode', async () => {
+  const onVersionChange = vi.fn();
+  const onRetry = vi.fn();
+  await act(async () =>
+    root.render(
+      createElement(ContextPreview, {
+        open: true,
+        onOpenChange: vi.fn(),
+        details,
+        selectedVersionId: 'version-current',
+        preview: {
+          kind: 'text',
+          text: 'Cached course material',
+          locators: [{ kind: 'page', page: 2 }],
+          partial: false,
+          uncertainty: null,
+        },
+        loading: false,
+        retrying: false,
+        readOnly: true,
+        onVersionChange,
+        onRetry,
+      }),
+    ),
+  );
+
+  expect(document.body.textContent).toContain('Cached course material');
+  expect(document.body.textContent).toContain('Page 2');
+  expect(
+    document.body.querySelector<HTMLButtonElement>(
+      'button[aria-labelledby="context-preview-version-label"]',
+    )?.disabled,
+  ).not.toBe(true);
+  expect(document.body.textContent).not.toContain('Try again');
+  expect(onRetry).not.toHaveBeenCalled();
+});

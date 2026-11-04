@@ -34,6 +34,7 @@ type NoteDialogProps = {
   onOpenChange: (open: boolean) => void;
   finalFocus: RefObject<HTMLElement | null>;
   courses: ContextCourse[];
+  readOnly?: boolean;
   item?: ContextItemDTO;
   initialText?: string;
   canEditText: boolean;
@@ -50,6 +51,7 @@ type PreferenceDialogProps = {
   onOpenChange: (open: boolean) => void;
   finalFocus: RefObject<HTMLElement | null>;
   courses: ContextCourse[];
+  readOnly?: boolean;
   onSave: (input: {
     preference: PreferenceContent;
     courseId: string | null;
@@ -76,16 +78,19 @@ const CourseSelect = ({
   value,
   onChange,
   label,
+  disabled = false,
 }: {
   courses: ContextCourse[];
   value: string | null;
   onChange: (value: string | null) => void;
   label: string;
+  disabled?: boolean;
 }) => (
   <div className="flex flex-col gap-2">
     <span>{label}</span>
     <Select
       value={value}
+      disabled={disabled}
       onValueChange={(nextValue) =>
         onChange(typeof nextValue === 'string' ? nextValue : null)
       }
@@ -141,6 +146,7 @@ const NoteDialog = (props: NoteDialogProps) => {
 
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (props.readOnly) return;
     const nextTitleError = title.trim() ? null : 'Enter a title.';
     const nextTextError =
       props.canEditText && !text.trim() ? 'Enter some note text.' : null;
@@ -180,6 +186,11 @@ const NoteDialog = (props: NoteDialogProps) => {
             Keep useful class context here; it never changes source or access
             permissions.
           </DialogDescription>
+          {props.readOnly && (
+            <p role="status" className="text-base text-muted-foreground">
+              Reconnect online to save Context changes.
+            </p>
+          )}
         </DialogHeader>
         <form
           noValidate
@@ -195,6 +206,7 @@ const NoteDialog = (props: NoteDialogProps) => {
               className="w-full text-base"
               maxLength={160}
               required
+              readOnly={props.readOnly}
               value={title}
               aria-invalid={!!titleError}
               aria-describedby={titleError ? `${id}-title-error` : undefined}
@@ -219,6 +231,7 @@ const NoteDialog = (props: NoteDialogProps) => {
                 className="min-h-48 w-full text-base"
                 maxLength={50_000}
                 required
+                readOnly={props.readOnly}
                 value={text}
                 aria-invalid={!!textError}
                 aria-describedby={textError ? `${id}-text-error` : undefined}
@@ -245,6 +258,7 @@ const NoteDialog = (props: NoteDialogProps) => {
             value={courseId}
             onChange={setCourseId}
             label="Course"
+            disabled={props.readOnly}
           />
           {requestError && (
             <p role="alert" className="text-base text-destructive">
@@ -260,7 +274,7 @@ const NoteDialog = (props: NoteDialogProps) => {
             >
               Cancel
             </Button>
-            <Button type="submit" disabled={saving}>
+            <Button type="submit" disabled={saving || props.readOnly}>
               <LoadingSwap isLoading={saving}>
                 {props.item ? 'Save changes' : 'Add note'}
               </LoadingSwap>
@@ -294,6 +308,7 @@ const PreferenceDialog = (props: PreferenceDialogProps) => {
 
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (props.readOnly) return;
     const nextValueError = value.trim() ? null : 'Enter a preference.';
     setValueError(nextValueError);
     setRequestError(null);
@@ -328,6 +343,11 @@ const PreferenceDialog = (props: PreferenceDialogProps) => {
             Preferences personalize explanations but never change access or
             coursework rules.
           </DialogDescription>
+          {props.readOnly && (
+            <p role="status" className="text-base text-muted-foreground">
+              Reconnect online to save Context changes.
+            </p>
+          )}
         </DialogHeader>
         <form
           noValidate
@@ -367,6 +387,7 @@ const PreferenceDialog = (props: PreferenceDialogProps) => {
               className="w-full text-base"
               maxLength={300}
               required
+              readOnly={props.readOnly}
               value={value}
               aria-invalid={!!valueError}
               aria-describedby={valueError ? `${id}-value-error` : undefined}
@@ -387,6 +408,7 @@ const PreferenceDialog = (props: PreferenceDialogProps) => {
             value={courseId}
             onChange={setCourseId}
             label="Course scope"
+            disabled={props.readOnly}
           />
           {requestError && (
             <p role="alert" className="text-base text-destructive">
@@ -402,7 +424,7 @@ const PreferenceDialog = (props: PreferenceDialogProps) => {
             >
               Cancel
             </Button>
-            <Button type="submit" disabled={saving}>
+            <Button type="submit" disabled={saving || props.readOnly}>
               <LoadingSwap isLoading={saving}>Add preference</LoadingSwap>
             </Button>
           </DialogFooter>

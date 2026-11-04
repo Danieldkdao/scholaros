@@ -26,6 +26,7 @@ type PracticeViewProps = {
   accountId: string;
   sessionId: string | null;
   attemptId: string;
+  readOnly?: boolean;
   onAttemptChange?: (attemptId: string) => void;
 };
 
@@ -34,6 +35,7 @@ export const PracticeView = ({
   sessionId,
   attemptId,
   onAttemptChange,
+  readOnly = false,
 }: PracticeViewProps) => {
   const titleId = `practice-title-${useId().replaceAll(':', '')}`;
   const practice = usePracticeAttempt({
@@ -41,6 +43,7 @@ export const PracticeView = ({
     sessionId,
     attemptId,
     onAttemptChange,
+    readOnly,
   });
   const snapshot = practice.snapshot;
 
@@ -152,6 +155,13 @@ export const PracticeView = ({
         </div>
       </header>
 
+      {readOnly && (
+        <p className="text-base text-muted-foreground" role="status">
+          Reconnect online to save pending answers, change practice mode, or
+          submit this attempt.
+        </p>
+      )}
+
       {practice.actionError && (
         <p className="flex items-start gap-2 text-destructive" role="alert">
           <CircleAlert aria-hidden="true" className="mt-1 size-5 shrink-0" />
@@ -223,6 +233,7 @@ export const PracticeView = ({
               answerState={practice.answerSaveStates[question.id] ?? 'empty'}
               error={practice.answerErrors[question.id] ?? null}
               disabled={
+                readOnly ||
                 snapshot.status !== 'in-progress' ||
                 practice.isSubmitting ||
                 practice.isSwitchingToGuided
@@ -238,7 +249,11 @@ export const PracticeView = ({
               <Button
                 type="button"
                 variant="outline"
-                disabled={practice.isSubmitting || practice.isSwitchingToGuided}
+                disabled={
+                  readOnly ||
+                  practice.isSubmitting ||
+                  practice.isSwitchingToGuided
+                }
                 aria-busy={practice.isSwitchingToGuided}
                 aria-label={
                   practice.isSwitchingToGuided
@@ -254,7 +269,11 @@ export const PracticeView = ({
             )}
             <Button
               type="submit"
-              disabled={practice.isSubmitting || practice.isSwitchingToGuided}
+              disabled={
+                readOnly ||
+                practice.isSubmitting ||
+                practice.isSwitchingToGuided
+              }
               aria-busy={practice.isSubmitting}
               aria-label={
                 practice.isSubmitting ? 'Submitting answers' : undefined
@@ -277,7 +296,7 @@ export const PracticeView = ({
             <Button
               type="button"
               variant="outline"
-              disabled={practice.isRetrying}
+              disabled={readOnly || practice.isRetrying}
               onClick={() => void practice.retry()}
               aria-busy={practice.isRetrying}
               aria-label={

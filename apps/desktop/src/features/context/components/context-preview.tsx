@@ -33,6 +33,7 @@ type ContextPreviewProps = {
   preview: ContextPreviewData | null;
   loading: boolean;
   retrying: boolean;
+  readOnly?: boolean;
   onVersionChange: (versionId: string) => void;
   onRetry: () => void;
 };
@@ -94,6 +95,7 @@ export const ContextPreview = ({
   preview,
   loading,
   retrying,
+  readOnly = false,
   onVersionChange,
   onRetry,
 }: ContextPreviewProps) => {
@@ -105,6 +107,7 @@ export const ContextPreview = ({
   const isHistorical =
     !!selectedVersionId && selectedVersionId !== details?.item.currentVersionId;
   const canRetry =
+    !readOnly &&
     !isHistorical &&
     !!details &&
     (details.item.kind === 'document' || details.item.kind === 'image') &&
@@ -263,8 +266,10 @@ export const ContextPreview = ({
           <Button
             type="button"
             variant="outline"
-            disabled={retrying}
-            onClick={onRetry}
+            disabled={readOnly || retrying}
+            onClick={() => {
+              if (!readOnly) onRetry();
+            }}
           >
             <LoadingSwap isLoading={retrying}>Try again</LoadingSwap>
           </Button>

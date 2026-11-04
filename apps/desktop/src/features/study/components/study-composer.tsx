@@ -94,6 +94,7 @@ export type StudyComposerProps = {
   sessionId: string;
   initialDraft: DraftValue;
   offline: boolean;
+  readOnly?: boolean;
   activeTurn: TurnDTO | null;
   failedTurnId: string | null;
   attachmentRevision?: number;
@@ -208,6 +209,7 @@ export const StudyComposer = ({
   sessionId,
   initialDraft,
   offline,
+  readOnly = false,
   activeTurn,
   failedTurnId,
   attachmentRevision = 0,
@@ -240,11 +242,13 @@ export const StudyComposer = ({
   const [offlineFromService, setOfflineFromService] = useState(false);
   const textRef = useRef(text);
   const composerRevisionRef = useRef(composerRevision);
+  const readOnlyRef = useRef(readOnly);
   const selectionRef = useRef(selection);
   const attachmentsRef = useRef(attachments);
   const savedTextRef = useRef(initialDraft.text);
   const expectedDraftRevisionRef = useRef(initialDraft.revision);
   const saveQueueRef = useRef(Promise.resolve());
+  const savingRequestRef = useRef(false);
   const submittingRef = useRef(false);
   const stoppingRef = useRef(false);
   const mountedRef = useRef(true);
@@ -255,6 +259,7 @@ export const StudyComposer = ({
   saveDraftRef.current = onSaveDraft;
   sendRef.current = onSend;
   attachmentsRef.current = attachments;
+  readOnlyRef.current = readOnly;
 
   useEffect(() => {
     mountedRef.current = true;
@@ -305,9 +310,11 @@ export const StudyComposer = ({
   }, [text]);
 
   const saveText = async (nextText: string) => {
+    if (readOnlyRef.current) return;
     if (nextText === savedTextRef.current) return;
     if (submittingRef.current) return;
     if (mountedRef.current) setSaving(true);
+    savingRequestRef.current = true;
     try {
       const result = await saveDraftRef.current(
         nextText,
@@ -326,10 +333,14 @@ export const StudyComposer = ({
         toast.error(formatComposerError(saveError));
       }
       throw saveError;
+    } finally {
+      savingRequestRef.current = false;
+      if (mountedRef.current && readOnlyRef.current) setSaving(false);
     }
   };
 
   const flushDraft = () => {
+    if (readOnlyRef.current) return;
     if (submittingRef.current || textRef.current === savedTextRef.current)
       return;
     const nextText = textRef.current;
@@ -344,7 +355,18 @@ export const StudyComposer = ({
     onUnmount: (instance) => instance.flush(),
   });
 
+  useEffect(() => {
+    if (!readOnly) {
+      if (textRef.current !== savedTextRef.current) debouncer.maybeExecute();
+      return;
+    }
+    debouncer.cancel();
+    setProvisionalTranscript(null);
+    if (!savingRequestRef.current) setSaving(false);
+  }, [debouncer, readOnly]);
+
   const updateText = (nextText: string, nextSelection?: DraftSelection) => {
+    if (readOnlyRef.current) return;
     textRef.current = nextText;
     composerRevisionRef.current += 1;
     setComposerRevision(composerRevisionRef.current);
@@ -361,6 +383,7 @@ export const StudyComposer = ({
   };
 
   const insertTranscript = (transcript: string, target: DraftSelection) => {
+    if (readOnlyRef.current) return;
     const start = Math.max(0, Math.min(target.start, textRef.current.length));
     const end = Math.max(start, Math.min(target.end, textRef.current.length));
     const nextText = `${textRef.current.slice(0, start)}${transcript}${textRef.current.slice(end)}`;
@@ -378,7 +401,7 @@ export const StudyComposer = ({
   };
 
   const onDictationFinal = (transcript: StudyDictationFinal) => {
-    if (!mountedRef.current) return;
+    if (!mountedRef.current || readOnlyRef.current) return;
     setProvisionalTranscript(null);
     if (!transcript.text.trim()) return;
     if (transcript.composerRevision !== composerRevisionRef.current) {
@@ -389,7 +412,12 @@ export const StudyComposer = ({
   };
 
   const addAttachments = async () => {
-    if (addingAttachments || attachmentsRef.current.length >= 8) return;
+    if (
+      readOnlyRef.current ||
+      addingAttachments ||
+      attachmentsRef.current.length >= 8
+    )
+      return;
     setAddingAttachments(true);
     setError(null);
     try {
@@ -418,6 +446,7 @@ export const StudyComposer = ({
   };
 
   const removeAttachment = (itemId: string) => {
+    if (readOnlyRef.current) return;
     const nextAttachments = attachmentsRef.current.filter(
       (attachment) => attachment.itemId !== itemId,
     );
@@ -448,8 +477,9 @@ export const StudyComposer = ({
     ),
   );
   const hasPayload = text.trim().length > 0 || readyAttachments.length > 0;
-  const sendingDisabledReason =
-    offline || offlineFromService
+  const sendingDisabledReason = readOnly
+    ? 'Reconnect online to change this draft, attach files, or send a message.'
+    : offline || offlineFromService
       ? 'Connect to send; your draft remains saved.'
       : activeTurnStatus?.isWorking
         ? 'A response is already being prepared.'
@@ -463,7 +493,7 @@ export const StudyComposer = ({
   const sendDisabled = submitting || Boolean(sendingDisabledReason);
 
   const submit = async () => {
-    if (submittingRef.current || sendDisabled) return;
+    if (readOnlyRef.current || submittingRef.current || sendDisabled) return;
     submittingRef.current = true;
     setSubmitting(true);
     setError(null);
@@ -537,7 +567,7 @@ export const StudyComposer = ({
   };
 
   const stop = async () => {
-    if (stoppingRef.current) return;
+    if (readOnlyRef.current || stoppingRef.current) return;
     stoppingRef.current = true;
     setStopping(true);
     try {
@@ -555,7 +585,7 @@ export const StudyComposer = ({
   };
 
   const retry = async () => {
-    if (!failedTurnId || submittingRef.current) return;
+    if (readOnlyRef.current || !failedTurnId || submittingRef.current) return;
     submittingRef.current = true;
     try {
       setSubmitting(true);
@@ -656,6 +686,7 @@ export const StudyComposer = ({
                       variant="ghost"
                       size="icon-xs"
                       aria-label={`Remove ${attachment.title} from message`}
+                      disabled={readOnly}
                       onClick={() => removeAttachment(attachment.itemId)}
                     >
                       <XIcon aria-hidden="true" />
@@ -681,6 +712,7 @@ export const StudyComposer = ({
               <Button
                 type="button"
                 variant="outline"
+                disabled={readOnly}
                 onClick={() =>
                   insertTranscript(recoverableTranscript, selectionRef.current)
                 }
@@ -714,6 +746,7 @@ export const StudyComposer = ({
           className="min-h-20 max-h-56 w-full resize-y text-base"
           maxLength={8000}
           rows={3}
+          readOnly={readOnly}
           value={text}
           placeholder="Ask about your course or share what you are working through…"
           onChange={(event) => updateText(event.target.value)}
@@ -746,7 +779,9 @@ export const StudyComposer = ({
                 size="icon-sm"
                 aria-label="Add attachment"
                 aria-busy={addingAttachments}
-                disabled={addingAttachments || attachments.length >= 8}
+                disabled={
+                  readOnly || addingAttachments || attachments.length >= 8
+                }
                 onClick={() => void addAttachments()}
               >
                 <LoadingSwap isLoading={addingAttachments}>
@@ -754,13 +789,14 @@ export const StudyComposer = ({
                 </LoadingSwap>
               </InputGroupButton>
             </TooltipWrapper>
-            {renderDictation ? (
+            {renderDictation && !readOnly ? (
               renderDictation({
                 sessionId,
                 composerRevision,
                 selection,
                 onProvisional: (transcript) => {
-                  if (mountedRef.current) setProvisionalTranscript(transcript);
+                  if (mountedRef.current && !readOnlyRef.current)
+                    setProvisionalTranscript(transcript);
                 },
                 onFinal: onDictationFinal,
                 onCancel: () => {
@@ -769,7 +805,13 @@ export const StudyComposer = ({
                 disabled: submitting || Boolean(activeTurnStatus?.isWorking),
               })
             ) : (
-              <TooltipWrapper content="Speech input is unavailable in this build">
+              <TooltipWrapper
+                content={
+                  readOnly
+                    ? 'Reconnect online to use dictation.'
+                    : 'Speech input is unavailable in this build.'
+                }
+              >
                 <InputGroupButton
                   type="button"
                   size="icon-sm"
@@ -790,7 +832,7 @@ export const StudyComposer = ({
                   variant="outline"
                   aria-label="Stop response"
                   aria-busy={stopping}
-                  disabled={stopping}
+                  disabled={readOnly || stopping}
                   onClick={() => void stop()}
                 >
                   <LoadingSwap isLoading={stopping}>
@@ -805,7 +847,9 @@ export const StudyComposer = ({
                     type="button"
                     variant="outline"
                     aria-busy={submitting}
-                    disabled={submitting || offline || offlineFromService}
+                    disabled={
+                      readOnly || submitting || offline || offlineFromService
+                    }
                     onClick={() => void retry()}
                   >
                     <LoadingSwap isLoading={submitting}>

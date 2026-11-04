@@ -36,6 +36,7 @@ type UsePracticeAttemptProps = {
   accountId: string;
   sessionId: string | null;
   attemptId: string;
+  readOnly?: boolean;
   onAttemptChange?: (attemptId: string) => void;
 };
 
@@ -81,12 +82,19 @@ export const usePracticeAttempt = ({
   accountId,
   sessionId,
   attemptId,
+  readOnly = false,
   onAttemptChange,
 }: UsePracticeAttemptProps): UsePracticeAttemptResult => {
   const scopeKey = JSON.stringify([accountId, sessionId, attemptId]);
   const scopeRef = useRef<PracticeScope>({ key: scopeKey, sessionId });
   scopeRef.current = { key: scopeKey, sessionId };
+  const readOnlyRef = useRef(readOnly);
+  readOnlyRef.current = readOnly;
+  const previousReadOnlyRef = useRef(readOnly);
+  const onAttemptChangeRef = useRef(onAttemptChange);
+  onAttemptChangeRef.current = onAttemptChange;
   const generationRef = useRef(0);
+  const readSequenceRef = useRef(0);
   const mountedRef = useRef(false);
   const activeAttemptIdRef = useRef(attemptId);
   const snapshotRef = useRef<PracticeSnapshot | null>(null);
@@ -100,6 +108,7 @@ export const usePracticeAttempt = ({
   const submitCommandRef = useRef<PracticeCommand | null>(null);
   const guidedCommandRef = useRef<PracticeCommand | null>(null);
   const retryCommandRef = useRef<PracticeCommand | null>(null);
+  const pendingAttemptChangeRef = useRef<string | null>(null);
   const saveAnswerRef = useRef<
     (questionId: string, value: string) => Promise<boolean>
   >(async () => false);
@@ -180,6 +189,7 @@ export const usePracticeAttempt = ({
   };
 
   const saveAnswer = async (questionId: string, value: string) => {
+    if (readOnlyRef.current) return false;
     const commandAttemptId = activeAttemptIdRef.current;
     const commandScope = scopeRef.current.key;
     const generation = generationRef.current;
@@ -220,6 +230,7 @@ export const usePracticeAttempt = ({
 
     const queuedSave = enqueue(async () => {
       if (
+        readOnlyRef.current ||
         !isCurrentScope(commandScope, generation) ||
         activeAttemptIdRef.current !== commandAttemptId
       )
@@ -275,6 +286,7 @@ export const usePracticeAttempt = ({
           }));
           const latestValue = answerDraftsRef.current.get(questionId);
           if (
+            !readOnlyRef.current &&
             latestValue !== undefined &&
             !saveTimersRef.current.has(questionId)
           ) {
@@ -292,10 +304,15 @@ export const usePracticeAttempt = ({
           if (pendingAnswersRef.current.get(questionId) === command)
             pendingAnswersRef.current.delete(questionId);
           try {
+            const readSequence = readSequenceRef.current;
             const latest = await practiceBridge().getPracticeAttempt({
               attemptId: commandAttemptId,
             });
-            if (latest && isCurrentScope(commandScope, generation)) {
+            if (
+              latest &&
+              isCurrentScope(commandScope, generation) &&
+              readSequenceRef.current === readSequence
+            ) {
               updateSavedAnswers(latest);
               setCurrentSnapshot(latest);
             }
@@ -364,11 +381,15 @@ export const usePracticeAttempt = ({
     generation: number,
     shouldHydrate: boolean,
   ) => {
+    const requestSequence = ++readSequenceRef.current;
+    const isCurrentRead = () =>
+      readSequenceRef.current === requestSequence &&
+      isCurrentScope(key, generation);
     try {
       const loaded = await practiceBridge().getPracticeAttempt({
         attemptId: requestedAttemptId,
       });
-      if (!mountedRef.current || !isCurrentScope(key, generation)) return;
+      if (!mountedRef.current || !isCurrentRead()) return;
       if (
         !loaded ||
         loaded.id !== requestedAttemptId ||
@@ -388,7 +409,7 @@ export const usePracticeAttempt = ({
       setActionError(null);
       setLoadError(null);
     } catch {
-      if (!mountedRef.current || !isCurrentScope(key, generation)) return;
+      if (!mountedRef.current || !isCurrentRead()) return;
       if (!snapshotRef.current)
         setLoadError(
           'Could not load this practice attempt. Check your connection and try again.',
@@ -404,6 +425,10 @@ export const usePracticeAttempt = ({
     const generation = generationRef.current + 1;
     generationRef.current = generation;
     const key = scopeKey;
+    const readSequence = ++readSequenceRef.current;
+    const isCurrentRead = () =>
+      readSequenceRef.current === readSequence &&
+      isCurrentScope(key, generation);
     mountedRef.current = true;
     activeAttemptIdRef.current = attemptId;
     setActiveAttemptId(attemptId);
@@ -414,6 +439,7 @@ export const usePracticeAttempt = ({
     submitCommandRef.current = null;
     guidedCommandRef.current = null;
     retryCommandRef.current = null;
+    pendingAttemptChangeRef.current = null;
     setSnapshot(null);
     setLoadedScope(null);
     setAnswerDrafts({});
@@ -429,7 +455,7 @@ export const usePracticeAttempt = ({
     void practiceBridge()
       .getPracticeAttempt({ attemptId })
       .then((loaded) => {
-        if (!mountedRef.current || !isCurrentScope(key, generation)) return;
+        if (!mountedRef.current || !isCurrentRead()) return;
         if (
           !loaded ||
           loaded.id !== attemptId ||
@@ -442,14 +468,13 @@ export const usePracticeAttempt = ({
         setLoadedScope(key);
       })
       .catch(() => {
-        if (mountedRef.current && isCurrentScope(key, generation))
+        if (mountedRef.current && isCurrentRead())
           setLoadError(
             'Could not load this practice attempt. Check your connection and try again.',
           );
       })
       .finally(() => {
-        if (mountedRef.current && isCurrentScope(key, generation))
-          setIsLoading(false);
+        if (mountedRef.current && isCurrentRead()) setIsLoading(false);
       });
 
     return () => {
@@ -473,7 +498,65 @@ export const usePracticeAttempt = ({
     saveTimersRef.current.delete(questionId);
   };
 
+  const schedulePendingAnswers = () => {
+    if (readOnlyRef.current) return;
+    for (const [questionId, value] of answerDraftsRef.current) {
+      const hasSavedAnswer = savedAnswersRef.current.has(questionId);
+      if (
+        (hasSavedAnswer && savedAnswersRef.current.get(questionId) === value) ||
+        (!hasSavedAnswer && value === '') ||
+        saveTimersRef.current.has(questionId)
+      )
+        continue;
+      const timer = setTimeout(() => {
+        saveTimersRef.current.delete(questionId);
+        void saveAnswerRef.current(questionId, value);
+      }, 500);
+      saveTimersRef.current.set(questionId, timer);
+    }
+  };
+
+  useEffect(() => {
+    const modeChanged = previousReadOnlyRef.current !== readOnly;
+    previousReadOnlyRef.current = readOnly;
+    if (!modeChanged) return;
+    if (readOnly) {
+      for (const [questionId, timer] of saveTimersRef.current) {
+        clearTimeout(timer);
+        saveTimersRef.current.delete(questionId);
+      }
+    }
+
+    const key = scopeRef.current.key;
+    const generation = generationRef.current;
+    const refresh = readAttempt(
+      activeAttemptIdRef.current,
+      key,
+      generation,
+      snapshotRef.current === null,
+    );
+    const requestSequence = readSequenceRef.current;
+    void refresh.then(() => {
+      if (
+        !mountedRef.current ||
+        !isCurrentScope(key, generation) ||
+        readSequenceRef.current !== requestSequence
+      )
+        return;
+      setIsLoading(false);
+      if (readOnlyRef.current) return;
+      const pendingAttemptId = pendingAttemptChangeRef.current;
+      if (pendingAttemptId) {
+        pendingAttemptChangeRef.current = null;
+        onAttemptChangeRef.current?.(pendingAttemptId);
+        return;
+      }
+      schedulePendingAnswers();
+    });
+  }, [readOnly]);
+
   const flushAnswer = async (questionId: string) => {
+    if (readOnlyRef.current) return false;
     clearSaveTimer(questionId);
     const value = answerDraftsRef.current.get(questionId) ?? '';
     if (savedAnswersRef.current.get(questionId) === value) return true;
@@ -482,12 +565,14 @@ export const usePracticeAttempt = ({
   };
 
   const flushAllAnswers = async () => {
+    if (readOnlyRef.current) return false;
     const current = snapshotRef.current;
     if (!current) return false;
     const results = await Promise.all(
       current.questions.map((question) => flushAnswer(question.id)),
     );
     await commandQueueRef.current;
+    if (readOnlyRef.current) return false;
     if (results.some((result) => !result)) return false;
     return current.questions.every((question) => {
       const value = answerDraftsRef.current.get(question.id) ?? '';
@@ -499,6 +584,7 @@ export const usePracticeAttempt = ({
   };
 
   const changeAnswer = (questionId: string, value: string) => {
+    if (readOnlyRef.current) return;
     answerDraftsRef.current.set(questionId, value);
     setAnswerDrafts((currentDrafts) => ({
       ...currentDrafts,
@@ -539,6 +625,7 @@ export const usePracticeAttempt = ({
   };
 
   const retryAnswerSave = (questionId: string) => {
+    if (readOnlyRef.current) return;
     clearSaveTimer(questionId);
     const value = answerDraftsRef.current.get(questionId) ?? '';
     void saveAnswerRef.current(questionId, value);
@@ -556,7 +643,13 @@ export const usePracticeAttempt = ({
 
   const submit = async () => {
     const current = snapshotRef.current;
-    if (!current || current.status !== 'in-progress' || isSubmitting) return;
+    if (
+      readOnlyRef.current ||
+      !current ||
+      current.status !== 'in-progress' ||
+      isSubmitting
+    )
+      return;
     const commandScope = scopeRef.current.key;
     const generation = generationRef.current;
     const commandAttemptId = current.id;
@@ -565,6 +658,7 @@ export const usePracticeAttempt = ({
     try {
       const saved = await flushAllAnswers();
       if (
+        readOnlyRef.current ||
         !isCurrentScope(commandScope, generation) ||
         activeAttemptIdRef.current !== commandAttemptId
       )
@@ -615,7 +709,12 @@ export const usePracticeAttempt = ({
 
   const switchToGuided = async () => {
     const current = snapshotRef.current;
-    if (!current || current.status !== 'in-progress' || isSwitchingToGuided)
+    if (
+      readOnlyRef.current ||
+      !current ||
+      current.status !== 'in-progress' ||
+      isSwitchingToGuided
+    )
       return;
     const commandScope = scopeRef.current.key;
     const generation = generationRef.current;
@@ -625,6 +724,7 @@ export const usePracticeAttempt = ({
     try {
       const saved = await flushAllAnswers();
       if (
+        readOnlyRef.current ||
         !isCurrentScope(commandScope, generation) ||
         activeAttemptIdRef.current !== commandAttemptId
       )
@@ -679,6 +779,7 @@ export const usePracticeAttempt = ({
   const retry = async () => {
     const current = snapshotRef.current;
     if (
+      readOnlyRef.current ||
       !current ||
       (current.status !== 'evaluated' && current.status !== 'interrupted') ||
       isRetrying
@@ -716,7 +817,9 @@ export const usePracticeAttempt = ({
       hydrateSnapshot(updated);
       retryCommandRef.current = null;
       if (mountedRef.current) setActionError(null);
-      onAttemptChange?.(updated.id);
+      if (readOnlyRef.current && onAttemptChangeRef.current)
+        pendingAttemptChangeRef.current = updated.id;
+      else onAttemptChangeRef.current?.(updated.id);
     } catch {
       if (mountedRef.current && isCurrentScope(commandScope, generation))
         setActionError(
@@ -729,7 +832,8 @@ export const usePracticeAttempt = ({
   };
 
   useEffect(() => {
-    if (!currentSnapshot || currentSnapshot.status !== 'submitted') return;
+    if (readOnly || !currentSnapshot || currentSnapshot.status !== 'submitted')
+      return;
     let stopped = false;
     let timeout: ReturnType<typeof setTimeout> | undefined;
     let delay = 1_000;
@@ -767,6 +871,7 @@ export const usePracticeAttempt = ({
     currentSnapshot?.id,
     currentSnapshot?.revision,
     currentSnapshot?.status,
+    readOnly,
   ]);
 
   return {

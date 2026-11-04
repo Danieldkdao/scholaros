@@ -61,7 +61,10 @@ export type StudyBridge = Pick<typeof window.scholar, 'getCourse'> &
 export type StudyAttachmentDetails = StudyAttachment & {
   version: ContextVersionDTO | null;
 };
-export type StudySessionErrorCode = SafeErrorCode | 'unknown';
+export type StudySessionErrorCode =
+  | SafeErrorCode
+  | 'host-read-only'
+  | 'unknown';
 export type StudySessionState = {
   accountId: string | null;
   sessionId: string | null;
@@ -92,6 +95,7 @@ const isSafeErrorCode = (value: unknown): value is SafeErrorCode =>
 const getErrorCode = (error: unknown): StudySessionErrorCode => {
   if (typeof error === 'object' && error !== null && 'code' in error) {
     const code = error.code;
+    if (code === 'host-read-only') return code;
     return isSafeErrorCode(code) ? code : 'unknown';
   }
   return 'unknown';
@@ -112,6 +116,8 @@ export const formatStudySessionError = (
       return 'The account or session changed. Reopen the study session.';
     case 'permission-revoked':
       return 'Access changed before this action could finish.';
+    case 'host-read-only':
+      return 'Reconnect online to change this saved study session.';
     case 'busy':
       return 'Another session action is still finishing. Try again shortly.';
     case 'revision-conflict':
@@ -167,6 +173,12 @@ export const formatStudySessionError = (
 };
 
 const createRequestId = () => globalThis.crypto.randomUUID();
+
+const createHostReadOnlyError = () =>
+  Object.assign(
+    new Error('Reconnect online to change this saved study session.'),
+    { code: 'host-read-only' as const },
+  );
 
 const mergeMessages = (
   currentMessages: StudyMessageDTO[],
@@ -269,10 +281,18 @@ const toAttachment = async (
   };
 };
 
-export const useStudySession = (accountId: string, sessionId: string) => {
-  const scopeKey = JSON.stringify([accountId, sessionId]);
+export const useStudySession = (
+  accountId: string,
+  sessionId: string,
+  readOnly = false,
+  refreshEpoch = 0,
+) => {
+  const scopeKey = JSON.stringify([accountId, sessionId, readOnly]);
   const scopeRef = useRef(scopeKey);
   scopeRef.current = scopeKey;
+  const snapshotScopeRef = useRef<string | null>(null);
+  const readOnlyRef = useRef(readOnly);
+  readOnlyRef.current = readOnly;
   const requestSequenceRef = useRef(0);
   const requestIdsRef = useRef(new Map<string, string>());
   const stateRef = useRef<StudySessionState | null>(null);
@@ -296,7 +316,7 @@ export const useStudySession = (accountId: string, sessionId: string) => {
 
   const reload = useCallback(async (): Promise<SessionSnapshot | null> => {
     const sequence = ++requestSequenceRef.current;
-    const requestedScope = JSON.stringify([accountId, sessionId]);
+    const requestedScope = JSON.stringify([accountId, sessionId, readOnly]);
     const isCurrentRequest = () =>
       requestSequenceRef.current === sequence &&
       scopeRef.current === requestedScope;
@@ -335,11 +355,12 @@ export const useStudySession = (accountId: string, sessionId: string) => {
       }
       const [courseResult, gradeResult] = await Promise.allSettled([
         bridge.getCourse(snapshot.session.courseId),
-        bridge.getGradeSettings({}),
+        readOnly ? Promise.resolve(null) : bridge.getGradeSettings({}),
       ]);
       if (!isCurrentRequest()) return null;
       const currentSnapshot =
         scopeRef.current === requestedScope &&
+        snapshotScopeRef.current === requestedScope &&
         stateRef.current?.accountId === accountId &&
         stateRef.current.sessionId === sessionId
           ? stateRef.current.snapshot
@@ -348,7 +369,14 @@ export const useStudySession = (accountId: string, sessionId: string) => {
       const course =
         courseResult.status === 'fulfilled' ? courseResult.value : null;
       const gradeSettings =
-        gradeResult.status === 'fulfilled' ? gradeResult.value : null;
+        readOnly &&
+        stateRef.current?.accountId === accountId &&
+        stateRef.current?.sessionId === sessionId
+          ? (stateRef.current?.gradeSettings ?? null)
+          : gradeResult.status === 'fulfilled'
+            ? gradeResult.value
+            : null;
+      snapshotScopeRef.current = requestedScope;
       setState({
         accountId,
         sessionId,
@@ -378,7 +406,7 @@ export const useStudySession = (accountId: string, sessionId: string) => {
       }));
       return null;
     }
-  }, [accountId, sessionId]);
+  }, [accountId, readOnly, sessionId]);
 
   useEffect(() => {
     let unsubscribe: () => void = () => {};
@@ -402,10 +430,11 @@ export const useStudySession = (accountId: string, sessionId: string) => {
       unsubscribe();
       requestSequenceRef.current += 1;
     };
-  }, [accountId, sessionId, reload]);
+  }, [accountId, refreshEpoch, reload, sessionId]);
 
   const saveDraft = useCallback(
     async (text: string, expectedDraftRevision: number) => {
+      if (readOnlyRef.current) throw createHostReadOnlyError();
       const bridge = window.scholar as unknown as StudyBridge;
       try {
         return await bridge.saveStudyDraft({
@@ -435,7 +464,8 @@ export const useStudySession = (accountId: string, sessionId: string) => {
 
   const sendTurn = useCallback(
     async (input: StudySendInput): Promise<StudySendResult> => {
-      const requestedScope = JSON.stringify([accountId, sessionId]);
+      if (readOnlyRef.current) throw createHostReadOnlyError();
+      const requestedScope = JSON.stringify([accountId, sessionId, readOnly]);
       const requestKey = `turn:${accountId}:${sessionId}:${input.expectedDraftRevision}:${input.composerRevision}:${JSON.stringify(input.attachmentIds)}`;
       const requestId = getRequestId(requestKey);
       const bridge = window.scholar as unknown as StudyBridge;
@@ -465,12 +495,13 @@ export const useStudySession = (accountId: string, sessionId: string) => {
         });
       }
     },
-    [accountId, reload, sessionId],
+    [accountId, readOnly, reload, sessionId],
   );
 
   const retryTurn = useCallback(
     async (turnId: string) => {
-      const requestedScope = JSON.stringify([accountId, sessionId]);
+      if (readOnlyRef.current) throw createHostReadOnlyError();
+      const requestedScope = JSON.stringify([accountId, sessionId, readOnly]);
       const requestKey = `retry:${accountId}:${sessionId}:${turnId}`;
       const requestId = getRequestId(requestKey);
       const bridge = window.scholar as unknown as StudyBridge;
@@ -490,11 +521,12 @@ export const useStudySession = (accountId: string, sessionId: string) => {
         });
       }
     },
-    [accountId, reload, sessionId],
+    [accountId, readOnly, reload, sessionId],
   );
 
   const stopTurn = useCallback(
     async (turnId: string) => {
+      if (readOnlyRef.current) throw createHostReadOnlyError();
       const bridge = window.scholar as unknown as StudyBridge;
       try {
         await bridge.cancelStudyTurn({ sessionId, turnId });
@@ -506,14 +538,14 @@ export const useStudySession = (accountId: string, sessionId: string) => {
         );
       }
     },
-    [accountId, reload, sessionId],
+    [accountId, readOnly, reload, sessionId],
   );
 
   const loadOlderMessages = useCallback(async () => {
     const currentSnapshot = state.snapshot;
     const firstMessage = currentSnapshot?.messages[0];
     if (!currentSnapshot?.hasMoreBefore || !firstMessage) return;
-    const requestedScope = JSON.stringify([accountId, sessionId]);
+    const requestedScope = JSON.stringify([accountId, sessionId, readOnly]);
     const bridge = window.scholar as unknown as StudyBridge;
     setState((previous) => ({
       ...previous,
@@ -567,9 +599,10 @@ export const useStudySession = (accountId: string, sessionId: string) => {
         olderMessagesErrorCode: getErrorCode(error),
       }));
     }
-  }, [accountId, sessionId, state.snapshot]);
+  }, [accountId, readOnly, sessionId, state.snapshot]);
 
   const reconcileTimer = useCallback(async () => {
+    if (readOnlyRef.current) throw createHostReadOnlyError();
     const bridge = window.scholar as unknown as StudyBridge;
     try {
       const timer = await bridge.reconcileStudyDeadline({ sessionId });
@@ -581,9 +614,10 @@ export const useStudySession = (accountId: string, sessionId: string) => {
         { code: getErrorCode(error) },
       );
     }
-  }, [accountId, reload, sessionId]);
+  }, [accountId, readOnly, reload, sessionId]);
 
   const finishTimer = useCallback(async () => {
+    if (readOnlyRef.current) throw createHostReadOnlyError();
     const currentTimer = state.snapshot?.session.timer;
     if (!currentTimer) return;
     const key = `timer:finish:${accountId}:${sessionId}:${currentTimer.revision}`;
@@ -606,6 +640,7 @@ export const useStudySession = (accountId: string, sessionId: string) => {
 
   const extendTimer = useCallback(
     async (durationMinutes: number) => {
+      if (readOnlyRef.current) throw createHostReadOnlyError();
       const currentTimer = state.snapshot?.session.timer;
       if (!currentTimer) return;
       const key = `timer:extend:${accountId}:${sessionId}:${currentTimer.revision}:${durationMinutes}`;
@@ -630,6 +665,7 @@ export const useStudySession = (accountId: string, sessionId: string) => {
   );
 
   const continueUntimed = useCallback(async () => {
+    if (readOnlyRef.current) throw createHostReadOnlyError();
     const currentTimer = state.snapshot?.session.timer;
     if (!currentTimer) return;
     const key = `timer:continue:${accountId}:${sessionId}:${currentTimer.revision}`;
@@ -651,6 +687,7 @@ export const useStudySession = (accountId: string, sessionId: string) => {
   }, [accountId, reload, sessionId, state.snapshot]);
 
   const addAttachments = useCallback(async (): Promise<StudyAttachment[]> => {
+    if (readOnlyRef.current) return [];
     const currentSession = state.snapshot?.session;
     if (!currentSession) return [];
     const bridge = window.scholar as unknown as StudyBridge;
@@ -687,7 +724,7 @@ export const useStudySession = (accountId: string, sessionId: string) => {
         { code: getErrorCode(error) },
       );
     }
-  }, [accountId, sessionId, state.snapshot]);
+  }, [accountId, readOnly, sessionId, state.snapshot]);
 
   const refreshAttachment = useCallback(
     async (attachment: StudyAttachment): Promise<StudyAttachment | null> => {

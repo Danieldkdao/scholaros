@@ -476,4 +476,114 @@ describe('StudyComposer', () => {
 
     expect(props.onSaveDraft).toHaveBeenCalledWith('Keep this draft', 0);
   });
+
+  it('keeps the saved draft readable while host read-only mode blocks composer writes', async () => {
+    vi.useFakeTimers();
+    const onSaveDraft = vi.fn(async (_text: string, revision: number) => ({
+      draftRevision: revision + 1,
+    }));
+    const onSend = vi.fn(async () => ({ turnId: 'turn-1', draftRevision: 2 }));
+    const onAddAttachments = vi.fn(async () => [readyAttachment]);
+    const onRetry = vi.fn(async () => undefined);
+    const renderDictation = vi.fn(() => createElement('button', null, 'Mic'));
+    const props = defaultProps({
+      initialDraft: { text: 'Saved study question', revision: 4 },
+      readOnly: true,
+      failedTurnId: 'turn-1',
+      onSaveDraft,
+      onSend,
+      onAddAttachments,
+      onRetry,
+      renderDictation,
+    });
+    const node = await mount(props);
+    const input = node.querySelector<HTMLTextAreaElement>('textarea')!;
+    const send = node.querySelector<HTMLButtonElement>(
+      'button[aria-label="Send message"]',
+    )!;
+    const attach = node.querySelector<HTMLButtonElement>(
+      'button[aria-label="Add attachment"]',
+    )!;
+    const retry = [...node.querySelectorAll<HTMLButtonElement>('button')].find(
+      (button) => button.textContent?.includes('Retry response'),
+    )!;
+
+    expect(input.readOnly).toBe(true);
+    expect(input.value).toBe('Saved study question');
+    expect(send.disabled).toBe(true);
+    expect(attach.disabled).toBe(true);
+    expect(retry.disabled).toBe(true);
+    expect(renderDictation).not.toHaveBeenCalled();
+
+    await changeText(input, 'Attempted offline edit');
+    await click(send);
+    await click(attach);
+    await click(retry);
+    await act(async () => vi.advanceTimersByTimeAsync(1_000));
+
+    expect(input.value).toBe('Saved study question');
+    expect(onSaveDraft).not.toHaveBeenCalled();
+    expect(onSend).not.toHaveBeenCalled();
+    expect(onAddAttachments).not.toHaveBeenCalled();
+    expect(onRetry).not.toHaveBeenCalled();
+  });
+
+  it('keeps an in-flight draft save pending across a read-only transition', async () => {
+    vi.useFakeTimers();
+    let resolveSave!: (value: { draftRevision: number }) => void;
+    const onSaveDraft = vi.fn(
+      () =>
+        new Promise<{ draftRevision: number }>((resolve) => {
+          resolveSave = resolve;
+        }),
+    );
+    const props = defaultProps({ onSaveDraft });
+    const node = await mount(props);
+    await changeText(node.querySelector('textarea')!, 'Pending draft');
+    await act(async () => vi.advanceTimersByTimeAsync(500));
+    expect(onSaveDraft).toHaveBeenCalledOnce();
+
+    await act(async () =>
+      root?.render(createElement(StudyComposer, { ...props, readOnly: true })),
+    );
+    expect(node.querySelector('[role="status"]')?.textContent).toContain(
+      'Saving draft',
+    );
+
+    await act(async () => resolveSave({ draftRevision: 1 }));
+    await vi.waitFor(() =>
+      expect(node.querySelector('[role="status"]')?.textContent).toContain(
+        'Draft saved',
+      ),
+    );
+    expect(onSaveDraft).toHaveBeenCalledOnce();
+  });
+
+  it('saves a preserved draft after reconnecting from host read-only mode', async () => {
+    vi.useFakeTimers();
+    const onSaveDraft = vi.fn(async (_text: string, revision: number) => ({
+      draftRevision: revision + 1,
+    }));
+    const props = defaultProps({
+      initialDraft: { text: 'Saved draft', revision: 2 },
+      onSaveDraft,
+    });
+    const node = await mount(props);
+    await changeText(node.querySelector('textarea')!, 'Pending offline draft');
+
+    await act(async () =>
+      root?.render(createElement(StudyComposer, { ...props, readOnly: true })),
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(1_000));
+    expect(onSaveDraft).not.toHaveBeenCalled();
+    expect(node.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe(
+      'Pending offline draft',
+    );
+
+    await act(async () => root?.render(createElement(StudyComposer, props)));
+    await act(async () => vi.advanceTimersByTimeAsync(500));
+
+    expect(onSaveDraft).toHaveBeenCalledOnce();
+    expect(onSaveDraft).toHaveBeenCalledWith('Pending offline draft', 2);
+  });
 });

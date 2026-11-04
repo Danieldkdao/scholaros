@@ -178,3 +178,59 @@ it('keeps the expiry summary and actions available after a command fails', async
   expect(node.textContent).toContain('Reconnect and retry');
   expect(node.textContent).toContain('Your planned study time has ended.');
 });
+
+it('keeps timer status visible without reconciling persisted time while host read-only', async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date('2026-11-03T12:20:00.000Z'));
+  const timerActions = actions();
+  const node = await mount(
+    createElement(StudyTimer, {
+      sessionId: 'session-1',
+      timer: makeTimer(),
+      actions: timerActions,
+      readOnly: true,
+    }),
+  );
+
+  expect(node.textContent).toContain('Time is up');
+  expect(timerActions.reconcile).not.toHaveBeenCalled();
+});
+
+it('shows the expiry summary but blocks every timer mutation in host read-only mode', async () => {
+  const timerActions = actions();
+  const node = await mount(
+    createElement(StudyTimerResolution, {
+      timer: makeTimer({ expiredRevision: 2 }),
+      summary: 'Your planned study time has ended.',
+      actions: timerActions,
+      readOnly: true,
+    }),
+  );
+  const extension = node.querySelector<HTMLInputElement>(
+    'input[aria-label="Extension in minutes"]',
+  )!;
+  const finish = [...node.querySelectorAll<HTMLButtonElement>('button')].find(
+    (button) => button.textContent?.includes('Finish session'),
+  )!;
+  const extend = node.querySelector<HTMLButtonElement>(
+    'button[aria-label="Extend session"]',
+  )!;
+  const untimed = node.querySelector<HTMLButtonElement>(
+    'button[aria-label="Continue indefinitely"]',
+  )!;
+
+  expect(node.textContent).toContain('Your planned study time has ended.');
+  expect(extension.disabled).toBe(true);
+  expect(finish.disabled).toBe(true);
+  expect(extend.disabled).toBe(true);
+  expect(untimed.disabled).toBe(true);
+
+  await act(async () => {
+    finish.click();
+    extend.click();
+    untimed.click();
+  });
+  expect(timerActions.finish).not.toHaveBeenCalled();
+  expect(timerActions.extend).not.toHaveBeenCalled();
+  expect(timerActions.continueUntimed).not.toHaveBeenCalled();
+});
