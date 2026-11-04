@@ -46,6 +46,7 @@ type PracticeStoreDependencies = {
 };
 
 const answerKeyBase = {
+  generationProof: z.string().min(1).max(4096).optional(),
   questionId: idSchema,
   acceptedAlternatives: z.array(z.string().max(1000)).max(10),
   explanation: z.string().min(1).max(4000),

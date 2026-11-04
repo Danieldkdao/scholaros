@@ -209,6 +209,151 @@ describe('practice store', () => {
     rmSync(directory, { recursive: true, force: true });
   });
 
+  it.each(['multiple-choice', 'numeric', 'short-explanation'] as const)(
+    'persists opaque proof privately across SQLite reopen, evaluation and retry for %s',
+    (kind) => {
+      const proof = `v1.synthetic-opaque-${kind}.signature`;
+      const item: PracticeQuestionDTO = {
+        ...question,
+        kind,
+        options: kind === 'multiple-choice' ? question.options : null,
+        unit: kind === 'numeric' ? 'm' : null,
+      };
+      const base = {
+        questionId: item.id,
+        kind,
+        generationProof: proof,
+        acceptedAlternatives: [],
+        explanation: 'Bounded app-generated practice explanation.',
+      };
+      const key: JsonValue =
+        kind === 'multiple-choice'
+          ? { ...base, correctOptionId: 'option-1' }
+          : kind === 'numeric'
+            ? {
+                ...base,
+                acceptedValues: [{ value: 3, tolerance: 0.01, unit: 'm' }],
+              }
+            : {
+                ...base,
+                rubricCriteria: ['Explain the concept in your own words.'],
+              };
+      insertSession();
+      const attempt = createAttempt({
+        sessionId: 'session-a',
+        questions: [item],
+        hostAnswerKey: [key],
+      });
+      expect(
+        store.getEvaluationWork('user-a', attempt.id)?.answerKeys[0],
+      ).toMatchObject({ generationProof: proof });
+      expect(
+        JSON.stringify(
+          store.getPracticeAttempt('user-a', { attemptId: attempt.id }),
+        ),
+      ).not.toContain(proof);
+      sqlite.close();
+      sqlite = new Database(join(directory, 'fixture.sqlite'));
+      sqlite.pragma('foreign_keys = ON');
+      db = drizzle({ client: sqlite, schema });
+      store = createPracticeStore({ db, now: () => timestamp });
+      const resumed = store.getPracticeAttempt('user-a', {
+        attemptId: attempt.id,
+      });
+      expect(resumed).toEqual(attempt);
+      expect(JSON.stringify(resumed)).not.toContain('generationProof');
+      expect(resumed).not.toHaveProperty('hostAnswerKey');
+      expect(store.getEvaluationWork('user-a', attempt.id)?.answerKeys).toEqual(
+        [key],
+      );
+      expect(store.getEvaluationWork('user-b', attempt.id)).toBeNull();
+      const saved = store.savePracticeAnswer('user-a', {
+        attemptId: attempt.id,
+        questionId: item.id,
+        expectedRevision: attempt.revision,
+        value:
+          kind === 'multiple-choice'
+            ? 'option-1'
+            : kind === 'numeric'
+              ? 3
+              : 'My conceptual explanation.',
+        requestId: ids.answer,
+      });
+      store.submitPracticeAttempt('user-a', {
+        attemptId: attempt.id,
+        expectedRevision: saved.revision,
+        requestId: ids.submit,
+      });
+      const evaluation = {
+        questionId: item.id,
+        outcome: 'correct',
+        explanation: 'A bounded explanation for this distinct practice.',
+        acceptedAlternatives: [],
+        sourceReferences: [],
+        rubricVersion: 'rubric-v1',
+        assisted: false,
+      };
+      const evaluated = store.savePracticeEvaluations('user-a', {
+        attemptId: attempt.id,
+        final: true,
+        evaluations: [{ questionId: item.id, answerRevision: 0, evaluation }],
+      });
+      expect(evaluated.feedback).toEqual([evaluation]);
+      expect(JSON.stringify(evaluated)).not.toContain(proof);
+      expect(JSON.stringify(evaluated)).not.toContain('generationProof');
+      const retry = store.retryPracticeAttempt('user-a', {
+        attemptId: attempt.id,
+        requestId: ids.retry,
+      });
+      expect(retry.priorAttemptId).toBe(attempt.id);
+      expect(store.getEvaluationWork('user-a', retry.id)?.answerKeys).toEqual([
+        key,
+      ]);
+      expect(JSON.stringify(retry)).not.toContain('generationProof');
+      expect(JSON.stringify(retry)).not.toContain(proof);
+    },
+  );
+
+  it('keeps historical keys without proof readable without fabricating a proof', () => {
+    const attempt = createAttempt();
+    const work = store.getEvaluationWork('user-a', attempt.id);
+    expect(work?.answerKeys[0]).not.toHaveProperty('generationProof');
+    expect(work?.answerKeys).toEqual(hostAnswerKey);
+  });
+
+  it.each([null, 42, {}, '', 'x'.repeat(4097)])(
+    'rejects malformed or oversized private proof %#',
+    (generationProof) => {
+      const key = {
+        ...(hostAnswerKey as Array<Record<string, JsonValue>>)[0],
+        generationProof,
+      };
+      expect(() => createAttempt({ hostAnswerKey: [key] })).toThrow();
+      expect(db.select().from(schema.PracticeAttemptTable).all()).toHaveLength(
+        0,
+      );
+    },
+  );
+
+  it('retains the exact maximum opaque proof and rejects malformed stored proof on read', () => {
+    const proof = 'p'.repeat(4096);
+    const key = {
+      ...(hostAnswerKey as Array<Record<string, JsonValue>>)[0],
+      generationProof: proof,
+    };
+    const attempt = createAttempt({ hostAnswerKey: [key] });
+    expect(
+      store.getEvaluationWork('user-a', attempt.id)?.answerKeys[0],
+    ).toMatchObject({ generationProof: proof });
+    db.update(schema.PracticeAttemptTable)
+      .set({ hostAnswerKey: [{ ...key, generationProof: null }] })
+      .run();
+    expect(store.getEvaluationWork('user-a', attempt.id)).toBeNull();
+    expect(
+      store.getPracticeAttempt('user-a', { attemptId: attempt.id }),
+    ).toBeNull();
+  });
+
   it('keeps exam answer keys private and rejects forged score fields', () => {
     const attempt = createAttempt();
 
