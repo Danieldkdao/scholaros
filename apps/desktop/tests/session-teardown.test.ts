@@ -732,6 +732,10 @@ describe('real learning module activity composition', () => {
       tutorPracticeAdapters,
       'createTutorPracticeSessionStore',
     );
+    const tutorRegistration = vi.spyOn(
+      tutorPracticeAdapters,
+      'registerTutorPracticeActions',
+    );
     const adapterFactory = vi.spyOn(
       activityAdapters,
       'createAcademicActivityAdapter',
@@ -767,6 +771,7 @@ describe('real learning module activity composition', () => {
       adapter,
       adapterFactory,
       sessionFactory,
+      requestLearning: tutorRegistration.mock.calls.at(-1)![1].requestLearning,
       context,
       invokeAction,
     };
@@ -919,6 +924,84 @@ describe('real learning module activity composition', () => {
       runId: nextRun.runId,
       requestId: nextRequest.requestId,
     });
+  });
+
+  const transportRequest = () => ({
+    version: 1 as const,
+    requestId: randomUUID(),
+    kind: 'activity-generate' as const,
+    sessionId: 'session-a',
+    courseId: 'course-a',
+    contextRevision: 0,
+    input: { objective: 'Fixture activity', sources: [] },
+  });
+
+  it('bounds the actual learning transport before parsing untrusted response data', async () => {
+    const { requestLearning } = await registerRealModules();
+    storage.fetch.mockResolvedValue(Response.json('x'.repeat(2 * 1024 * 1024)));
+    const result = await requestLearning(
+      transportRequest(),
+      new AbortController().signal,
+    ).then(
+      () => 'accepted',
+      (error: { code: string }) => error.code,
+    );
+    expect(result).toBe('limit-exceeded');
+  });
+
+  it.each([302, 401, 500])(
+    'denies non-success learning HTTP status %s without using response content',
+    async (status) => {
+      const { requestLearning } = await registerRealModules();
+      storage.fetch.mockResolvedValue(
+        new Response('PRIVATE_FIXTURE_ERROR', { status }),
+      );
+      await expect(
+        requestLearning(transportRequest(), new AbortController().signal),
+      ).rejects.toMatchObject({
+        code: status === 401 ? 'session-changed' : 'provider-failed',
+      });
+      expect(storage.fetch.mock.calls.at(-1)![1]?.redirect).toBe('error');
+    },
+  );
+
+  it('fences a cookie replacement while consuming the actual learning response body', async () => {
+    const { requestLearning } = await registerRealModules();
+    let body!: ReadableStreamDefaultController<Uint8Array>;
+    storage.fetch.mockResolvedValue(
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start: (controller) => {
+            body = controller;
+          },
+        }),
+      ),
+    );
+    const pending = requestLearning(
+      transportRequest(),
+      new AbortController().signal,
+    );
+    await vi.waitFor(() => expect(storage.fetch).toHaveBeenCalledOnce());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    storage.cookie = 'fixture-new-account-cookie';
+    body.enqueue(new TextEncoder().encode('{}'));
+    body.close();
+    await expect(pending).rejects.toMatchObject({ code: 'session-changed' });
+  });
+
+  it('cancels a stalled response reader when the current learning operation is aborted', async () => {
+    const { requestLearning } = await registerRealModules();
+    const cancel = vi.fn();
+    storage.fetch.mockResolvedValue(
+      new Response(new ReadableStream({ cancel })),
+    );
+    const controller = new AbortController();
+    const pending = requestLearning(transportRequest(), controller.signal);
+    await vi.waitFor(() => expect(storage.fetch).toHaveBeenCalledOnce());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ code: 'cancelled' });
+    expect(cancel).toHaveBeenCalledOnce();
   });
 
   it('runs a real tutor activity through the canonical loader store and authenticated exact learning transport', async () => {

@@ -53,7 +53,34 @@ const requestLearning: TutorPracticeDependencies['requestLearning'] = async (
         response.status === 401 ? 'session-changed' : 'provider-failed',
       );
     }
-    const result: unknown = await response.json();
+    if (!response.body) throw new LearningClientError('provider-failed');
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let byteLength = 0;
+    const cancelRead = () => {
+      void reader.cancel().catch(() => undefined);
+    };
+    signal.addEventListener('abort', cancelRead, { once: true });
+    try {
+      for (;;) {
+        assertCurrent();
+        const { value, done } = await reader.read();
+        assertCurrent();
+        if (done) break;
+        byteLength += value.byteLength;
+        if (byteLength > 2 * 1024 * 1024)
+          throw new LearningClientError('limit-exceeded');
+        chunks.push(value);
+      }
+    } finally {
+      signal.removeEventListener('abort', cancelRead);
+      await reader.cancel().catch(() => undefined);
+      reader.releaseLock();
+    }
+    const bytes = Buffer.concat(chunks, byteLength);
+    const result: unknown = JSON.parse(
+      new TextDecoder('utf-8', { fatal: true }).decode(bytes),
+    );
     assertCurrent();
     return result;
   } catch (error) {
