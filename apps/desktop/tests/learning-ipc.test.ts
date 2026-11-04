@@ -1,4 +1,7 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+// @vitest-environment jsdom
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, createElement, useState, type ComponentType } from 'react';
+import { createRoot } from 'react-dom/client';
 import type { ScholarBridge } from '../src/features/onboarding/types';
 import {
   internalAcademicMethods,
@@ -82,6 +85,174 @@ const makeWindow = (id: number, documentUrl: string) => {
   };
   return { window, contents, contentsListeners, windowListeners };
 };
+
+const routeMocks = vi.hoisted(() => ({
+  user: { id: 'student-a', authMode: 'online' as 'online' | 'offline-local' },
+  subscriptions: new Map<string, () => void>(),
+  search: {} as { itemId?: string },
+  reload: vi.fn(async () => undefined),
+  navigate: vi.fn(async () => undefined),
+  retryContextIngestion: vi.fn(async () => undefined),
+  preview: null as null | { readOnly?: boolean; onRetry: () => void },
+  mounts: 0,
+}));
+const RouteDraftProbe = (props: {
+  readOnly?: boolean;
+  refreshEpoch?: number;
+}) => {
+  const [draft, setDraft] = useState(() => `draft-${++routeMocks.mounts}`);
+  return createElement(
+    'button',
+    {
+      'data-read-only': String(props.readOnly),
+      'data-refresh-epoch': String(props.refreshEpoch),
+      onClick: () => setDraft('unsaved draft'),
+    },
+    draft,
+  );
+};
+vi.mock('@tanstack/react-router', () => ({
+  createFileRoute: () => (options: { component: ComponentType }) => ({
+    options,
+    useSearch: () => routeMocks.search,
+    useNavigate: () => routeMocks.navigate,
+    useParams: () => ({ sessionId: 'session-a' }),
+  }),
+}));
+vi.mock('../src/features/dashboard/hooks/use-current-user', () => ({
+  useCurrentUser: () => ({
+    user: routeMocks.user,
+    loading: false,
+    reload: routeMocks.reload,
+  }),
+}));
+vi.mock('../src/features/courses/hooks/use-courses', () => ({
+  useCourses: () => ({ snapshot: { courses: [] } }),
+}));
+vi.mock('../src/features/context/components/context-library', () => ({
+  ContextLibrary: (props: { readOnly?: boolean; refreshEpoch?: number }) =>
+    createElement(RouteDraftProbe, props),
+}));
+vi.mock('../src/features/context/components/context-preview', () => ({
+  ContextPreview: (props: { readOnly?: boolean; onRetry: () => void }) => {
+    routeMocks.preview = props;
+    return null;
+  },
+}));
+vi.mock('../src/features/study/components/study-document', () => ({
+  StudyDocument: (props: { readOnly?: boolean; refreshEpoch?: number }) =>
+    createElement(RouteDraftProbe, props),
+  StudyDocumentRenderersProvider: (props: { children: React.ReactNode }) =>
+    props.children,
+}));
+vi.mock('../src/features/study/components/activity-host', () => ({
+  ActivityHost: () => null,
+}));
+vi.mock('../src/features/speech/components/dictation-control', () => ({
+  DictationControl: () => null,
+}));
+vi.mock('../src/features/practice/components/practice-view', () => ({
+  PracticeView: () => null,
+}));
+vi.mock('../src/features/memory/components/progress-summary', () => ({
+  ProgressSummary: () => null,
+}));
+
+describe('route host refresh and read-only boundaries', () => {
+  let root: ReturnType<typeof createRoot>;
+  let container: HTMLDivElement;
+
+  beforeEach(() => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    routeMocks.user = { id: 'student-a', authMode: 'online' };
+    routeMocks.subscriptions.clear();
+    routeMocks.search = {};
+    routeMocks.mounts = 0;
+    routeMocks.preview = null;
+    routeMocks.retryContextIngestion.mockClear();
+    const subscribe = (name: string) => (callback: () => void) => {
+      routeMocks.subscriptions.set(name, callback);
+      return () => routeMocks.subscriptions.delete(name);
+    };
+    Object.assign(window, {
+      onAuthenticated: subscribe('authenticated'),
+      onUserUpdated: subscribe('user-updated'),
+      scholar: {
+        onAcademicReconnect: subscribe('reconnect'),
+        retryContextIngestion: routeMocks.retryContextIngestion,
+        getContextItem: async () => ({
+          item: { currentVersionId: null },
+          versions: [],
+          preview: null,
+        }),
+      },
+    });
+    container = document.createElement('div');
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+    vi.unstubAllGlobals();
+  });
+
+  const loadRouteComponent = async (kind: 'context' | 'study') => {
+    const module =
+      kind === 'context'
+        ? await import('../src/routes/dashboard/context')
+        : await import('../src/routes/study/$sessionId');
+    return module.Route.options.component as ComponentType;
+  };
+
+  it.each(['context', 'study'] as const)(
+    'refreshes %s without remounting an unsaved draft',
+    async (kind) => {
+      const Component = await loadRouteComponent(kind);
+      await act(async () => root.render(createElement(Component)));
+      await act(async () => container.querySelector('button')!.click());
+      const original = container.querySelector('button');
+      await act(async () => {
+        routeMocks.subscriptions.get('reconnect')!();
+      });
+      expect(container.querySelector('button')).toBe(original);
+      expect(container.textContent).toBe('unsaved draft');
+      expect(original?.getAttribute('data-refresh-epoch')).toBe('1');
+    },
+  );
+
+  it.each(['context', 'study'] as const)(
+    'derives %s read-only mode from the host and resets only on an account change',
+    async (kind) => {
+      const Component = await loadRouteComponent(kind);
+      await act(async () => root.render(createElement(Component)));
+      await act(async () => container.querySelector('button')!.click());
+      routeMocks.user = { ...routeMocks.user, authMode: 'offline-local' };
+      await act(async () => root.render(createElement(Component)));
+      expect(
+        container.querySelector('button')?.getAttribute('data-read-only'),
+      ).toBe('true');
+      expect(container.textContent).toBe('unsaved draft');
+      routeMocks.user = { id: 'student-b', authMode: 'online' };
+      await act(async () => root.render(createElement(Component)));
+      expect(container.textContent).not.toBe('unsaved draft');
+      expect(
+        container.querySelector('button')?.getAttribute('data-read-only'),
+      ).toBe('false');
+    },
+  );
+
+  it('guards the separate Context preview retry callback in offline-local mode', async () => {
+    routeMocks.user.authMode = 'offline-local';
+    routeMocks.search = { itemId: 'context-item-a' };
+    const Component = await loadRouteComponent('context');
+    await act(async () => root.render(createElement(Component)));
+    expect(routeMocks.preview?.readOnly).toBe(true);
+    routeMocks.preview?.onRetry();
+    expect(routeMocks.retryContextIngestion).not.toHaveBeenCalled();
+  });
+});
 
 const trustedWindows: (() => void)[] = [];
 afterEach(() => {

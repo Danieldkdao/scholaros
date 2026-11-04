@@ -115,9 +115,11 @@ const StudySessionRoute = () => {
   return (
     <StudyDocumentRenderersProvider renderers={renderers}>
       <StudyDocument
-        key={`${user.id}:${sessionId}:${snapshotEpoch}`}
+        key={`${user.id}:${sessionId}`}
         accountId={user.id}
         sessionId={sessionId}
+        readOnly={user.authMode === 'offline-local'}
+        refreshEpoch={snapshotEpoch}
       />
     </StudyDocumentRenderersProvider>
   );

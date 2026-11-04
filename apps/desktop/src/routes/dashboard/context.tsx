@@ -36,6 +36,7 @@ const ContextRoute = () => {
   const [previewRetrying, setPreviewRetrying] = useState(false);
   const previewRequest = useRef(0);
   const accountId = user?.id ?? null;
+  const readOnly = user?.authMode === 'offline-local';
   const { snapshot: courseSnapshot } = useCourses(accountId);
   const courses = useMemo<ContextCourse[]>(
     () =>
@@ -153,6 +154,7 @@ const ContextRoute = () => {
       });
   };
   const retryPreview = () => {
+    if (readOnly) return;
     const itemId = search.itemId;
     if (!itemId) return;
     setPreviewRetrying(true);
@@ -169,8 +171,10 @@ const ContextRoute = () => {
   return (
     <div className="flex min-w-0 flex-col gap-6">
       <ContextLibrary
-        key={`${accountId ?? 'signed-out'}:${snapshotEpoch}`}
+        key={accountId ?? 'signed-out'}
         accountId={accountId}
+        readOnly={readOnly}
+        refreshEpoch={snapshotEpoch}
         api={api}
         courses={courses}
         subscribeToEvents={subscribeToEvents}
@@ -182,6 +186,7 @@ const ContextRoute = () => {
         selectedVersionId={selectedVersionId}
         preview={preview}
         loading={previewLoading}
+        readOnly={readOnly}
         retrying={previewRetrying}
         onVersionChange={changeVersion}
         onRetry={retryPreview}
