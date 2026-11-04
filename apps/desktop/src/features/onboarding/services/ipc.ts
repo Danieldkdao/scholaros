@@ -1160,6 +1160,8 @@ export const registerAcademicActions = async (service: {
   handle('startPreview', async ({ userId, isCurrent }, input) => {
     requireConsent(userId);
     const prompt = previewPromptSchema.parse(input);
+    if (pendingPreviews.has(userId))
+      throw new Error('A preview is already running.');
     const releaseBackgroundSync = backgroundSync.suspend();
     let releaseWatch: (() => Promise<void>) | null = null;
     let released = false;

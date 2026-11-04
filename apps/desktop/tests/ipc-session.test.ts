@@ -748,6 +748,38 @@ describe('real account-local cleanup composition', () => {
     }
   });
 
+  it('keeps the original preview drain when a duplicate preview admission fails', async () => {
+    let finishPreview!: () => void;
+    mocks.startPreview
+      .mockImplementationOnce(async (_userId, _prompt, onSettled) => {
+        finishPreview = onSettled;
+      })
+      .mockRejectedValueOnce(new Error('A preview is already running.'));
+    await invoke('startPreview', 'courses');
+    await expect(invoke('startPreview', 'courses')).rejects.toThrow();
+    let settled = false;
+    const deletion = invoke('deleteLocalAcademicData', {
+      requestId: randomUUID(),
+      scope: 'account-local',
+    }).then(() => {
+      settled = true;
+    });
+    try {
+      await vi.waitFor(() => expect(mocks.closeWorkspace).toHaveBeenCalled());
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(settled).toBe(false);
+      expect(
+        sqlite
+          .prepare('SELECT COUNT(*) AS count FROM courses WHERE user_id = ?')
+          .get('student-a'),
+      ).toEqual({ count: 1 });
+    } finally {
+      finishPreview();
+      await deletion;
+      mocks.startPreview.mockReset();
+    }
+  });
+
   it('deletes actual SQLite and original data for only the authenticated account and then invalidates', async () => {
     expect(mocks.handlers.has('scholar:deleteLocalAcademicData')).toBe(true);
     const { createOriginalStore } =
