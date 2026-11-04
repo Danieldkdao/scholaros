@@ -6,6 +6,7 @@ import {
   type AssistancePolicy,
 } from '@scholaros/services/learning/grade-contracts';
 import { preferenceContentSchema } from '@scholaros/services/learning/memory-contracts';
+import { practiceQuestionSchema } from '@scholaros/services/learning/practice-contracts';
 import { studyMessagePartSchema } from '@scholaros/services/learning/study-contracts';
 import {
   jsonValueSchema,
@@ -55,9 +56,24 @@ const candidateInputSchema = z.strictObject({
   policy: assistancePolicySchema,
   sourceReferences: z.array(sourceReferenceSchema).max(50),
 });
+const practiceCandidateProjectionSchema = z.strictObject({
+  rubricVersion: z.string().min(1).max(300),
+  questions: z.array(practiceQuestionSchema).min(1).max(20),
+});
+const practiceCandidateInputSchema = z.strictObject({
+  courseId: z.string().min(1).max(300),
+  sessionId: z.string().min(1).max(300),
+  candidate: practiceCandidateProjectionSchema,
+  sourceReferences: z.array(sourceReferenceSchema).max(50),
+});
+
+export type PracticeCandidateAssessmentInput = z.infer<
+  typeof practiceCandidateInputSchema
+>;
 
 export type CandidateAssessment = {
   allowed: boolean;
+  candidateDigest: string | null;
   safeParts?: { kind: 'text'; text: string }[];
   reasonCode:
     | 'approved'
@@ -76,8 +92,10 @@ const safeFallback =
 const fallback = (
   reasonCode: CandidateAssessment['reasonCode'],
   revision = 0,
+  candidateDigest: string | null = null,
 ): CandidateAssessment => ({
   allowed: false,
+  candidateDigest,
   safeParts: [{ kind: 'text', text: safeFallback }],
   reasonCode,
   revision,
@@ -520,6 +538,19 @@ const priorAssistanceDigestsSchema = z.object({
 });
 const candidateDigest = (candidate: JsonValue) =>
   createHash('sha256').update(JSON.stringify(candidate)).digest('hex');
+const sourceReferenceKey = (reference: SourceReference) =>
+  JSON.stringify([
+    reference.sourceKind,
+    reference.sourceId,
+    reference.versionId,
+    reference.courseId,
+    reference.locator,
+  ]);
+const mergeSourceReferences = (references: SourceReference[]) => [
+  ...new Map(
+    references.map((reference) => [sourceReferenceKey(reference), reference]),
+  ).values(),
+];
 const readPriorCandidateDigests = (summary: string): string[] | null => {
   try {
     const parsed = priorAssistanceDigestsSchema.safeParse(JSON.parse(summary));
@@ -848,9 +879,12 @@ export const assessCandidate = (
   context: AuthorizedContext,
   input: unknown,
 ): CandidateAssessment => {
-  if (!isCurrent(context)) return fallback('scope-denied');
   const parsed = candidateInputSchema.safeParse(input);
   if (!parsed.success) return fallback('invalid-input');
+  const digest = candidateDigest(parsed.data.candidate);
+  const deny = (reasonCode: CandidateAssessment['reasonCode'], revision = 0) =>
+    fallback(reasonCode, revision, digest);
+  if (!isCurrent(context)) return deny('scope-denied');
   const session = getSession(context, parsed.data.sessionId);
   const turn = db
     .select()
@@ -870,26 +904,14 @@ export const assessCandidate = (
     session.deletedAt !== null ||
     session.generationEpoch !== turn.generationEpoch
   )
-    return fallback('scope-denied');
+    return deny('scope-denied');
 
   const inspection = inspectCandidate(parsed.data.candidate);
-  const sourceReferences = [
-    ...new Map(
-      [...parsed.data.sourceReferences, ...inspection.references].map(
-        (reference) => [
-          JSON.stringify([
-            reference.sourceKind,
-            reference.sourceId,
-            reference.versionId,
-            reference.courseId,
-            reference.locator,
-          ]),
-          reference,
-        ],
-      ),
-    ).values(),
-  ];
-  if (sourceReferences.length > 50) return fallback('limit-exceeded');
+  const sourceReferences = mergeSourceReferences([
+    ...parsed.data.sourceReferences,
+    ...inspection.references,
+  ]);
+  if (sourceReferences.length > 50) return deny('limit-exceeded');
   const sourceIds = sourceReferences
     .filter((reference) => reference.sourceKind === 'assignment')
     .map((reference) => reference.sourceId);
@@ -898,18 +920,18 @@ export const assessCandidate = (
     sourceIds,
   });
   if (turn.policyRevision !== currentPolicy.policyRevision)
-    return fallback('policy-changed', currentPolicy.policyRevision);
+    return deny('policy-changed', currentPolicy.policyRevision);
   if (!isPolicyCurrent(parsed.data.policy, currentPolicy))
-    return fallback('policy-changed', currentPolicy.policyRevision);
+    return deny('policy-changed', currentPolicy.policyRevision);
   const priorCandidateDigests = readPriorCandidateDigests(
     currentPolicy.priorAssistanceSummary,
   );
   if (!priorCandidateDigests)
-    return fallback('uninterpretable', currentPolicy.policyRevision);
-  if (priorCandidateDigests.includes(candidateDigest(parsed.data.candidate)))
-    return fallback('answer-risk', currentPolicy.policyRevision);
+    return deny('uninterpretable', currentPolicy.policyRevision);
+  if (priorCandidateDigests.includes(digest))
+    return deny('answer-risk', currentPolicy.policyRevision);
   if (inspection.reasonCode)
-    return fallback(inspection.reasonCode, currentPolicy.policyRevision);
+    return deny(inspection.reasonCode, currentPolicy.policyRevision);
 
   const structuralFailure =
     validateCandidateParts(context, session, parsed.data.candidate) ??
@@ -919,7 +941,7 @@ export const assessCandidate = (
       sourceReferences,
     );
   if (structuralFailure)
-    return fallback(structuralFailure, currentPolicy.policyRevision);
+    return deny(structuralFailure, currentPolicy.policyRevision);
   if (
     sourceReferences.some(
       (reference) =>
@@ -933,13 +955,91 @@ export const assessCandidate = (
         !isCurrentSourceReference(context, session, reference),
     )
   )
-    return fallback('scope-denied', currentPolicy.policyRevision);
+    return deny('scope-denied', currentPolicy.policyRevision);
   if (!currentPolicy.allowedOperations.includes('concept'))
-    return fallback('policy-changed', currentPolicy.policyRevision);
+    return deny('policy-changed', currentPolicy.policyRevision);
   if (!isCurrent(context))
-    return fallback('scope-denied', currentPolicy.policyRevision);
+    return deny('scope-denied', currentPolicy.policyRevision);
   return {
     allowed: true,
+    candidateDigest: digest,
+    reasonCode: 'approved',
+    revision: currentPolicy.policyRevision,
+  };
+};
+
+export const assessPracticeCandidate = (
+  context: AuthorizedContext,
+  input: PracticeCandidateAssessmentInput,
+): CandidateAssessment => {
+  const parsed = practiceCandidateInputSchema.safeParse(input);
+  if (!parsed.success) return fallback('invalid-input');
+  const digest = candidateDigest(parsed.data.candidate);
+  const deny = (reasonCode: CandidateAssessment['reasonCode'], revision = 0) =>
+    fallback(reasonCode, revision, digest);
+  if (!isCurrent(context)) return deny('scope-denied');
+  if (
+    new TextEncoder().encode(JSON.stringify(parsed.data.candidate)).byteLength >
+    512 * 1024
+  )
+    return deny('limit-exceeded');
+
+  const session = getSession(context, parsed.data.sessionId);
+  if (!session || session.courseId !== parsed.data.courseId)
+    return deny('scope-denied');
+
+  const inspection = inspectCandidate(parsed.data.candidate);
+  if (inspection.reasonCode) return deny(inspection.reasonCode);
+  const allSourceReferences = [
+    ...parsed.data.sourceReferences,
+    ...inspection.references,
+  ];
+  if (
+    allSourceReferences.some(
+      (reference) =>
+        reference.state !== 'current' ||
+        (reference.courseId !== null &&
+          reference.courseId !== session.courseId) ||
+        (reference.sourceKind === 'assignment' &&
+          (reference.courseId !== session.courseId ||
+            reference.provenance !== 'connected-source')) ||
+        !isCurrentSourceReference(context, session, reference),
+    )
+  )
+    return deny('scope-denied');
+  const sourceReferences = mergeSourceReferences(allSourceReferences);
+  if (sourceReferences.length > 50) return deny('limit-exceeded');
+
+  const sourceIds = sourceReferences
+    .filter((reference) => reference.sourceKind === 'assignment')
+    .map((reference) => reference.sourceId);
+  let currentPolicy: AssistancePolicy;
+  try {
+    currentPolicy = resolveAssistancePolicy(context, {
+      sessionId: session.id,
+      sourceIds,
+    });
+  } catch {
+    return deny('scope-denied');
+  }
+  if (!isCurrent(context))
+    return deny('scope-denied', currentPolicy.policyRevision);
+
+  const priorCandidateDigests = readPriorCandidateDigests(
+    currentPolicy.priorAssistanceSummary,
+  );
+  if (!priorCandidateDigests)
+    return deny('uninterpretable', currentPolicy.policyRevision);
+  if (priorCandidateDigests.includes(digest))
+    return deny('answer-risk', currentPolicy.policyRevision);
+  if (!currentPolicy.allowedOperations.includes('distinct-practice'))
+    return deny('answer-risk', currentPolicy.policyRevision);
+  if (!isCurrent(context))
+    return deny('scope-denied', currentPolicy.policyRevision);
+
+  return {
+    allowed: true,
+    candidateDigest: digest,
     reasonCode: 'approved',
     revision: currentPolicy.policyRevision,
   };

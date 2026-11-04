@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { SourceReference } from '@scholaros/services/learning/context-contracts';
 
 vi.mock('electron', async () => {
   const { mkdtempSync } = await import('node:fs');
@@ -29,7 +30,7 @@ const {
   StudyTurnTable,
 } = await import('../../../db/schema');
 const { recordAssistance } = await import('../services/assistance-store');
-const { assessCandidate, resolveAssistancePolicy } =
+const { assessCandidate, assessPracticeCandidate, resolveAssistancePolicy } =
   await import('../services/policy');
 const { filterSourcePreview } = await import('../services/source-preview');
 
@@ -193,6 +194,27 @@ const createAssignmentReference = () => ({
 
 const hashCandidate = (candidate: Record<string, unknown>) =>
   createHash('sha256').update(JSON.stringify(candidate)).digest('hex');
+const createPracticeAssessmentInput = (): Parameters<
+  typeof assessPracticeCandidate
+>[1] => ({
+  courseId,
+  sessionId,
+  sourceReferences: [createAssignmentReference()],
+  candidate: {
+    rubricVersion: 'practice-rubric-1',
+    questions: [
+      {
+        id: 'practice-question-1',
+        kind: 'short-explanation',
+        prompt: 'Explain the energy transfer in cellular respiration.',
+        options: null,
+        unit: null,
+        objectiveIds: ['objective-1'],
+        sourceReferences: [createAssignmentReference()],
+      },
+    ],
+  },
+});
 
 const setEvidence = (
   overrides: Partial<{
@@ -440,18 +462,195 @@ describe('coursework assistance policy', () => {
     });
     setTurn('turn-citation', sessionId, policy.policyRevision);
 
+    const candidate = {
+      parts: [{ kind: 'text', text: 'The prompt asks for an explanation.' }],
+      citations: [{ reference: createAssignmentReference() }],
+    };
     const result = assessCandidate(context(), {
       sessionId,
       turnId: 'turn-citation',
       policy,
       sourceReferences: [],
-      candidate: {
-        parts: [{ kind: 'text', text: 'The prompt asks for an explanation.' }],
-        citations: [{ reference: createAssignmentReference() }],
-      },
+      candidate,
     });
 
     expect(result.allowed).toBe(true);
+    expect(result.candidateDigest).toBe(hashCandidate(candidate));
+  });
+
+  it('allows strict current practice questions for an active assignment', () => {
+    db.update(CourseworkProtectionTable)
+      .set({ state: 'active', verifiedAt: null, sourceEvidenceId: null })
+      .where(eq(CourseworkProtectionTable.id, protectionId))
+      .run();
+    const input = createPracticeAssessmentInput();
+
+    const result = assessPracticeCandidate(context(), input);
+
+    expect(result).toMatchObject({ allowed: true, reasonCode: 'approved' });
+    expect(result.candidateDigest).toBe(hashCandidate(input.candidate));
+    expect(JSON.stringify(result)).not.toContain(
+      'Explain the energy transfer in cellular respiration.',
+    );
+  });
+
+  it('denies practice after cumulative risk removes distinct-practice permission', () => {
+    db.update(CourseworkProtectionTable)
+      .set({ state: 'active', verifiedAt: null, sourceEvidenceId: null })
+      .where(eq(CourseworkProtectionTable.id, protectionId))
+      .run();
+    const policy = resolveAssistancePolicy(context(), {
+      sessionId,
+      sourceIds: [assignmentId],
+    });
+    setTurn('turn-practice-risk', sessionId, policy.policyRevision);
+    recordAssistance(context(), {
+      protectionId,
+      turnId: 'turn-practice-risk',
+      allowedSupportSummary: {
+        version: 1,
+        operation: null,
+        candidateDigest: 'f'.repeat(64),
+        expectedPolicyRevision: policy.policyRevision,
+        expectedConsentRevision: policy.consentRevision,
+      },
+      riskTags: ['cumulative-fragment'],
+    });
+    const input = createPracticeAssessmentInput();
+
+    const result = assessPracticeCandidate(context(), input);
+
+    expect(result).toMatchObject({ allowed: false, reasonCode: 'answer-risk' });
+    expect(result.candidateDigest).toBe(hashCandidate(input.candidate));
+  });
+
+  it('fails closed when practice assessment is cancelled or the session changes', () => {
+    const input = createPracticeAssessmentInput();
+    const controller = new AbortController();
+    controller.abort();
+    const cancelled = assessPracticeCandidate(
+      { ...context(), signal: controller.signal },
+      input,
+    );
+    const sessionChanged = assessPracticeCandidate(
+      { ...context(), isCurrent: () => false },
+      input,
+    );
+
+    expect(cancelled).toMatchObject({
+      allowed: false,
+      reasonCode: 'scope-denied',
+      candidateDigest: hashCandidate(input.candidate),
+    });
+    expect(sessionChanged).toMatchObject({
+      allowed: false,
+      reasonCode: 'scope-denied',
+      candidateDigest: hashCandidate(input.candidate),
+    });
+  });
+
+  it('rejects foreign accounts, sessions, courses, and stale source references', () => {
+    const input = createPracticeAssessmentInput();
+    const reference = createAssignmentReference();
+    const question = input.candidate.questions[0]!;
+    const withReference = (nextReference: SourceReference) => ({
+      ...input,
+      sourceReferences: [nextReference],
+      candidate: {
+        ...input.candidate,
+        questions: [{ ...question, sourceReferences: [nextReference] }],
+      },
+    });
+    const foreignAccount = assessPracticeCandidate(
+      { ...context(), userId: 'foreign-student' },
+      input,
+    );
+    const foreignSession = assessPracticeCandidate(context(), {
+      ...input,
+      sessionId: 'foreign-session',
+    });
+    const foreignCourse = assessPracticeCandidate(context(), {
+      ...input,
+      courseId: 'foreign-course',
+    });
+    const foreignReference = assessPracticeCandidate(
+      context(),
+      withReference({ ...reference, courseId: 'foreign-course' }),
+    );
+    const staleReference = assessPracticeCandidate(
+      context(),
+      withReference({ ...reference, versionId: 'stale-assignment-version' }),
+    );
+    const staleOuterReference = assessPracticeCandidate(context(), {
+      ...input,
+      sourceReferences: [{ ...reference, state: 'historical' }],
+    });
+    db.update(CourseAssignmentTable)
+      .set({ active: false })
+      .where(eq(CourseAssignmentTable.id, assignmentId))
+      .run();
+    const removedReference = assessPracticeCandidate(context(), input);
+
+    expect([
+      foreignAccount,
+      foreignSession,
+      foreignCourse,
+      foreignReference,
+      staleReference,
+      staleOuterReference,
+      removedReference,
+    ]).toMatchObject(
+      Array.from({ length: 7 }, () => ({
+        allowed: false,
+        reasonCode: 'scope-denied',
+      })),
+    );
+  });
+
+  it('rejects answer-key and unknown fields from the public practice projection', () => {
+    const input = createPracticeAssessmentInput();
+    const question = input.candidate.questions[0]!;
+    const answerKeyInput = {
+      ...input,
+      candidate: {
+        ...input.candidate,
+        questions: [{ ...question, answerKey: 'private answer key' }],
+      },
+    } as unknown as Parameters<typeof assessPracticeCandidate>[1];
+    const hostAnswerKeyInput = {
+      ...input,
+      hostAnswerKey: { answer: 'private host key' },
+    } as unknown as Parameters<typeof assessPracticeCandidate>[1];
+    const unknownFieldInput = {
+      ...input,
+      candidate: { ...input.candidate, completionClaim: true },
+    } as unknown as Parameters<typeof assessPracticeCandidate>[1];
+
+    const assessments = [
+      assessPracticeCandidate(context(), answerKeyInput),
+      assessPracticeCandidate(context(), hostAnswerKeyInput),
+      assessPracticeCandidate(context(), unknownFieldInput),
+    ];
+
+    expect(assessments).toMatchObject(
+      Array.from({ length: 3 }, () => ({
+        allowed: false,
+        reasonCode: 'invalid-input',
+        candidateDigest: null,
+      })),
+    );
+    expect(JSON.stringify(assessments)).not.toContain('private answer key');
+    expect(JSON.stringify(assessments)).not.toContain('private host key');
+  });
+
+  it('returns no candidate digest when input cannot be parsed', () => {
+    const result = assessCandidate(context(), null);
+
+    expect(result).toMatchObject({
+      allowed: false,
+      reasonCode: 'invalid-input',
+      candidateDigest: null,
+    });
   });
 
   it('limits publication part counts before any artifact or practice lookup', () => {
@@ -579,10 +778,13 @@ describe('coursework assistance policy', () => {
     setTurn('turn-policy', sessionId);
     updateGradeAccess(false, 5);
 
+    const changedCandidate = {
+      parts: [{ kind: 'text', text: 'private rejected answer' }],
+    };
     const changed = assessCandidate(context(), {
       sessionId,
       turnId: 'turn-policy',
-      candidate: { parts: [{ kind: 'text', text: 'private rejected answer' }] },
+      candidate: changedCandidate,
       policy,
       sourceReferences: [],
     });
@@ -629,6 +831,7 @@ describe('coursework assistance policy', () => {
       allowed: false,
       reasonCode: 'policy-changed',
     });
+    expect(changed.candidateDigest).toBe(hashCandidate(changedCandidate));
     expect(JSON.stringify(changed)).not.toContain('private rejected answer');
     expect(staleTurn).toMatchObject({
       allowed: false,
