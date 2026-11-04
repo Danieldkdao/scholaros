@@ -122,6 +122,7 @@ beforeEach(() => {
     run({ mission: true }),
   );
   mocks.navigation.mockReturnValue({
+    setCourseScope: vi.fn(),
     discoverCourses: vi.fn(async (request) => {
       const result = await mocks.accountRequest('/api/agent', {
         kind: 'discover',

@@ -1,6 +1,9 @@
 import { accountRequest } from '../../../lib/auth/main';
 import { composeAgentNotes } from '../../onboarding/lib/agent-notes';
-import { isReadNavigation } from '../../onboarding/lib/browser-policy';
+import {
+  academicPageIdentity,
+  isReadNavigation,
+} from '../../onboarding/lib/browser-policy';
 import { outcomeFromError } from '../../onboarding/lib/discovery-outcomes';
 import {
   academicTasks,
@@ -434,146 +437,186 @@ const readCourseContent = async ({
     const origin = listPages.find((page) =>
       page.links.some((link) => link.url === course.url),
     )!;
+    const existingCourse = getCoursesSnapshot(userId).courses.find(
+      (item) => item.connectionId === connection.id && item.url === course.url,
+    );
+    const locationScope = existingCourse
+      ? { userId, courseId: existingCourse.id }
+      : undefined;
     const collectionTasks = (['assignments', 'announcements'] as const).map(
       (kind) => () =>
         context
-          .withCoursePage(course.url, async (courseContext) => {
-            signal.throwIfAborted();
-            if (!isCurrent())
-              throw new Error('Your session changed; sign in again.');
-            persist(course);
-            const localCourse = getCoursesSnapshot(userId).courses.find(
-              (item) =>
-                item.connectionId === connection.id && item.url === course.url,
-            );
-            if (!localCourse)
-              throw new Error('The course could not be saved locally.');
-            materialStatuses.set(localCourse.id, 'partial');
-            const knownNavigationLocations =
-              getNavigationLocations({
-                userId,
-                connectionId: connection.id,
-                courseId: localCourse.id,
-                purpose: kind,
-              }) ?? [];
-            const coursePage =
-              courseContext.observed ??
-              (await courseContext.openFrom(origin, course.url));
-            if (kind === 'assignments') {
-              const materialRefresh = await refreshCourseMaterials({
-                userId,
-                connectionId: connection.id,
-                courseId: localCourse.id,
-                courseUrl: course.url,
-                courseName: course.name,
+          .withCoursePage(
+            course.url,
+            async (courseContext) => {
+              signal.throwIfAborted();
+              if (!isCurrent())
+                throw new Error('Your session changed; sign in again.');
+              persist(course);
+              if (!existingCourse)
+                throw new Error('The course could not be saved locally.');
+              const localCourse = existingCourse;
+              materialStatuses.set(localCourse.id, 'partial');
+              const knownNavigationLocations =
+                getNavigationLocations({
+                  userId,
+                  connectionId: connection.id,
+                  courseId: localCourse.id,
+                  purpose: kind,
+                }) ?? [];
+              const coursePage =
+                courseContext.observed ??
+                (await courseContext.openFrom(origin, course.url));
+              if (kind === 'assignments') {
+                const materialRefresh = await refreshCourseMaterials({
+                  userId,
+                  connectionId: connection.id,
+                  courseId: localCourse.id,
+                  courseUrl: course.url,
+                  courseName: course.name,
+                  host: connection.host,
+                  allowedHosts: hosts,
+                  notes: composeAgentNotes(
+                    connection.host,
+                    connection.notes,
+                    notes,
+                  ).notes,
+                  from: coursePage,
+                  context: courseContext,
+                  runOnCoursePage: (run) =>
+                    context.withCoursePage(course.url, async (freshContext) => {
+                      const freshCoursePage =
+                        freshContext.observed ??
+                        (await freshContext.openFrom(origin, course.url));
+                      await run({ ...freshContext, observed: freshCoursePage });
+                    }),
+                  request: (body) => {
+                    academicTasks.recordMetric(signal, 'modelCalls');
+                    return accountRequest('/api/agent', body, signal);
+                  },
+                  signal,
+                  isCurrent,
+                });
+                if (materialRefresh.status === 'partial')
+                  materialRefreshStatus = 'partial';
+                materialStatuses.set(
+                  localCourse.id,
+                  materialRefresh.status === 'complete'
+                    ? 'complete'
+                    : 'partial',
+                );
+                academicTasks.report(
+                  signal,
+                  `Read ${materialRefresh.materialsSaved} course materials`,
+                  materialRefresh.status === 'partial',
+                );
+              }
+              course.overview = 'complete';
+              academicTasks.report(signal, `Reading ${kind}`);
+              const reportMetrics = createScanMetricReporter(signal);
+              const childScan = await scanCourseCollection({
+                from: coursePage,
+                kind,
                 host: connection.host,
+                identityScope: {
+                  accountId: userId,
+                  connectionId: connection.id,
+                  courseId: localCourse.id,
+                },
+                knownNavigationLocations,
+                memory: getCourseMemory(
+                  userId,
+                  connection.id,
+                  localCourse.id,
+                  kind,
+                ),
+                onNavigationVerified: (location) => {
+                  const navigationIdentity = academicPageIdentity(
+                    location.destinationUrl,
+                  );
+                  const existingNavigationLocation =
+                    navigationIdentity &&
+                    knownNavigationLocations.find(
+                      (candidate) =>
+                        candidate.userId === userId &&
+                        candidate.connectionId === connection.id &&
+                        candidate.courseId === localCourse.id &&
+                        candidate.purpose === kind &&
+                        candidate.status === 'verified' &&
+                        candidate.destinationKind === 'collection' &&
+                        !!candidate.parentUrl &&
+                        candidate.parentUrl === candidate.evidence.sourceUrl &&
+                        isReadNavigation(candidate.destinationUrl, [
+                          connection.host,
+                        ]) &&
+                        academicPageIdentity(candidate.destinationUrl) ===
+                          navigationIdentity,
+                    );
+                  if (existingNavigationLocation)
+                    return existingNavigationLocation;
+                  const observation = location.parentUrl
+                    ? {
+                        ...location,
+                        evidence: {
+                          ...location.evidence,
+                          sourceUrl: location.parentUrl,
+                          excerpts: location.label?.trim()
+                            ? [location.label.trim()]
+                            : [],
+                        },
+                      }
+                    : location;
+                  return saveNavigationLocation(userId, connection.id, {
+                    ...observation,
+                    courseId: localCourse.id,
+                  });
+                },
+                onModelCall: () =>
+                  academicTasks.recordMetric(signal, 'modelCalls'),
+                onError: () =>
+                  academicTasks.report(
+                    signal,
+                    'Some course data could not be read.',
+                    true,
+                  ),
                 allowedHosts: hosts,
+                courseName: course.name,
+                excludedUrls: [
+                  ...listPages.map((page) => page.url),
+                  ...courseEntries
+                    .filter((entry) => entry.url !== course.url)
+                    .map((entry) => entry.url),
+                ],
                 notes: composeAgentNotes(
                   connection.host,
                   connection.notes,
                   notes,
                 ).notes,
-                from: coursePage,
                 context: courseContext,
-                runOnCoursePage: (run) =>
-                  context.withCoursePage(course.url, async (freshContext) => {
-                    const freshCoursePage =
-                      freshContext.observed ??
-                      (await freshContext.openFrom(origin, course.url));
-                    await run({ ...freshContext, observed: freshCoursePage });
-                  }),
-                request: (body) => {
-                  academicTasks.recordMetric(signal, 'modelCalls');
-                  return accountRequest('/api/agent', body, signal);
-                },
                 signal,
                 isCurrent,
+                request: (body) =>
+                  requestWithNavigation(
+                    courseContext,
+                    body as ResourceExtractionRequest,
+                    signal,
+                  ),
+                onProgress: (scan) => {
+                  reportMetrics(scan);
+                  course[kind] = scan;
+                  academicTasks.report(
+                    signal,
+                    `Saved ${scan.items.length} ${kind}`,
+                  );
+                  persist(course);
+                },
               });
-              if (materialRefresh.status === 'partial')
-                materialRefreshStatus = 'partial';
-              materialStatuses.set(
-                localCourse.id,
-                materialRefresh.status === 'complete' ? 'complete' : 'partial',
-              );
-              academicTasks.report(
-                signal,
-                `Read ${materialRefresh.materialsSaved} course materials`,
-                materialRefresh.status === 'partial',
-              );
-            }
-            course.overview = 'complete';
-            academicTasks.report(signal, `Reading ${kind}`);
-            const reportMetrics = createScanMetricReporter(signal);
-            const childScan = await scanCourseCollection({
-              from: coursePage,
-              kind,
-              host: connection.host,
-              identityScope: {
-                accountId: userId,
-                connectionId: connection.id,
-                courseId: course.url,
-              },
-              knownNavigationLocations: knownNavigationLocations.map(
-                ({ destinationUrl, destinationKind, status }) => ({
-                  purpose: kind,
-                  destinationUrl,
-                  destinationKind,
-                  status,
-                }),
-              ),
-              memory: getCourseMemory(
-                userId,
-                connection.id,
-                localCourse.id,
-                kind,
-              ),
-              onNavigationVerified: (location) => {
-                saveNavigationLocation(userId, connection.id, {
-                  ...location,
-                  courseId: localCourse.id,
-                });
-              },
-              onModelCall: () =>
-                academicTasks.recordMetric(signal, 'modelCalls'),
-              onError: () =>
-                academicTasks.report(
-                  signal,
-                  'Some course data could not be read.',
-                  true,
-                ),
-              allowedHosts: hosts,
-              courseName: course.name,
-              excludedUrls: [
-                ...listPages.map((page) => page.url),
-                ...courseEntries
-                  .filter((entry) => entry.url !== course.url)
-                  .map((entry) => entry.url),
-              ],
-              notes: composeAgentNotes(connection.host, connection.notes, notes)
-                .notes,
-              context: courseContext,
-              signal,
-              isCurrent,
-              request: (body) =>
-                requestWithNavigation(
-                  courseContext,
-                  body as ResourceExtractionRequest,
-                  signal,
-                ),
-              onProgress: (scan) => {
-                reportMetrics(scan);
-                course[kind] = scan;
-                academicTasks.report(
-                  signal,
-                  `Saved ${scan.items.length} ${kind}`,
-                );
-                persist(course);
-              },
-            });
-            reportMetrics(childScan, true);
-            course[kind] = childScan;
-            persist(course);
-          })
+              reportMetrics(childScan, true);
+              course[kind] = childScan;
+              persist(course);
+            },
+            locationScope,
+          )
           .catch((error) => {
             if (
               error === persistenceError ||
@@ -993,6 +1036,7 @@ const runSingleCourseRefresh = (
           isCurrent,
           signal,
           courseUrl: existingCourse.url,
+          locationScope: { userId, courseId },
           withCourseList: async (context) => {
             if (!context.observed)
               throw new Error('The course page could not be read.');
@@ -1098,14 +1142,7 @@ const runSingleCourseRefresh = (
                       connectionId: connection.id,
                       courseId,
                     },
-                    knownNavigationLocations: knownNavigationLocations.map(
-                      ({ destinationUrl, destinationKind, status }) => ({
-                        purpose: kind,
-                        destinationUrl,
-                        destinationKind,
-                        status,
-                      }),
-                    ),
+                    knownNavigationLocations,
                     memory: getCourseMemory(
                       userId,
                       connection.id,
@@ -1113,8 +1150,44 @@ const runSingleCourseRefresh = (
                       kind,
                     ),
                     onNavigationVerified: (location) => {
-                      saveNavigationLocation(userId, connection.id, {
-                        ...location,
+                      const navigationIdentity = academicPageIdentity(
+                        location.destinationUrl,
+                      );
+                      const existingNavigationLocation =
+                        navigationIdentity &&
+                        knownNavigationLocations.find(
+                          (candidate) =>
+                            candidate.userId === userId &&
+                            candidate.connectionId === connection.id &&
+                            candidate.courseId === courseId &&
+                            candidate.purpose === kind &&
+                            candidate.status === 'verified' &&
+                            candidate.destinationKind === 'collection' &&
+                            !!candidate.parentUrl &&
+                            candidate.parentUrl ===
+                              candidate.evidence.sourceUrl &&
+                            isReadNavigation(candidate.destinationUrl, [
+                              connection.host,
+                            ]) &&
+                            academicPageIdentity(candidate.destinationUrl) ===
+                              navigationIdentity,
+                        );
+                      if (existingNavigationLocation)
+                        return existingNavigationLocation;
+                      const observation = location.parentUrl
+                        ? {
+                            ...location,
+                            evidence: {
+                              ...location.evidence,
+                              sourceUrl: location.parentUrl,
+                              excerpts: location.label?.trim()
+                                ? [location.label.trim()]
+                                : [],
+                            },
+                          }
+                        : location;
+                      return saveNavigationLocation(userId, connection.id, {
+                        ...observation,
                         courseId,
                       });
                     },

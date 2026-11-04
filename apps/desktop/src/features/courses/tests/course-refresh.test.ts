@@ -182,6 +182,19 @@ const stateFrom = () => ({
   },
 });
 
+const chooseCourseCollection = (body: {
+  goal: string;
+  targets?: Array<{ id: string; url: string }>;
+}) => {
+  const wantedUrl = body.goal.includes('assignments')
+    ? assignmentsUrl
+    : announcementsUrl;
+  const target = body.targets?.find((item) => item.url === wantedUrl);
+  return target
+    ? { operation: 'NAVIGATE' as const, target: target.id }
+    : { operation: 'DONE' as const, target: null };
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   fixtures.clear();
@@ -217,6 +230,18 @@ beforeEach(() => {
           notesOmitted: false,
           followed: null,
         };
+      const visitKnownLocation = async (
+        location: { destinationUrl: string; parentUrl: string | null },
+        target: 'destination' | 'parent' = 'destination',
+      ) => {
+        const url =
+          target === 'parent' ? location.parentUrl : location.destinationUrl;
+        if (!url) throw new Error('The saved route has no parent.');
+        mocks.opened.push(url);
+        const opened = fixture.pages[url];
+        if (!opened) throw new Error('The page could not be loaded.');
+        return opened;
+      };
       const followed = withCourseList
         ? await withCourseList({
             withCoursePage: async (
@@ -237,6 +262,7 @@ beforeEach(() => {
                   if (!opened) throw new Error('The page could not be loaded.');
                   return opened;
                 },
+                visitKnownLocation,
               });
             },
             observed: fixture.listPage,
@@ -256,6 +282,7 @@ beforeEach(() => {
               if (!opened) throw new Error('The page could not be loaded.');
               return opened;
             },
+            visitKnownLocation,
           })
         : null;
       return {
@@ -426,12 +453,17 @@ describe('saving what the scan really saw', () => {
     mocks.agent.mockImplementation(
       async (
         _path: string,
-        body: { kind: string; goal: string; pages: Array<{ url: string }> },
+        body: {
+          kind: string;
+          goal: string;
+          pages: Array<{ url: string }>;
+          targets?: Array<{ id: string; url: string }>;
+        },
       ) =>
         body.kind === 'choose'
-          ? { operation: 'DONE', target: null }
+          ? chooseCourseCollection(body)
           : body.pages[0].url === biologyUrl
-            ? { coverage: 'unavailable', [body.kind]: [] }
+            ? { coverage: 'complete', [body.kind]: [] }
             : {
                 coverage: 'complete',
                 [body.kind]: body.goal.includes('announcement')
@@ -709,6 +741,18 @@ describe('saving what the scan really saw', () => {
         },
       }),
     );
+    mocks.agent.mockImplementation(async (_path, body) =>
+      body.kind === 'choose'
+        ? chooseCourseCollection(body)
+        : {
+            [body.kind]: [],
+            coverage:
+              body.pages[0].url === biologyUrl ||
+              body.pages[0].text.includes('no announcements')
+                ? 'complete'
+                : 'unavailable',
+          },
+    );
     await startCourseRefresh(student);
     const [course] = savedCourses();
     expect(course?.announcementsStatus).toBe('complete');
@@ -832,7 +876,7 @@ describe('saving what the scan really saw', () => {
     ]);
   });
 
-  it('advances collection freshness and retires missing records after a resolved summary scan', async () => {
+  it('retains assignment freshness when collection evidence remains partial', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     try {
       vi.setSystemTime(new Date('2026-10-31T12:00:00.000Z'));
@@ -863,7 +907,7 @@ describe('saving what the scan really saw', () => {
           },
         }),
       );
-      let pass: 'seed' | 'resolved' = 'seed';
+      let pass: 'seed' | 'changed' = 'seed';
       const assignmentRecord = (
         sourceUrl: string,
         title: string,
@@ -887,18 +931,11 @@ describe('saving what the scan really saw', () => {
         },
       });
       mocks.agent.mockImplementation(async (_path, body) => {
-        if (body.kind === 'choose') return { operation: 'DONE', target: null };
+        if (body.kind === 'choose') return chooseCourseCollection(body);
         if (body.kind === 'announcements')
           return { coverage: 'complete', announcements: [] };
         if (body.pages[0].url === biologyUrl)
-          return pass === 'seed'
-            ? { coverage: 'complete', assignments: [] }
-            : {
-                coverage: 'partial',
-                assignments: [
-                  assignmentRecord(biologyUrl, 'Upcoming quiz', 'new-1'),
-                ],
-              };
+          return { coverage: 'complete', assignments: [] };
         return {
           coverage: 'complete',
           assignments: [
@@ -921,22 +958,16 @@ describe('saving what the scan really saw', () => {
           ?.active,
       ).toBe(true);
 
-      pass = 'resolved';
+      pass = 'changed';
       vi.setSystemTime(new Date('2026-11-01T12:00:00.000Z'));
       await startCourseRefresh(student);
       const after = getCoursesSnapshot(student).courses[0].assignmentsSyncedAt;
       const savedAssignments = db.select().from(CourseAssignmentTable).all();
-
-      expect(after).toBe('2026-11-01T12:00:00.000Z');
-      expect(after).not.toBe(before);
+      expect(after).toBe(before);
+      expect(savedCourses()[0]?.assignmentsStatus).toBe('partial');
       expect(
         savedAssignments.find(
           (assignment) => assignment.content?.sourceId === 'old-1',
-        )?.active,
-      ).toBe(false);
-      expect(
-        savedAssignments.find(
-          (assignment) => assignment.content?.sourceId === 'new-1',
         )?.active,
       ).toBe(true);
     } finally {
@@ -1301,11 +1332,63 @@ it('uses one authenticated tab for both collections after account selection', as
   await startCourseRefresh(student);
   const target = savedCourses()[0];
   mocks.scan.mockClear();
-  mocks.agent.mockImplementation(async (_path, body) =>
-    body.kind === 'choose'
-      ? { operation: 'DONE', target: null }
-      : { coverage: 'complete', [body.kind]: [] },
-  );
+  mocks.agent.mockImplementation(async (_path, body) => {
+    if (body.kind === 'choose') return chooseCourseCollection(body);
+    if (body.kind === 'assignments')
+      return body.pages[0].url === assignmentsUrl
+        ? {
+            coverage: 'complete',
+            assignments: [
+              {
+                title: 'Lab report',
+                description: null,
+                kind: 'assignment',
+                state: 'active-unsubmitted',
+                due: null,
+                availableFrom: null,
+                availableUntil: null,
+                pointsPossible: null,
+                url: null,
+                sourceId: null,
+                resources: [],
+                evidence: {
+                  sourceUrl: assignmentsUrl,
+                  excerpts: ['Lab report'],
+                  targetIds: [],
+                },
+              },
+            ],
+          }
+        : { coverage: 'complete', assignments: [] };
+    if (body.kind === 'announcements')
+      return body.pages[0].url === announcementsUrl
+        ? {
+            coverage: 'complete',
+            announcements: [
+              {
+                title: 'Midterm moved',
+                body: null,
+                author: null,
+                published: {
+                  kind: 'date',
+                  date: '2026-03-05',
+                  original: '2026-03-05',
+                },
+                updated: null,
+                url: null,
+                sourceId: null,
+                resources: [],
+                evidence: {
+                  sourceUrl: announcementsUrl,
+                  excerpts: ['Midterm moved, posted 2026-03-05'],
+                  targetIds: [],
+                },
+              },
+            ],
+          }
+        : { coverage: 'complete', announcements: [] };
+    return { coverage: 'partial', courses: [] };
+  });
   mocks.scan.mockImplementation(async ({ withCourseList }) => {
     if (mocks.scan.mock.calls.length > 1)
       return {
