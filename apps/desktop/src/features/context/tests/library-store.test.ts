@@ -50,6 +50,8 @@ const {
   releaseContextSession,
   removeContextItem,
   resolveHistoricalContextCitation,
+  readContextIngestionItem,
+  readContextIngestionVersion,
   saveGeneratedContextItem,
   saveContextIngestionResult,
   setContextIngestionStatus,
@@ -1204,6 +1206,124 @@ describe('Context library store', () => {
 });
 
 describe('P09 ingestion against P08 storage', () => {
+  it('reads a session-only item only through its linked account and course scope', async () => {
+    const itemId = randomUUID();
+    const otherSessionId = randomUUID();
+    await createUploadedContextItem(context, {
+      itemId,
+      title: 'Session-only scan.pdf',
+      kind: 'document',
+      sessionId,
+      saveToLibrary: false,
+    });
+
+    expect(
+      readContextIngestionItem(context, { itemId, sessionId, courseId }),
+    ).toMatchObject({ id: itemId, revision: 0, removed: false });
+    expect(
+      readContextIngestionItem(context, { itemId, sessionId: otherSessionId }),
+    ).toBeNull();
+    expect(
+      readContextIngestionItem(context, { itemId, courseId: randomUUID() }),
+    ).toBeNull();
+    expect(
+      readContextIngestionItem(
+        { ...context, userId: 'other-context-student' },
+        { itemId },
+      ),
+    ).toBeNull();
+  });
+
+  it('reads raw checkpoints by persisted attempt when there is no current version', async () => {
+    const itemId = randomUUID();
+    await createUploadedContextItem(context, {
+      itemId,
+      title: 'Scanned page.pdf',
+      kind: 'document',
+      sessionId,
+      saveToLibrary: false,
+    });
+    const bytes = Buffer.from('%PDF-1.7 scanned');
+    const original = await originalStore.write(userId, bytes, 1024);
+    const checkpointAttemptId = randomUUID();
+    const checkpointItem = await saveContextIngestionResult(context, {
+      itemId,
+      expectedRevision: 0,
+      attemptId: checkpointAttemptId,
+      originalHash: original.hash,
+      contentHash: original.hash,
+      mimeType: 'application/pdf',
+      byteLength: original.byteLength,
+      originalStorageKey: original.storageKey,
+      extractedText: null,
+      extractionStatus: 'partial',
+      uncertainty: 'No selectable text was found.',
+      pageCount: 1,
+      interpretedPages: [],
+      locators: [{ kind: 'page', page: 1 }],
+      originalIsNew: true,
+    });
+
+    expect(checkpointItem.currentVersionId).toBeNull();
+    expect(
+      readContextIngestionVersion(context, {
+        itemId,
+        attemptId: checkpointAttemptId,
+      }),
+    ).toMatchObject({
+      itemId,
+      attemptId: checkpointAttemptId,
+      extractionStatus: 'partial',
+      extractedText: null,
+      originalStorageKey: original.storageKey,
+    });
+    expect(readContextIngestionVersion(context, { itemId })).toMatchObject({
+      attemptId: checkpointAttemptId,
+      originalHash: original.hash,
+    });
+
+    const emptyAttemptId = randomUUID();
+    const emptyTextItem = await saveContextIngestionResult(context, {
+      itemId,
+      expectedRevision: checkpointItem.revision,
+      attemptId: emptyAttemptId,
+      originalHash: original.hash,
+      contentHash: createHash('sha256').update('').digest('hex'),
+      mimeType: 'text/plain',
+      byteLength: original.byteLength,
+      originalStorageKey: original.storageKey,
+      extractedText: '',
+      extractionStatus: 'complete',
+      uncertainty: null,
+      pageCount: null,
+      interpretedPages: [],
+      locators: [],
+      originalIsNew: false,
+    });
+    const emptyTextVersion = readContextIngestionVersion(context, {
+      itemId,
+      attemptId: emptyAttemptId,
+    });
+
+    expect(emptyTextItem.currentVersionId).toBe(emptyTextVersion?.id);
+    expect(emptyTextItem.usable).toBe(false);
+    expect(emptyTextVersion).toMatchObject({
+      attemptId: emptyAttemptId,
+      extractionStatus: 'complete',
+      extractedText: '',
+    });
+    expect(
+      db
+        .select()
+        .from(ContextChunkTable)
+        .all()
+        .filter((chunk) => chunk.itemId === itemId),
+    ).toHaveLength(0);
+    expect(await originalStore.read(userId, original.storageKey)).toEqual(
+      bytes,
+    );
+  });
+
   it('removes a newly owned orphan after schema rejection without removing referenced bytes', async () => {
     const itemId = randomUUID();
     await createUploadedContextItem(context, {

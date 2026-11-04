@@ -109,6 +109,26 @@ export type GetContextItemInputSchema = z.infer<
   typeof getContextItemInputSchema
 >;
 
+const readContextIngestionItemInputSchema = z.strictObject({
+  itemId: idSchema,
+  sessionId: idSchema.optional(),
+  courseId: idSchema.optional(),
+});
+const readContextIngestionVersionInputSchema = z
+  .strictObject({
+    itemId: idSchema,
+    versionId: idSchema.optional(),
+    attemptId: idSchema.optional(),
+    storageKey: z.string().min(1).max(160).optional(),
+  })
+  .refine(
+    ({ versionId, attemptId, storageKey }) =>
+      Number(versionId !== undefined) +
+        Number(attemptId !== undefined) +
+        Number(storageKey !== undefined) <=
+      1,
+  );
+
 const createUploadedContextItemInputSchema = z.strictObject({
   itemId: idSchema,
   title: z.string().trim().min(1).max(160),
@@ -176,6 +196,31 @@ const cursorSchema = z.strictObject({
 
 type ContextItemRow = typeof ContextItemTable.$inferSelect;
 type ContextVersionRow = typeof ContextVersionTable.$inferSelect;
+export type ContextIngestionStoreItem = {
+  id: string;
+  revision: number;
+  removed: false;
+  currentVersionId: string | null;
+  status: ContextItemRow['status'];
+  usable: boolean;
+};
+export type ContextIngestionStoreVersion = Pick<
+  ContextVersionRow,
+  | 'id'
+  | 'itemId'
+  | 'attemptId'
+  | 'contentHash'
+  | 'mimeType'
+  | 'byteLength'
+  | 'extractionStatus'
+  | 'interpretedPages'
+  | 'uncertainty'
+  | 'pageCount'
+  | 'locators'
+  | 'extractedText'
+  | 'originalHash'
+  | 'originalStorageKey'
+>;
 type ContextTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type ContextQueryable = typeof db | ContextTransaction;
 
@@ -1003,6 +1048,153 @@ export const getContextItem = async (
       versions,
       preview: previewForVersion(selectedVersion),
     };
+  } catch {
+    return null;
+  }
+};
+
+const contextIngestionStoreVersion = (
+  version: ContextVersionRow,
+): ContextIngestionStoreVersion => ({
+  id: version.id,
+  itemId: version.itemId,
+  attemptId: version.attemptId,
+  contentHash: version.contentHash,
+  mimeType: version.mimeType,
+  byteLength: version.byteLength,
+  extractionStatus: version.extractionStatus,
+  interpretedPages: version.interpretedPages,
+  uncertainty: version.uncertainty,
+  pageCount: version.pageCount,
+  locators: version.locators,
+  extractedText: version.extractedText,
+  originalHash: version.originalHash,
+  originalStorageKey: version.originalStorageKey,
+});
+
+export const readContextIngestionItem = (
+  context: AuthorizedContext,
+  rawInput: unknown,
+): ContextIngestionStoreItem | null => {
+  const parsed = readContextIngestionItemInputSchema.safeParse(rawInput);
+  if (!parsed.success) return null;
+  try {
+    assertAuthorized(context);
+    const item = db
+      .select()
+      .from(ContextItemTable)
+      .where(
+        and(
+          eq(ContextItemTable.userId, context.userId),
+          eq(ContextItemTable.id, parsed.data.itemId),
+          isNull(ContextItemTable.removedAt),
+        ),
+      )
+      .get();
+    if (!item) return null;
+    const itemDto = contextItemDto(db, context.userId, item);
+    if (!itemDto) return null;
+    const links = db
+      .select()
+      .from(ContextLinkTable)
+      .where(
+        and(
+          eq(ContextLinkTable.userId, context.userId),
+          eq(ContextLinkTable.itemId, item.id),
+        ),
+      )
+      .all();
+    if (parsed.data.sessionId) {
+      const session = getOwnedSession(
+        db,
+        context.userId,
+        parsed.data.sessionId,
+      );
+      if (
+        (parsed.data.courseId && session.courseId !== parsed.data.courseId) ||
+        !links.some(
+          (link) =>
+            link.sessionId === session.id &&
+            (link.courseId === null || link.courseId === session.courseId),
+        )
+      )
+        return null;
+    } else if (parsed.data.courseId) {
+      getOwnedCourse(db, context.userId, parsed.data.courseId);
+      const linkedToCourse = links.some((link) => {
+        if (link.courseId === parsed.data.courseId) return true;
+        if (!link.sessionId) return false;
+        const linkedSession = getOwnedSession(
+          db,
+          context.userId,
+          link.sessionId,
+        );
+        return linkedSession.courseId === parsed.data.courseId;
+      });
+      if (!linkedToCourse) return null;
+    }
+    return {
+      id: item.id,
+      revision: item.revision,
+      removed: false,
+      currentVersionId: itemDto.currentVersionId,
+      status: item.status,
+      usable: itemDto.usable,
+    };
+  } catch {
+    return null;
+  }
+};
+
+export const readContextIngestionVersion = (
+  context: AuthorizedContext,
+  rawInput: unknown,
+): ContextIngestionStoreVersion | null => {
+  const parsed = readContextIngestionVersionInputSchema.safeParse(rawInput);
+  if (!parsed.success) return null;
+  try {
+    assertAuthorized(context);
+    const item = getOwnedItem(db, context.userId, parsed.data.itemId);
+    const base = and(
+      eq(ContextVersionTable.userId, context.userId),
+      eq(ContextVersionTable.itemId, item.id),
+    );
+    let selectedVersion: ContextVersionRow | undefined;
+    if (parsed.data.versionId) {
+      selectedVersion = db
+        .select()
+        .from(ContextVersionTable)
+        .where(and(base, eq(ContextVersionTable.id, parsed.data.versionId)))
+        .get();
+    } else if (parsed.data.attemptId) {
+      selectedVersion = db
+        .select()
+        .from(ContextVersionTable)
+        .where(
+          and(base, eq(ContextVersionTable.attemptId, parsed.data.attemptId)),
+        )
+        .get();
+    } else {
+      const storageKey = parsed.data.storageKey;
+      const latest = db.$client
+        .prepare(
+          storageKey
+            ? `SELECT id FROM context_versions WHERE user_id = ? AND item_id = ? AND original_storage_key = ? ORDER BY rowid DESC LIMIT 1`
+            : `SELECT id FROM context_versions WHERE user_id = ? AND item_id = ? ORDER BY rowid DESC LIMIT 1`,
+        )
+        .get(context.userId, item.id, ...(storageKey ? [storageKey] : [])) as
+        | { id: string }
+        | undefined;
+      if (latest)
+        selectedVersion = db
+          .select()
+          .from(ContextVersionTable)
+          .where(and(base, eq(ContextVersionTable.id, latest.id)))
+          .get();
+    }
+    return selectedVersion
+      ? contextIngestionStoreVersion(selectedVersion)
+      : null;
   } catch {
     return null;
   }
