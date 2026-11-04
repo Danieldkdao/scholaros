@@ -615,7 +615,7 @@ export const StudyComposer = ({
       <label htmlFor="study-message-input" className="sr-only">
         Message
       </label>
-      <InputGroup className="h-auto w-full flex-col items-stretch gap-2 rounded-xl border-0 bg-transparent p-2 shadow-none dark:bg-transparent">
+      <InputGroup className="h-auto w-full flex-col items-stretch gap-2 rounded-xl border-0 bg-transparent p-2 shadow-none has-[[data-slot=input-group-control]:focus-visible]:border-transparent has-[[data-slot=input-group-control]:focus-visible]:ring-0 dark:bg-transparent">
         <InputGroupTextarea
           ref={textareaRef}
           id="study-message-input"
