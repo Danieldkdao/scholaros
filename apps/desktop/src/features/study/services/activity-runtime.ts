@@ -15,7 +15,6 @@ import {
   isBoundedJsonValue,
   type ActivityMailbox,
   type ActivityMailboxBinding,
-  type ActivityProtocolMessage,
 } from './activity-mailbox';
 import {
   isActivitySchemeRegistered,
@@ -30,6 +29,7 @@ export type ActivityMountInput = {
   artifactId: string;
   versionId: string;
   attemptId: string;
+  readOnly: boolean;
   bounds: ActivityBounds;
 };
 
@@ -48,19 +48,20 @@ export type AuthorizedActivityRun = ActivityBundle & {
   attemptId: string;
   runId: string;
   contentDigest: string;
+  runtimeDigest: string;
   initialState: unknown;
   stateRevision: number;
 };
 
-type ActivityAuthorizationRequest = {
+export type ActivityAuthorizationRequest = {
   sessionId: string;
   artifactId: string;
   versionId: string;
   attemptId: string;
-  runId: string;
+  requestId: string;
 };
 
-type ActivityStateProposal = {
+export type ActivityStateProposal = {
   sessionId: string;
   artifactId: string;
   versionId: string;
@@ -69,6 +70,11 @@ type ActivityStateProposal = {
   sequence: number;
   baseStateRevision: number;
   state: unknown;
+};
+
+export type ActivityRunRelease = {
+  runId?: string;
+  requestId: string;
 };
 
 type ActivityRuntimeDiagnostics = {
@@ -91,22 +97,29 @@ type ActivityGuardCounters = {
   connectionPolicyHeaderVerified: boolean;
 };
 
-type ActivityManagerDependencies = {
+export type ActivityManagerDependencies = {
   authorizeRun: (
     request: ActivityAuthorizationRequest,
   ) => Promise<AuthorizedActivityRun | null>;
   persistState: (
     proposal: ActivityStateProposal,
   ) => Promise<{ revision: number }>;
+  releaseRun: (input: ActivityRunRelease) => Promise<void>;
   requireTrustedSender: (sender: WebContents) => boolean;
   getTrustedRenderers: () => readonly WebContents[];
   onDiagnostics?: (diagnostics: ActivityRuntimeDiagnostics) => void;
   onRuntimeReady?: (runId: string) => void;
+  onStateAcknowledged?: (runId: string, revision: number) => void;
   onClosed?: (result: { runId: string; reason: string }) => void;
   onStateFailure?: (runId: string) => void;
+  onInteraction?: (input: {
+    runId: string;
+    action: string;
+    value: unknown;
+  }) => Promise<void> | void;
 };
 
-type ActivityManager = {
+export type ActivityManager = {
   mount: (input: ActivityMountInput) => Promise<{ runId: string }>;
   updateBounds: (
     runId: string,
@@ -114,6 +127,7 @@ type ActivityManager = {
     visible: boolean,
   ) => void;
   hide: (runId: string) => void;
+  retryCheckpoint: (input: { runId: string }) => Promise<void>;
   close: (runId: string) => Promise<void>;
   dispose: () => Promise<void>;
 };
@@ -131,8 +145,15 @@ type RuntimeInstance = {
   cleanups: Array<() => void>;
   closed: boolean;
   closing: boolean;
+  closePromise: Promise<void> | null;
+  releasePromise: Promise<void> | null;
   initialized: boolean;
   pollInFlight: boolean;
+  checkpointInFlight: Promise<'acknowledged' | 'failed' | 'close'> | null;
+  checkpointRetryPromise: Promise<void> | null;
+  lastFailedProposal: ActivityStateProposal | null;
+  authorizationRequestId: string;
+  hostSequence: number;
   consecutivePollFailures: number;
   cpuOverLimitSamples: number;
   bootstrapTimer: NodeJS.Timeout | null;
@@ -222,11 +243,18 @@ const validateAuthorizedRun = (
   if (run.artifactId !== request.artifactId) invalidFields.push('artifact');
   if (run.versionId !== request.versionId) invalidFields.push('version');
   if (run.attemptId !== request.attemptId) invalidFields.push('attempt');
-  if (run.runId !== request.runId) invalidFields.push('run');
-  if (!/^[a-f0-9]{64}$/.test(run.contentDigest))
-    invalidFields.push('digest-format');
   if (
-    run.contentDigest !==
+    typeof run.runId !== 'string' ||
+    run.runId.length === 0 ||
+    run.runId.length > 300
+  )
+    invalidFields.push('run');
+  if (!/^[a-f0-9]{64}$/.test(run.contentDigest))
+    invalidFields.push('artifact-digest-format');
+  if (!/^[a-f0-9]{64}$/.test(run.runtimeDigest))
+    invalidFields.push('runtime-digest-format');
+  if (
+    run.runtimeDigest !==
     createActivityContentDigest({
       html: run.html,
       css: run.css,
@@ -234,7 +262,7 @@ const validateAuthorizedRun = (
       javascript: run.javascript,
     })
   )
-    invalidFields.push('digest-mismatch');
+    invalidFields.push('runtime-digest-mismatch');
   if (!Number.isSafeInteger(run.stateRevision) || run.stateRevision < 0)
     invalidFields.push('state-revision');
   if (!isBoundedJsonValue(run.initialState, activityMessageLimits.stateBytes))
@@ -405,6 +433,28 @@ const registerPageGuards = (
   };
   contents.setWindowOpenHandler(onWindowOpen);
 
+  const onFailedMainFrameNavigation = (
+    _event: Electron.Event,
+    _errorCode: number,
+    _errorDescription: string,
+    validatedUrl: string,
+    isMainFrame: boolean,
+  ) => {
+    if (
+      !isMainFrame ||
+      (validatedUrl === instance.url && !instance.initialized) ||
+      instance.closed ||
+      instance.closing
+    )
+      return;
+    counters.blockedNavigations += 1;
+    void closeInstance('blocked-navigation');
+  };
+  contents.on('did-fail-load', onFailedMainFrameNavigation);
+  addCleanup(() =>
+    contents.removeListener('did-fail-load', onFailedMainFrameNavigation),
+  );
+
   const blockNavigation = (event: Electron.Event) => {
     event.preventDefault();
     counters.blockedNavigations += 1;
@@ -470,9 +520,26 @@ export const createActivityManager = (
 ): ActivityManager => {
   let active: RuntimeInstance | null = null;
   let disposed = false;
+  const instances = new Map<string, RuntimeInstance>();
+  const pendingMounts = new Set<Promise<{ runId: string }>>();
+  let mountQueue: Promise<void> = Promise.resolve();
 
-  const closeInstance = async (instance: RuntimeInstance, reason: string) => {
-    if (instance.closed || instance.closing) return;
+  const releaseInstance = (instance: RuntimeInstance) => {
+    if (!instance.releasePromise) {
+      instance.releasePromise = dependencies.releaseRun({
+        runId: instance.run.runId,
+        requestId: instance.authorizationRequestId,
+      });
+    }
+    return instance.releasePromise;
+  };
+
+  const closeInstance = (
+    instance: RuntimeInstance,
+    reason: string,
+  ): Promise<void> => {
+    if (instance.closePromise) return instance.closePromise;
+    if (instance.closed) return Promise.resolve();
     instance.closing = true;
     instance.closed = true;
     if (active === instance) active = null;
@@ -482,97 +549,115 @@ export const createActivityManager = (
     if (instance.metricsTimer) clearInterval(instance.metricsTimer);
     instance.mailbox.clear();
 
-    for (const cleanup of instance.cleanups.splice(0)) {
-      try {
-        cleanup();
-      } catch {
-        // Cleanup is best-effort after the owned renderer is already closing.
-      }
-    }
-
-    try {
-      instance.session.protocol.unhandle(activityScheme);
-    } catch {
-      // A missing handler is already closed to the activity.
-    }
-    try {
-      await instance.session.closeAllConnections();
-    } catch {
-      // The session is private to this run and is not reused.
-    }
-
-    if (!instance.hostWindow.isDestroyed()) {
-      try {
-        instance.hostWindow.contentView.removeChildView(instance.view);
-      } catch {
-        // The parent can close before its child view.
-      }
-    }
-    try {
-      instance.view.setVisible(false);
-      instance.view.setBounds({ x: 0, y: 0, width: 0, height: 0 });
-    } catch {
-      // The WebContentsView may already have been disposed.
-    }
-    if (
-      instance.debuggerAttached &&
-      instance.view.webContents.debugger.isAttached()
-    ) {
-      try {
-        instance.view.webContents.debugger.detach();
-      } catch {
-        // Debugger detach can race renderer teardown.
-      }
-    }
-    const contents = instance.view.webContents;
-    if (!contents.isDestroyed()) {
-      let resolveDestroyed: (() => void) | undefined;
-      const destroyed = new Promise<void>((resolve) => {
-        resolveDestroyed = resolve;
-        contents.once('destroyed', resolve);
-      });
-      try {
-        contents.close({ waitForBeforeUnload: false });
-      } catch {
-        // An activity cannot veto main-owned teardown.
+    const closePromise = (async () => {
+      await instance.checkpointInFlight?.catch(() => 'close');
+      for (const cleanup of instance.cleanups.splice(0)) {
+        try {
+          cleanup();
+        } catch {
+          // Cleanup is best-effort after the owned renderer is already closing.
+        }
       }
 
-      const watchdogTermination =
-        reason === 'mailbox-watchdog-timeout' ||
-        reason === 'activity-resource-watchdog' ||
-        reason === 'renderer-unresponsive';
-      const rendererProcessId = contents.getOSProcessId();
-      const trustedProcessIds = dependencies
-        .getTrustedRenderers()
-        .filter((trustedContents) => !trustedContents.isDestroyed())
-        .map((trustedContents) => trustedContents.getOSProcessId())
-        .filter((pid) => pid > 0);
-      const canForceTerminate = canForcefullyTerminateActivityRenderer(
-        rendererProcessId,
-        trustedProcessIds,
-      );
-      if (watchdogTermination && canForceTerminate && !contents.isDestroyed())
-        contents.forcefullyCrashRenderer();
+      try {
+        instance.session.protocol.unhandle(activityScheme);
+      } catch {
+        // A missing handler is already closed to the activity.
+      }
+      try {
+        await instance.session.closeAllConnections();
+      } catch {
+        // The session is private to this run and is not reused.
+      }
+
+      if (!instance.hostWindow.isDestroyed()) {
+        try {
+          instance.hostWindow.contentView.removeChildView(instance.view);
+        } catch {
+          // The parent can close before its child view.
+        }
+      }
+      try {
+        instance.view.setVisible(false);
+        instance.view.setBounds({ x: 0, y: 0, width: 0, height: 0 });
+      } catch {
+        // The WebContentsView may already have been disposed.
+      }
+      if (
+        instance.debuggerAttached &&
+        instance.view.webContents.debugger.isAttached()
+      ) {
+        try {
+          instance.view.webContents.debugger.detach();
+        } catch {
+          // Debugger detach can race renderer teardown.
+        }
+      }
+      const contents = instance.view.webContents;
       if (!contents.isDestroyed()) {
-        const destroyedInTime = await withTimeout(
-          destroyed.then(() => true),
-          1000,
-        ).catch(() => false);
-        if (!destroyedInTime && !contents.isDestroyed() && canForceTerminate)
-          contents.forcefullyCrashRenderer();
-        if (!contents.isDestroyed())
-          await withTimeout(destroyed, 1000).catch(() => undefined);
-      }
-      if (resolveDestroyed)
-        contents.removeListener('destroyed', resolveDestroyed);
-    }
+        let resolveDestroyed: (() => void) | undefined;
+        const destroyed = new Promise<void>((resolve) => {
+          resolveDestroyed = resolve;
+          contents.once('destroyed', resolve);
+        });
+        try {
+          contents.close({ waitForBeforeUnload: false });
+        } catch {
+          // An activity cannot veto main-owned teardown.
+        }
 
-    dependencies.onClosed?.({ runId: instance.run.runId, reason });
-    instance.closing = false;
+        const watchdogTermination =
+          reason === 'mailbox-watchdog-timeout' ||
+          reason === 'activity-resource-watchdog' ||
+          reason === 'renderer-unresponsive';
+        const rendererProcessId = contents.getOSProcessId();
+        const trustedProcessIds = dependencies
+          .getTrustedRenderers()
+          .filter((trustedContents) => !trustedContents.isDestroyed())
+          .map((trustedContents) => trustedContents.getOSProcessId())
+          .filter((pid) => pid > 0);
+        const canForceTerminate = canForcefullyTerminateActivityRenderer(
+          rendererProcessId,
+          trustedProcessIds,
+        );
+        if (watchdogTermination && canForceTerminate && !contents.isDestroyed())
+          contents.forcefullyCrashRenderer();
+        if (!contents.isDestroyed()) {
+          const destroyedInTime = await withTimeout(
+            destroyed.then(() => true),
+            1000,
+          ).catch(() => false);
+          if (!destroyedInTime && !contents.isDestroyed() && canForceTerminate)
+            contents.forcefullyCrashRenderer();
+          if (!contents.isDestroyed())
+            await withTimeout(destroyed, 1000).catch(() => undefined);
+        }
+        if (resolveDestroyed)
+          contents.removeListener('destroyed', resolveDestroyed);
+      }
+
+      let releaseError: unknown;
+      try {
+        await releaseInstance(instance);
+      } catch (error) {
+        releaseError = error;
+      }
+      instances.delete(instance.run.runId);
+      try {
+        dependencies.onClosed?.({ runId: instance.run.runId, reason });
+      } catch {
+        // Teardown completion is independent from status-event delivery.
+      }
+      instance.closing = false;
+      if (releaseError) throw releaseError;
+    })();
+    instance.closePromise = closePromise;
+    return closePromise;
   };
 
   const closeByRunId = async (runId: string, reason = 'closed') => {
-    if (active?.run.runId === runId) await closeInstance(active, reason);
+    const instance = instances.get(runId);
+    if (instance) await closeInstance(instance, reason);
   };
 
   const sendIsolatedWorldMessage = async (
@@ -590,49 +675,117 @@ export const createActivityManager = (
     );
   };
 
-  const persistProposal = async (
+  const sendHostMessage = (
     instance: RuntimeInstance,
-    message: Extract<ActivityProtocolMessage, { kind: 'state-proposed' }>,
-  ) => {
-    const proposal: ActivityStateProposal = {
+    kind: string,
+    payload: Record<string, unknown>,
+  ) =>
+    sendIsolatedWorldMessage(instance, {
+      protocolVersion: 1,
+      runtimeVersion: instance.run.runtimeVersion,
+      source: 'scholar-host',
       sessionId: instance.run.sessionId,
       artifactId: instance.run.artifactId,
-      versionId: instance.run.versionId,
+      contentVersionId: instance.run.versionId,
       attemptId: instance.run.attemptId,
       runId: instance.run.runId,
-      sequence: message.sequence,
-      baseStateRevision: message.baseStateRevision,
-      state: message.payload.state,
-    };
+      sequence: ++instance.hostSequence,
+      kind,
+      ...payload,
+    });
 
+  const persistProposal = async (
+    instance: RuntimeInstance,
+    proposal: ActivityStateProposal,
+  ): Promise<'acknowledged' | 'failed' | 'close'> => {
+    if (instance.closed || instance.closing) return 'close';
     try {
       const result = await dependencies.persistState(proposal);
+      if (instance.closed || instance.closing) return 'close';
       if (
         !Number.isSafeInteger(result.revision) ||
-        result.revision !== message.baseStateRevision + 1
+        result.revision !== proposal.baseStateRevision + 1
       )
         throw new Error('Activity state acknowledgement revision is invalid.');
       instance.mailbox.acknowledge(result.revision);
-      await sendIsolatedWorldMessage(instance, {
-        source: 'scholar-host',
-        kind: 'state-ack',
-        runId: instance.run.runId,
-        sequence: message.sequence,
-        revision: result.revision,
+      instance.lastFailedProposal = null;
+      await sendHostMessage(instance, 'state-acknowledged', {
+        acknowledgedSequence: proposal.sequence,
+        stateRevision: result.revision,
       });
-    } catch {
-      dependencies.onStateFailure?.(instance.run.runId);
       try {
-        await sendIsolatedWorldMessage(instance, {
-          source: 'scholar-host',
-          kind: 'state-rejected',
-          runId: instance.run.runId,
-          sequence: message.sequence,
-          revision: instance.mailbox.stateRevision,
-        });
+        dependencies.onStateAcknowledged?.(instance.run.runId, result.revision);
       } catch {
-        await closeInstance(instance, 'state-acknowledgement-failed');
+        // Persistence acknowledgement does not depend on status-event delivery.
       }
+      return 'acknowledged';
+    } catch {
+      if (instance.closed || instance.closing) return 'close';
+      instance.lastFailedProposal = proposal;
+      try {
+        dependencies.onStateFailure?.(instance.run.runId);
+      } catch {
+        // The host rejection must still reach the runtime.
+      }
+      try {
+        await sendHostMessage(instance, 'state-rejected', {
+          acknowledgedSequence: proposal.sequence,
+          stateRevision: instance.mailbox.stateRevision,
+        });
+        return 'failed';
+      } catch {
+        return 'close';
+      }
+    }
+  };
+
+  const executeCheckpoint = async (
+    instance: RuntimeInstance,
+    proposal: ActivityStateProposal,
+  ) => {
+    const checkpoint = persistProposal(instance, proposal);
+    instance.checkpointInFlight = checkpoint;
+    try {
+      return await checkpoint;
+    } finally {
+      if (instance.checkpointInFlight === checkpoint)
+        instance.checkpointInFlight = null;
+    }
+  };
+
+  const retryCheckpoint = async (input: { runId: string }) => {
+    const instance = instances.get(input.runId);
+    if (
+      !instance ||
+      instance.closed ||
+      instance.closing ||
+      instance.binding.readOnly
+    )
+      throw new Error('The activity checkpoint is not retryable.');
+    if (instance.checkpointRetryPromise) return instance.checkpointRetryPromise;
+    const retry = (async () => {
+      if (instance.checkpointInFlight)
+        await instance.checkpointInFlight.catch(() => 'close');
+      if (instance.closed || instance.closing)
+        throw new Error('The activity run is closing.');
+      const proposal = instance.lastFailedProposal;
+      if (!proposal) return;
+      const result = await executeCheckpoint(instance, proposal);
+      if (result === 'close') {
+        await closeInstance(instance, 'checkpoint-retry-transport-failed');
+        throw new Error(
+          'The activity checkpoint retry could not be acknowledged.',
+        );
+      }
+      if (result === 'failed')
+        throw new Error('The activity checkpoint retry failed.');
+    })();
+    instance.checkpointRetryPromise = retry;
+    try {
+      await retry;
+    } finally {
+      if (instance.checkpointRetryPromise === retry)
+        instance.checkpointRetryPromise = null;
     }
   };
 
@@ -674,7 +827,7 @@ export const createActivityManager = (
       }
 
       if (message.kind === 'ready') {
-        if (message.payload.digest !== instance.run.contentDigest) {
+        if (message.payload.contentDigest !== instance.run.contentDigest) {
           await closeInstance(instance, 'activity-digest-mismatch');
           return;
         }
@@ -691,12 +844,37 @@ export const createActivityManager = (
         return;
       }
       if (message.kind === 'state-proposed') {
-        await persistProposal(instance, message);
+        const result = await executeCheckpoint(instance, {
+          sessionId: instance.run.sessionId,
+          artifactId: instance.run.artifactId,
+          versionId: instance.run.versionId,
+          attemptId: instance.run.attemptId,
+          runId: instance.run.runId,
+          sequence: message.sequence,
+          baseStateRevision: message.baseStateRevision,
+          state: message.payload.state,
+        });
+        if (result === 'close')
+          await closeInstance(instance, 'state-acknowledgement-failed');
         return;
       }
-      if (message.kind === 'runtime-error') {
-        await closeInstance(instance, 'activity-runtime-error');
+      if (message.kind === 'interaction') {
+        try {
+          await dependencies.onInteraction?.({
+            runId: instance.run.runId,
+            action: message.payload.action,
+            value: message.payload.value,
+          });
+          await sendHostMessage(instance, 'interaction-acknowledged', {
+            acknowledgedSequence: message.sequence,
+          });
+        } catch {
+          await closeInstance(instance, 'interaction-acknowledgement-failed');
+        }
+        return;
       }
+      if (message.kind === 'runtime-error')
+        await closeInstance(instance, 'activity-runtime-error');
     } catch {
       if (instance.closed || instance.closing) return;
       instance.consecutivePollFailures += 1;
@@ -707,9 +885,15 @@ export const createActivityManager = (
     }
   };
 
-  const mount = async (input: ActivityMountInput) => {
+  const mountActivity = async (
+    input: ActivityMountInput,
+    request: ActivityAuthorizationRequest,
+  ) => {
     if (disposed) throw new Error('The activity manager has been disposed.');
-    if (!dependencies.requireTrustedSender(input.hostWindow.webContents))
+    if (
+      input.hostWindow.isDestroyed() ||
+      !dependencies.requireTrustedSender(input.hostWindow.webContents)
+    )
       throw new Error(
         'Only a registered trusted app window can mount an activity.',
       );
@@ -719,53 +903,65 @@ export const createActivityManager = (
       );
     if (active) await closeInstance(active, 'replaced');
 
-    const request: ActivityAuthorizationRequest = {
-      sessionId: input.sessionId,
-      artifactId: input.artifactId,
-      versionId: input.versionId,
-      attemptId: input.attemptId,
-      runId: randomUUID(),
-    };
-    const authorizedRun = await dependencies.authorizeRun(request);
-    if (!authorizedRun)
-      throw new Error('The activity run is no longer authorized.');
-    validateAuthorizedRun(request, authorizedRun);
+    let authorizedRun: AuthorizedActivityRun | null = null;
+    try {
+      authorizedRun = await dependencies.authorizeRun(request);
+      if (!authorizedRun)
+        throw new Error('The activity run is no longer authorized.');
+      if (
+        disposed ||
+        input.hostWindow.isDestroyed() ||
+        !dependencies.requireTrustedSender(input.hostWindow.webContents)
+      )
+        throw new Error('The activity mount authorization became stale.');
+      validateAuthorizedRun(request, authorizedRun);
+    } catch (error) {
+      await dependencies.releaseRun({
+        ...(authorizedRun ? { runId: authorizedRun.runId } : {}),
+        requestId: request.requestId,
+      });
+      throw error;
+    }
 
-    const nonce = randomBytes(32).toString('hex');
-    const activityHost = randomUUID();
-    const url = `${activityScheme}://${activityHost}/document`;
-    const origin = `${activityScheme}://${activityHost}`;
-    const document = buildActivityDocument(authorizedRun, nonce, origin);
-    const activitySession = session.fromPartition(
-      `${activityPartitionPrefix}${randomUUID()}`,
-      { cache: false },
-    );
-    const counters: ActivityGuardCounters = {
-      blockedRequests: 0,
-      blockedProtocolRequests: 0,
-      blockedNavigations: 0,
-      deniedPopups: 0,
-      cancelledDownloads: 0,
-      deniedPermissions: 0,
-      fileChooserEvents: 0,
-      connectionPolicyHeaderVerified: false,
-    };
-    const binding: ActivityMailboxBinding = {
-      runtimeVersion: authorizedRun.runtimeVersion,
-      sessionId: authorizedRun.sessionId,
-      artifactId: authorizedRun.artifactId,
-      contentVersionId: authorizedRun.versionId,
-      attemptId: authorizedRun.attemptId,
-      runId: authorizedRun.runId,
-    };
-    const mailbox = createActivityMailbox({
-      binding,
-      stateRevision: authorizedRun.stateRevision,
-    });
-    let bootstrapServed = false;
+    let activitySession: Session | null = null;
     let instance: RuntimeInstance | null = null;
     try {
-      activitySession.protocol.handle(activityScheme, (request) => {
+      const nonce = randomBytes(32).toString('hex');
+      const activityHost = randomUUID();
+      const url = `${activityScheme}://${activityHost}/document`;
+      const origin = `${activityScheme}://${activityHost}`;
+      // The CSP-sandboxed wrapper has an opaque postMessage origin.
+      const document = buildActivityDocument(authorizedRun, nonce, 'null');
+      const runSession = session.fromPartition(
+        `${activityPartitionPrefix}${randomUUID()}`,
+        { cache: false },
+      );
+      activitySession = runSession;
+      const counters: ActivityGuardCounters = {
+        blockedRequests: 0,
+        blockedProtocolRequests: 0,
+        blockedNavigations: 0,
+        deniedPopups: 0,
+        cancelledDownloads: 0,
+        deniedPermissions: 0,
+        fileChooserEvents: 0,
+        connectionPolicyHeaderVerified: false,
+      };
+      const binding: ActivityMailboxBinding = {
+        runtimeVersion: authorizedRun.runtimeVersion,
+        sessionId: authorizedRun.sessionId,
+        artifactId: authorizedRun.artifactId,
+        contentVersionId: authorizedRun.versionId,
+        attemptId: authorizedRun.attemptId,
+        runId: authorizedRun.runId,
+        readOnly: input.readOnly,
+      };
+      const mailbox = createActivityMailbox({
+        binding,
+        stateRevision: authorizedRun.stateRevision,
+      });
+      let bootstrapServed = false;
+      runSession.protocol.handle(activityScheme, (request) => {
         if (
           request.url !== url ||
           request.method !== 'GET' ||
@@ -781,9 +977,9 @@ export const createActivityManager = (
         });
       });
       const cleanups: Array<() => void> = [];
-      registerActivitySessionGuards(activitySession, url, counters, cleanups);
+      registerActivitySessionGuards(runSession, url, counters, cleanups);
       const view = new WebContentsView({
-        webPreferences: createActivityWebPreferences(activitySession),
+        webPreferences: createActivityWebPreferences(runSession),
       });
       view.setVisible(false);
       view.setBounds({ x: 0, y: 0, width: 0, height: 0 });
@@ -792,7 +988,7 @@ export const createActivityManager = (
       const runtimeInstance: RuntimeInstance = {
         run: authorizedRun,
         binding,
-        session: activitySession,
+        session: runSession,
         view,
         hostWindow: input.hostWindow,
         url,
@@ -802,8 +998,15 @@ export const createActivityManager = (
         cleanups,
         closed: false,
         closing: false,
+        closePromise: null,
+        releasePromise: null,
         initialized: false,
         pollInFlight: false,
+        checkpointInFlight: null,
+        checkpointRetryPromise: null,
+        lastFailedProposal: null,
+        authorizationRequestId: request.requestId,
+        hostSequence: 1,
         consecutivePollFailures: 0,
         cpuOverLimitSamples: 0,
         bootstrapTimer: null,
@@ -815,6 +1018,7 @@ export const createActivityManager = (
       };
       instance = runtimeInstance;
       active = runtimeInstance;
+      instances.set(authorizedRun.runId, runtimeInstance);
 
       registerPageGuards(runtimeInstance, (reason) =>
         closeInstance(runtimeInstance, reason),
@@ -928,6 +1132,8 @@ export const createActivityManager = (
         contentDigest: authorizedRun.contentDigest,
         stateRevision: authorizedRun.stateRevision,
         initialState: authorizedRun.initialState,
+        theme: {},
+        readOnly: input.readOnly,
         css: authorizedRun.css,
         sdk: authorizedRun.sdk,
         javascript: authorizedRun.javascript,
@@ -956,13 +1162,41 @@ export const createActivityManager = (
     } catch (error) {
       if (instance) await closeInstance(instance, 'activity-mount-failed');
       else {
-        try {
-          activitySession.protocol.unhandle(activityScheme);
-        } catch {
-          // A handler was not installed.
+        if (activitySession) {
+          try {
+            activitySession.protocol.unhandle(activityScheme);
+          } catch {
+            // A handler was not installed.
+          }
         }
+        await dependencies.releaseRun({
+          runId: authorizedRun.runId,
+          requestId: request.requestId,
+        });
       }
       throw error;
+    }
+  };
+
+  const mount = async (input: ActivityMountInput) => {
+    if (disposed) throw new Error('The activity manager has been disposed.');
+    const request: ActivityAuthorizationRequest = {
+      sessionId: input.sessionId,
+      artifactId: input.artifactId,
+      versionId: input.versionId,
+      attemptId: input.attemptId,
+      requestId: randomUUID(),
+    };
+    const operation = mountQueue.then(() => mountActivity(input, request));
+    mountQueue = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    pendingMounts.add(operation);
+    try {
+      return await operation;
+    } finally {
+      pendingMounts.delete(operation);
     }
   };
 
@@ -971,8 +1205,8 @@ export const createActivityManager = (
     bounds: ActivityBounds,
     visible: boolean,
   ) => {
-    const instance = active;
-    if (!instance || instance.run.runId !== runId || instance.closed) return;
+    const instance = instances.get(runId);
+    if (!instance || instance.closed || instance.closing) return;
     const clamped = boundedBounds(bounds, instance.hostWindow);
     instance.view.setBounds(clamped);
     instance.view.setVisible(
@@ -981,8 +1215,8 @@ export const createActivityManager = (
   };
 
   const hide = (runId: string) => {
-    const instance = active;
-    if (!instance || instance.run.runId !== runId || instance.closed) return;
+    const instance = instances.get(runId);
+    if (!instance || instance.closed || instance.closing) return;
     instance.view.setVisible(false);
   };
 
@@ -990,8 +1224,38 @@ export const createActivityManager = (
 
   const dispose = async () => {
     disposed = true;
-    if (active) await closeInstance(active, 'manager-disposed');
+    const closingInstances = [...instances.values()].map((instance) =>
+      closeInstance(instance, 'manager-disposed'),
+    );
+    const pendingMountResults = await Promise.allSettled(pendingMounts);
+    const errors = pendingMountResults.flatMap((result) =>
+      result.status === 'rejected' &&
+      !(
+        result.reason instanceof Error &&
+        (result.reason.message === 'The activity manager has been disposed.' ||
+          result.reason.message ===
+            'The activity mount authorization became stale.')
+      )
+        ? [result.reason]
+        : [],
+    );
+    const closeResults = await Promise.allSettled([
+      ...closingInstances,
+      ...[...instances.values()].map((instance) =>
+        closeInstance(instance, 'manager-disposed'),
+      ),
+    ]);
+    errors.push(
+      ...closeResults.flatMap((result) =>
+        result.status === 'rejected' ? [result.reason] : [],
+      ),
+    );
+    if (errors.length > 0)
+      throw new AggregateError(
+        errors,
+        'The activity manager did not fully dispose.',
+      );
   };
 
-  return { mount, updateBounds, hide, close, dispose };
+  return { mount, updateBounds, hide, retryCheckpoint, close, dispose };
 };

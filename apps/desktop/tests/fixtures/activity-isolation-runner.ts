@@ -1,8 +1,25 @@
 import { app, BrowserWindow, session, webContents } from 'electron';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createConnection } from 'node:net';
 import { readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import Database from 'better-sqlite3';
+import { drizzle } from 'drizzle-orm/better-sqlite3';
+import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
+import * as schema from '../../src/db/schema';
+import {
+  CourseTable,
+  StudySessionTable,
+  StudyTurnTable,
+} from '../../src/db/schema';
+import { createArtifactStore } from '../../src/features/study/services/artifact-store';
+import type {
+  ActivityManager,
+  ActivityManagerDependencies,
+} from '../../src/features/study/services/activity-runtime';
+import type { AuthorizedContext } from '@scholaros/services/learning/product-contracts';
+import { createAcademicActivityAdapter } from '../../src/services/academic/activity-adapter';
 import { createActivityAdversaryScript } from './activity-adversaries';
 
 type FixtureConfig = {
@@ -15,6 +32,7 @@ type FixtureConfig = {
   authSchemeUrl: string;
   countsUrl: string;
   reportPath: string;
+  migrationsFolder: string;
   runtimeBundlePath: string;
   electronBinaryDigest: string;
   fuseWire: { version: string; bytes: string };
@@ -28,6 +46,7 @@ type SinkCounters = {
 };
 
 let reportForFailure: Record<string, unknown> | null = null;
+let cleanupForFailure: (() => Promise<void>) | undefined;
 
 const argumentValue = (name: string) =>
   process.argv
@@ -126,23 +145,150 @@ const makePositiveControls = async (
   return { ...browserControls, tcp };
 };
 
+const createP20StoreFixture = async (config: FixtureConfig) => {
+  const sqlite = new Database(
+    join(dirname(config.reportPath), 'activity.sqlite'),
+  );
+  sqlite.pragma('foreign_keys = ON');
+  const db = drizzle({ client: sqlite, schema });
+  migrate(db, { migrationsFolder: config.migrationsFolder });
+  const timestamp = '2026-11-03T00:00:00.000Z';
+  const userId = 'activity-fixture-user';
+  const courseId = 'activity-fixture-course';
+  const sessionId = 'activity-fixture-session';
+  const turnId = 'activity-fixture-turn';
+  const controller = new AbortController();
+  const context: AuthorizedContext = {
+    userId,
+    epoch: 1,
+    signal: controller.signal,
+    isCurrent: () => !controller.signal.aborted,
+  };
+  const store = createArtifactStore({ db });
+  const candidate = {
+    title: 'Explore a wave',
+    objective: 'Predict how frequency changes wavelength.',
+    html: '<main><label for="frequency">Frequency</label><input id="frequency" type="range" aria-label="Frequency"><output aria-live="polite"></output></main>',
+    css: '',
+    javascript:
+      "const frequency = document.querySelector('#frequency'); const output = document.querySelector('output'); frequency.addEventListener('input', () => { output.textContent = frequency.value; });",
+    accessibleExplanation:
+      'Change frequency and observe the wavelength feedback.',
+    sourceReferences: [],
+    runtimeVersion: 1 as const,
+  };
+
+  try {
+    db.insert(CourseTable)
+      .values({
+        id: courseId,
+        userId,
+        connectionId: null,
+        sourceKey: 'manual:activity-fixture-course',
+        sourceName: 'Manual',
+        sourceHost: '',
+        name: 'Physics',
+        url: '',
+        firstSeenAt: timestamp,
+        lastSeenAt: timestamp,
+      })
+      .run();
+    db.insert(StudySessionTable)
+      .values({
+        id: sessionId,
+        userId,
+        courseId,
+        title: 'Wave study',
+        activity: 'understand-topic',
+        status: 'in-progress',
+        revision: 0,
+        generationEpoch: 0,
+        draftText: '',
+        draftRevision: 0,
+        deadlineAt: null,
+        timerRevision: 0,
+        expiredRevision: null,
+        resolvedExpiredRevision: null,
+        finishedAt: null,
+        deletedAt: null,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        lastOpenedAt: timestamp,
+      })
+      .run();
+    db.insert(StudyTurnTable)
+      .values({
+        id: turnId,
+        userId,
+        sessionId,
+        requestId: randomUUID(),
+        payloadHash: 'activity-fixture-turn-payload',
+        generationEpoch: 0,
+        status: 'checking',
+        attemptNumber: 1,
+        policyRevision: 1,
+        contextRevision: 0,
+        errorCode: null,
+        startedAt: timestamp,
+        settledAt: null,
+      })
+      .run();
+
+    let unsafeCandidateRejected = false;
+    try {
+      await store.createArtifactVersion(context, {
+        sessionId,
+        turnId,
+        candidate: {
+          ...candidate,
+          html: `<main><label for="frequency">Frequency</label><input id="frequency" type="range"><img src="${config.httpProbeUrl}"><output aria-live="polite"></output></main>`,
+        },
+        policyDecision: { allowed: true, reasonCode: 'allowed', revision: 1 },
+        requestId: randomUUID(),
+      });
+    } catch {
+      unsafeCandidateRejected = true;
+    }
+    if (!unsafeCandidateRejected)
+      throw new Error('P20 accepted a candidate with an external image URL.');
+
+    const created = await store.createArtifactVersion(context, {
+      sessionId,
+      turnId,
+      candidate,
+      policyDecision: { allowed: true, reasonCode: 'allowed', revision: 1 },
+      requestId: randomUUID(),
+    });
+    const adapter = createAcademicActivityAdapter({ store });
+    return {
+      context,
+      store,
+      adapter,
+      created,
+      sessionId,
+      unsafeCandidateRejected,
+      close: async () => {
+        await adapter.dispose();
+        store.dispose();
+        sqlite.close();
+      },
+    };
+  } catch (error) {
+    store.dispose();
+    sqlite.close();
+    throw error;
+  }
+};
+
 const run = async () => {
   const configPath = argumentValue('--activity-fixture-config');
   if (!configPath) throw new Error('Missing activity fixture config path.');
   const config = JSON.parse(readFileSync(configPath, 'utf8')) as FixtureConfig;
   const runtime = require(config.runtimeBundlePath) as {
     registerActivitySchemeBeforeReady: () => void;
-    createActivityManager: (dependencies: Record<string, unknown>) => {
-      mount: (input: Record<string, unknown>) => Promise<{ runId: string }>;
-      updateBounds: (
-        runId: string,
-        bounds: { x: number; y: number; width: number; height: number },
-        visible: boolean,
-      ) => void;
-      hide: (runId: string) => void;
-      close: (runId: string) => Promise<void> | void;
-      dispose: () => Promise<void>;
-    };
+    createActivityManager: (
+      dependencies: ActivityManagerDependencies,
+    ) => ActivityManager;
     createActivityContentDigest: (input: {
       html: string;
       css: string;
@@ -166,6 +312,7 @@ const run = async () => {
   reportForFailure = report;
 
   await app.whenReady();
+  app.on('window-all-closed', () => undefined);
   if (process.platform === 'darwin') app.dock?.hide();
   const hostWindow = new BrowserWindow({
     show: false,
@@ -225,6 +372,12 @@ const run = async () => {
   let stateProposalResolve:
     | ((value: Record<string, unknown>) => void)
     | undefined;
+  let stateFailureResolve:
+    | ((value: Record<string, unknown>) => void)
+    | undefined;
+  const stateFailure = new Promise<Record<string, unknown>>((resolve) => {
+    stateFailureResolve = resolve;
+  });
   let runtimeClosedResolve:
     | ((value: Record<string, unknown>) => void)
     | undefined;
@@ -234,83 +387,105 @@ const run = async () => {
   let runtimeClosed = new Promise<Record<string, unknown>>((resolve) => {
     runtimeClosedResolve = resolve;
   });
+  const p20Fixture = await createP20StoreFixture(config);
+  const authorizedActivity = p20Fixture.created.version;
+  const activityTargets = {
+    httpUrl: config.httpProbeUrl,
+    webSocketUrl: config.webSocketUrl,
+    stunUrl: config.stunUrl,
+    turnTcpUrl: `turn:127.0.0.1:${config.tcpPort}?transport=tcp`,
+    fileUrl: pathToFileURL(config.filePath).href,
+    authSchemeUrl: config.authSchemeUrl,
+  };
+  report.p20Boundary = {
+    unsafeCandidateRejected: p20Fixture.unsafeCandidateRejected,
+    artifactId: authorizedActivity.artifactId,
+    versionId: authorizedActivity.versionId,
+    attemptId: p20Fixture.created.attemptId,
+    contentDigest: authorizedActivity.contentDigest,
+  };
   let currentAttack = 0;
-  let persistedState: unknown = { restored: true };
-  let persistedRevision = 0;
+  let lostCheckpointResponse = false;
+  let firstWriteCommittedBeforeLostResponse = false;
+  const checkpointWriteCounts = new Map<number, number>();
+  const checkpointAttempts: Array<Record<string, unknown>> = [];
+  const proposalKeys = new Set<string>();
+  const interactionEvents: Array<Record<string, unknown>> = [];
+  const navigationEvents: Array<Record<string, unknown>> = [];
+  const releaseCalls = new Map<
+    string,
+    { requestId: string; runId: string | null; count: number }
+  >();
+  const stateAcknowledgements: Array<Record<string, unknown>> = [];
+  const authorizationRuns: Array<{ requestId: string; runId: string }> = [];
   const manager = runtime.createActivityManager({
     getTrustedRenderers: () =>
       hostWindow.isDestroyed() ? [] : [hostWindow.webContents],
-    requireTrustedSender: (sender: {
-      id?: number;
-      isDestroyed?: () => boolean;
-    }) =>
+    requireTrustedSender: (sender) =>
       !hostWindow.isDestroyed() &&
       sender.id === hostWindow.webContents.id &&
-      sender.isDestroyed?.() !== true,
-    authorizeRun: async (request: Record<string, string>) => {
-      const binding = {
-        sessionId: request.sessionId,
-        artifactId: request.artifactId,
-        contentVersionId: request.versionId,
-        attemptId: request.attemptId,
-        runId: request.runId,
-      };
-      const targets = {
-        httpUrl: config.httpProbeUrl,
-        webSocketUrl: config.webSocketUrl,
-        stunUrl: config.stunUrl,
-        turnTcpUrl: `turn:127.0.0.1:${config.tcpPort}?transport=tcp`,
-        fileUrl: pathToFileURL(config.filePath).href,
-        authSchemeUrl: config.authSchemeUrl,
-      };
-      const html = `<main><h1>Test-only activity</h1><img src="${config.httpProbeUrl}"><iframe src="${config.httpProbeUrl}"></iframe></main>`;
-      const css = `main { background-image: url("${config.httpProbeUrl}"); }`;
-      const sdk = 'window.activitySdkReady = true;';
-      const javascript = createActivityAdversaryScript(
-        targets,
-        binding,
-        request.attemptId === 'fixture-attempt-1',
+      !sender.isDestroyed(),
+    authorizeRun: async (request) => {
+      const authorizedRun = await p20Fixture.adapter.authorizeActivityRun(
+        p20Fixture.context,
+        request,
       );
-      return {
-        ...binding,
-        versionId: request.versionId,
-        runtimeVersion: 'activity-runtime-v1',
-        contentDigest: runtime.createActivityContentDigest({
-          html,
-          css,
-          sdk,
-          javascript,
-        }),
-        html,
-        css,
-        sdk,
-        javascript,
-        initialState: persistedState,
-        stateRevision: persistedRevision,
-      };
+      authorizationRuns.push({
+        requestId: request.requestId,
+        runId: authorizedRun.runId,
+      });
+      return authorizedRun;
     },
-    persistState: async (proposal: Record<string, unknown>) => {
+    persistState: async (proposal) => {
+      const checkpoint = await p20Fixture.adapter.checkpointArtifactState(
+        p20Fixture.context,
+        proposal,
+      );
       report.lastStatePersistedAt = Date.now();
-      persistedState = proposal.state;
-      persistedRevision = Number(proposal.baseStateRevision) + 1;
+      const sequence = proposal.sequence;
+      checkpointWriteCounts.set(
+        sequence,
+        (checkpointWriteCounts.get(sequence) ?? 0) + 1,
+      );
+      checkpointAttempts.push({ ...proposal });
+      const proposalKey = `${proposal.runId}:${proposal.sequence}`;
+      if (!proposalKeys.has(proposalKey)) {
+        proposalKeys.add(proposalKey);
+        proposals.push({ ...proposal });
+        stateProposalResolve?.({ ...proposal });
+      }
       if (
         currentAttack === 1 &&
         typeof proposal.state === 'object' &&
         proposal.state !== null &&
-        (proposal.state as Record<string, unknown>).webrtcState === 'attempted'
+        'webrtcState' in proposal.state &&
+        proposal.state.webrtcState === 'attempted'
       )
         report.stressStatePersistedAt = Date.now();
-      proposals.push(proposal);
-      stateProposalResolve?.(proposal);
-      return {
-        revision: Number(proposal.baseStateRevision) + 1,
-      };
+      if (currentAttack === 1 && !lostCheckpointResponse) {
+        lostCheckpointResponse = true;
+        firstWriteCommittedBeforeLostResponse = true;
+        stateFailureResolve?.({ ...proposal });
+        throw new Error(
+          'Fixture lost the checkpoint response after P20 commit.',
+        );
+      }
+      return { revision: checkpoint.stateRevision };
     },
-    onDiagnostics: (value: Record<string, unknown>) => {
-      diagnostics.push(value);
-      const activityContents = webContents.fromId(Number(value.webContentsId));
-      activityContents?.on('console-message', (_event) => {
-        const { level, message, lineNumber, sourceId } = _event;
+    releaseRun: (request) => {
+      const previous = releaseCalls.get(request.requestId);
+      releaseCalls.set(request.requestId, {
+        requestId: request.requestId,
+        runId: request.runId ?? null,
+        count: (previous?.count ?? 0) + 1,
+      });
+      return p20Fixture.adapter.releaseActivityRun(request);
+    },
+    onDiagnostics: (value) => {
+      diagnostics.push({ ...value });
+      const activityContents = webContents.fromId(value.webContentsId);
+      activityContents?.on('console-message', (event) => {
+        const { level, message, lineNumber, sourceId } = event;
         if (level === 'error')
           activityConsoleMessages.push({
             level,
@@ -320,14 +495,31 @@ const run = async () => {
           });
       });
     },
-    onClosed: (value: Record<string, unknown>) => {
+    onClosed: (value) => {
       closures.push({ ...value, closedAt: Date.now() });
-      runtimeClosedResolve?.(value);
+      runtimeClosedResolve?.({ ...value });
+    },
+    onStateFailure: (runId) => {
+      stateFailureResolve?.({ runId });
+    },
+    onStateAcknowledged: (runId, revision) => {
+      stateAcknowledgements.push({ runId, revision });
+    },
+    onInteraction: (value) => {
+      interactionEvents.push({ ...value });
     },
     onRuntimeReady: () => undefined,
   });
+  cleanupForFailure = async () => {
+    await manager.dispose();
+    await p20Fixture.close();
+  };
 
-  const mount = async (attemptId: string) => {
+  const releaseCountForRun = (runId: string) =>
+    [...releaseCalls.values()].find((release) => release.runId === runId)
+      ?.count ?? 0;
+
+  const mount = async () => {
     currentAttack += 1;
     if (currentAttack > 1) {
       stateProposal = new Promise<Record<string, unknown>>((resolve) => {
@@ -339,16 +531,17 @@ const run = async () => {
     }
     return manager.mount({
       hostWindow,
-      sessionId: 'fixture-session',
-      artifactId: 'fixture-artifact',
-      versionId: 'fixture-version',
-      attemptId,
+      sessionId: p20Fixture.sessionId,
+      artifactId: authorizedActivity.artifactId,
+      versionId: authorizedActivity.versionId,
+      attemptId: p20Fixture.created.attemptId,
+      readOnly: false,
       bounds: { x: 12, y: 12, width: 700, height: 500 },
     });
   };
 
   report.stage = 'first-mount';
-  const first = await waitFor(mount('fixture-attempt-1'), 10_000);
+  const first = await waitFor(mount(), 10_000);
   const firstDiagnostic = diagnostics.at(-1) ?? {};
   const activityContents = webContents.fromId(
     Number(firstDiagnostic.webContentsId),
@@ -357,6 +550,8 @@ const run = async () => {
     throw new Error(
       'Activity WebContents was not available in the test runner.',
     );
+  report.wrapperOrigin =
+    await activityContents.executeJavaScript('location.origin');
   const activityFrame = activityContents.mainFrame.framesInSubtree.find(
     (frame) => frame !== activityContents.mainFrame,
   );
@@ -364,6 +559,22 @@ const run = async () => {
     throw new Error(
       'Sandboxed activity frame was not present in the test runner.',
     );
+  report.sdkParentOrigin = await activityFrame.executeJavaScript(
+    'window.__scholarActivityParentOrigin',
+  );
+  await activityFrame.executeJavaScript(
+    createActivityAdversaryScript(
+      activityTargets,
+      {
+        sessionId: p20Fixture.sessionId,
+        artifactId: authorizedActivity.artifactId,
+        contentVersionId: authorizedActivity.versionId,
+        attemptId: p20Fixture.created.attemptId,
+        runId: first.runId,
+      },
+      true,
+    ),
+  );
   report.stage = 'first-state-proposal';
   let firstProposal: Record<string, unknown>;
   try {
@@ -380,6 +591,18 @@ const run = async () => {
     throw error;
   }
   report.firstProposal = firstProposal;
+  await waitFor(stateFailure, 3_000);
+  await manager.retryCheckpoint({ runId: first.runId });
+  report.checkpointRetry = {
+    firstWriteCommittedBeforeLostResponse,
+    retryWriteCount:
+      checkpointWriteCounts.get(Number(firstProposal.sequence)) ?? 0,
+    acknowledgedRevision: Number(
+      await activityFrame.executeJavaScript(
+        'window.ScholarActivity.acknowledgedRevision',
+      ),
+    ),
+  };
   report.stage = 'user-gesture-file-picker';
   const filePickerFiles = await activityFrame.executeJavaScript(
     `(() => { const input = document.createElement('input'); input.type = 'file'; document.body.appendChild(input); input.click(); return input.files?.length ?? -1; })()`,
@@ -425,23 +648,102 @@ const run = async () => {
     trustedRendererSurvived: !hostWindow.webContents.isDestroyed(),
   };
 
-  const savedState = structuredClone(persistedState);
+  const savedState = await p20Fixture.store.getArtifactState(
+    p20Fixture.context,
+    {
+      artifactId: authorizedActivity.artifactId,
+      versionId: authorizedActivity.versionId,
+      attemptId: p20Fixture.created.attemptId,
+    },
+  );
+  if (!savedState) throw new Error('P20 did not retain the checkpoint state.');
   const recoveryStartedAt = Date.now();
   report.stage = 'recovery-mount';
-  const second = await waitFor(mount('fixture-attempt-2'), 10_000);
+  const second = await waitFor(mount(), 10_000);
+  const secondDiagnostic = diagnostics.at(-1) ?? {};
+  const secondContents = webContents.fromId(
+    Number(secondDiagnostic.webContentsId),
+  );
+  if (!secondContents)
+    throw new Error('Recovered activity WebContents was not available.');
+  const secondFrame = secondContents.mainFrame.framesInSubtree.find(
+    (frame) => frame !== secondContents.mainFrame,
+  );
+  if (!secondFrame)
+    throw new Error('Recovered sandboxed activity frame was not present.');
+  await secondFrame.executeJavaScript(
+    createActivityAdversaryScript(
+      activityTargets,
+      {
+        sessionId: p20Fixture.sessionId,
+        artifactId: authorizedActivity.artifactId,
+        contentVersionId: authorizedActivity.versionId,
+        attemptId: p20Fixture.created.attemptId,
+        runId: second.runId,
+      },
+      false,
+    ),
+  );
   report.stage = 'recovered-state-proposal';
   const recoveredProposal = await waitFor(stateProposal, 10_000);
   const recoveredState = recoveredProposal.state as Record<string, unknown>;
   report.recovery = {
     elapsedMs: Date.now() - recoveryStartedAt,
     runId: second.runId,
-    proposalPersisted: proposals.includes(recoveredProposal),
+    proposalPersisted: proposals.some(
+      (proposal) =>
+        JSON.stringify(proposal) === JSON.stringify(recoveredProposal),
+    ),
     savedStateRestored:
       JSON.stringify(recoveredState.restoredState) ===
-      JSON.stringify(savedState),
+      JSON.stringify(savedState.state),
     trustedRendererSurvived: !hostWindow.webContents.isDestroyed(),
   };
   await manager.close(second.runId);
+
+  const navigationRun = await waitFor(mount(), 10_000);
+  const navigationContents = webContents.fromId(
+    Number(diagnostics.at(-1)?.webContentsId),
+  );
+  const navigationFrame = navigationContents?.mainFrame.framesInSubtree.find(
+    (frame) => frame !== navigationContents.mainFrame,
+  );
+  if (!navigationContents || !navigationFrame)
+    throw new Error('Navigation fixture activity frame was not present.');
+  navigationContents.on('will-navigate', (_event, url) =>
+    navigationEvents.push({ kind: 'will-navigate', url }),
+  );
+  navigationContents.on(
+    'did-fail-load',
+    (_event, errorCode, errorDescription, validatedURL, isMainFrame) =>
+      navigationEvents.push({
+        kind: 'did-fail-load',
+        errorCode,
+        errorDescription,
+        validatedURL,
+        isMainFrame,
+      }),
+  );
+  await navigationFrame
+    .executeJavaScript(`location.href = ${JSON.stringify(config.httpUrl)}`)
+    .catch(() => undefined);
+  await navigationContents.loadURL(config.httpUrl).catch(() => undefined);
+  const navigationClose = await waitFor(runtimeClosed, 8_000);
+  report.navigationClose = {
+    runId: navigationRun.runId,
+    reason: String(navigationClose.reason ?? ''),
+    releaseCount: releaseCountForRun(navigationRun.runId),
+  };
+
+  const hostWindowRun = await waitFor(mount(), 10_000);
+  hostWindow.destroy();
+  const hostWindowClose = await waitFor(runtimeClosed, 8_000);
+  report.hostWindowClose = {
+    runId: hostWindowRun.runId,
+    reason: String(hostWindowClose.reason ?? ''),
+    releaseCount: releaseCountForRun(hostWindowRun.runId),
+    hostWindowDestroyed: hostWindow.isDestroyed(),
+  };
 
   report.diagnostics = diagnostics;
   report.closures = closures;
@@ -449,6 +751,10 @@ const run = async () => {
   report.proposalState = proposals[0]?.state ?? firstProposal.state;
   report.webrtcStateProposal = webRtcStateProposal.state;
   report.recoveredState = recoveredProposal.state;
+  report.hostInteractions = interactionEvents;
+  report.navigationEvents = navigationEvents;
+  report.authorizationRuns = authorizationRuns;
+  report.releaseCalls = [...releaseCalls.values()];
   report.sinkCountersAfterRuntime = await readSinkCounters(config.countsUrl);
   report.finishedAt = Date.now();
   report.recoveryMs =
@@ -461,7 +767,7 @@ const run = async () => {
   app.quit();
 };
 
-void run().catch((error: unknown) => {
+void run().catch(async (error: unknown) => {
   const configPath = argumentValue('--activity-fixture-config');
   const detail =
     error instanceof Error ? (error.stack ?? error.message) : String(error);
@@ -480,5 +786,12 @@ void run().catch((error: unknown) => {
   } else {
     process.stderr.write(detail);
   }
+  await cleanupForFailure?.().catch((cleanupError: unknown) => {
+    process.stderr.write(
+      cleanupError instanceof Error
+        ? cleanupError.message
+        : String(cleanupError),
+    );
+  });
   app.exit(1);
 });

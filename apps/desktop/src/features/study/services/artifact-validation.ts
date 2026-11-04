@@ -32,6 +32,16 @@ export type ActivityValidationResult =
   | ValidatedActivityCandidate
   | ActivityValidationFailure;
 
+export type ActivityCandidateDigestInput = Omit<
+  ActivityCandidate,
+  'runtimeVersion'
+> & { runtimeVersion: number };
+
+export const createActivityCandidateDigest = (
+  candidate: ActivityCandidateDigestInput,
+) =>
+  createHash('sha256').update(JSON.stringify(candidate), 'utf8').digest('hex');
+
 type WorkerInspection = {
   ok: boolean;
   reason?: 'unsafe-content' | 'non-interactive' | 'limit-exceeded';
@@ -279,7 +289,7 @@ export const validateActivityCandidate = async (
     candidate,
     serializedCandidate,
     contentDigest: createHash('sha256')
-      .update(serializedCandidate)
+      .update(serializedCandidate, 'utf8')
       .digest('hex'),
     byteLength,
   };

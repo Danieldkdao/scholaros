@@ -23,6 +23,7 @@ export type ActivityRuntimeTheme = {
 export type ActivityRuntimeSdkApi = {
   readonly version: 1;
   readonly runtimeVersion: 'activity-runtime-v1';
+  readonly readOnly: boolean;
   readonly acknowledgedRevision: number | null;
   readonly theme: Readonly<ActivityRuntimeTheme>;
   getState: () => JsonValue | null;
@@ -89,6 +90,7 @@ export const activityRuntimeSdkSource = String.raw`(() => {
   'use strict';
 
   const runtimeVersion = 'activity-runtime-v1';
+  const parentOrigin = window.__scholarActivityParentOrigin;
   const messageLimit = 16 * 1024;
   const stateLimit = 64 * 1024;
   const stateEnvelopeLimit = 96 * 1024;
@@ -174,20 +176,32 @@ export const activityRuntimeSdkSource = String.raw`(() => {
   let incomingSequence = 0;
   let contentDigest = null;
   let hostTheme = Object.freeze({});
+  let readOnly = false;
   let latestState;
   let pendingState;
   let checkpointAwaitingResult = false;
+  let pendingCheckpointSequence = null;
   let restored = false;
   const restoreListeners = new Set();
+  const pendingInteractions = [];
+  const pendingInteractionSequences = new Set();
   const identityKeys = ['sessionId', 'artifactId', 'contentVersionId', 'attemptId', 'runId'];
   const commonHostEnvelopeKeys = [
     'protocolVersion', 'runtimeVersion', 'source', 'sessionId', 'artifactId',
     'contentVersionId', 'attemptId', 'runId', 'sequence', 'kind',
   ];
   const restoreHostEnvelopeKeys = [
-    ...commonHostEnvelopeKeys, 'stateRevision', 'contentDigest', 'state', 'theme',
+    ...commonHostEnvelopeKeys, 'stateRevision', 'contentDigest', 'state', 'theme', 'readOnly',
   ];
-  const checkpointHostEnvelopeKeys = [...commonHostEnvelopeKeys, 'stateRevision'];
+  const stateResultHostEnvelopeKeys = [
+    ...commonHostEnvelopeKeys,
+    'stateRevision',
+    'acknowledgedSequence',
+  ];
+  const interactionAckHostEnvelopeKeys = [
+    ...commonHostEnvelopeKeys,
+    'acknowledgedSequence',
+  ];
   const hasExactKeys = (value, keys) =>
     Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
   const matchesIdentity = (message) =>
@@ -210,19 +224,37 @@ export const activityRuntimeSdkSource = String.raw`(() => {
     const limit = kind === 'state-proposed' ? stateEnvelopeLimit : messageLimit;
     if (utf8Length(serialized) > limit) throw new RangeError('Activity message exceeds its byte limit.');
     outgoingSequence = sequence;
-    window.postMessage(serialized, '*');
+    window.parent.postMessage(
+      serialized,
+      parentOrigin === 'null' ? '*' : parentOrigin,
+    );
+    return sequence;
+  };
+  const flushPendingInteractions = () => {
+    while (!checkpointAwaitingResult && pendingInteractions.length > 0) {
+      const interaction = pendingInteractions.shift();
+      pendingInteractionSequences.add(emit('interaction', interaction));
+    }
+  };
+  const queueInteraction = (action, value) => {
+    if (checkpointAwaitingResult) {
+      if (pendingInteractions.length >= 8) throw new RangeError('Activity interaction queue is full.');
+      pendingInteractions.push({ action, value });
+      return;
+    }
+    pendingInteractionSequences.add(emit('interaction', { action, value }));
   };
   const flushPendingState = () => {
     if (checkpointAwaitingResult || pendingState === undefined) return;
     const state = pendingState;
     pendingState = undefined;
     const serialized = assertJson(state, stateLimit);
-    emit('state-proposed', { state: JSON.parse(serialized) });
+    pendingCheckpointSequence = emit('state-proposed', { state: JSON.parse(serialized) });
     checkpointAwaitingResult = true;
     latestState = JSON.parse(serialized);
   };
   const handleHostMessage = (event) => {
-    if (event.source !== window || event.origin !== 'null' || typeof event.data !== 'string') return;
+    if (event.source !== window.parent || event.origin !== parentOrigin || typeof event.data !== 'string') return;
     if (utf8Length(event.data) > stateEnvelopeLimit) return;
     let message;
     try {
@@ -232,12 +264,17 @@ export const activityRuntimeSdkSource = String.raw`(() => {
     }
     if (!isPlainObject(message) || message.source !== 'scholar-host' || message.protocolVersion !== 1 || message.runtimeVersion !== runtimeVersion) return;
     if (!Number.isSafeInteger(message.sequence)) return;
-    const hostKinds = ['restore', 'state-acknowledged', 'state-rejected'];
+    const hostKinds = [
+      'restore',
+      'state-acknowledged',
+      'state-rejected',
+      'interaction-acknowledged',
+    ];
     if (!hostKinds.includes(message.kind)) return;
     if (message.kind === 'restore') {
       if (restored || message.sequence !== 1 || !hasExactKeys(message, restoreHostEnvelopeKeys)) return;
       if (identityKeys.some((key) => typeof message[key] !== 'string' || message[key].length === 0 || message[key].length > 300)) return;
-      if (!Number.isSafeInteger(message.stateRevision) || message.stateRevision < 0 || typeof message.contentDigest !== 'string' || !/^[a-f0-9]{64}$/.test(message.contentDigest) || !isPlainObject(message.theme)) return;
+      if (!Number.isSafeInteger(message.stateRevision) || message.stateRevision < 0 || typeof message.contentDigest !== 'string' || !/^[a-f0-9]{64}$/.test(message.contentDigest) || !isPlainObject(message.theme) || typeof message.readOnly !== 'boolean') return;
       try {
         assertJson(message.state, stateLimit);
       } catch {
@@ -256,23 +293,60 @@ export const activityRuntimeSdkSource = String.raw`(() => {
       revision = message.stateRevision;
       contentDigest = message.contentDigest;
       hostTheme = safeTheme(message.theme);
+      readOnly = message.readOnly;
       latestState = cloneJson(message.state);
       pendingState = undefined;
       checkpointAwaitingResult = false;
+      pendingCheckpointSequence = null;
+      pendingInteractions.length = 0;
+      pendingInteractionSequences.clear();
       emit('ready', { contentDigest });
       const restoredState = Object.freeze({ state: cloneJson(latestState), stateRevision: revision, theme: hostTheme });
       for (const listener of restoreListeners) listener(restoredState.state, restoredState.stateRevision, restoredState.theme);
       detailEvent('restore', restoredState);
       return;
     }
-    if (!restored || !identity || revision === null || !hasExactKeys(message, checkpointHostEnvelopeKeys) || !matchesIdentity(message) || message.sequence !== incomingSequence + 1) return;
+    if (
+      !restored ||
+      !identity ||
+      revision === null ||
+      !matchesIdentity(message) ||
+      message.sequence !== incomingSequence + 1
+    )
+      return;
+    if (message.kind === 'interaction-acknowledged') {
+      if (
+        !hasExactKeys(message, interactionAckHostEnvelopeKeys) ||
+        !Number.isSafeInteger(message.acknowledgedSequence) ||
+        !pendingInteractionSequences.has(message.acknowledgedSequence)
+      )
+        return;
+      const firstPendingInteraction = Math.min(
+        ...pendingInteractionSequences,
+      );
+      if (message.acknowledgedSequence !== firstPendingInteraction) return;
+      incomingSequence = message.sequence;
+      pendingInteractionSequences.delete(message.acknowledgedSequence);
+      detailEvent('interaction-acknowledged', {
+        sequence: message.acknowledgedSequence,
+      });
+      return;
+    }
+    if (!hasExactKeys(message, stateResultHostEnvelopeKeys)) return;
+    if (
+      !Number.isSafeInteger(message.acknowledgedSequence) ||
+      message.acknowledgedSequence !== pendingCheckpointSequence
+    )
+      return;
     if (message.kind === 'state-acknowledged') {
       if (!checkpointAwaitingResult || !Number.isSafeInteger(message.stateRevision) || message.stateRevision !== revision + 1) return;
       incomingSequence = message.sequence;
       revision = message.stateRevision;
       checkpointAwaitingResult = false;
+      pendingCheckpointSequence = null;
       detailEvent('state-acknowledged', { stateRevision: revision, state: cloneJson(latestState) });
       flushPendingState();
+      flushPendingInteractions();
       return;
     }
     if (!checkpointAwaitingResult || !Number.isSafeInteger(message.stateRevision) || message.stateRevision !== revision) return;
@@ -412,6 +486,9 @@ export const activityRuntimeSdkSource = String.raw`(() => {
   const api = {
     version: 1,
     runtimeVersion,
+    get readOnly() {
+      return readOnly;
+    },
     controls: Object.freeze(controls),
     graph: Object.freeze(graph),
     get acknowledgedRevision() {
@@ -434,6 +511,11 @@ export const activityRuntimeSdkSource = String.raw`(() => {
     proposeState: (state) => {
       const serialized = assertJson(state, stateLimit);
       const candidate = JSON.parse(serialized);
+      if (readOnly) {
+        latestState = candidate;
+        pendingState = undefined;
+        return;
+      }
       if (checkpointAwaitingResult) pendingState = candidate;
       else {
         pendingState = candidate;
@@ -443,7 +525,8 @@ export const activityRuntimeSdkSource = String.raw`(() => {
     interaction: (action, value = null) => {
       if (typeof action !== 'string' || action.length === 0 || action.length > 100) throw new TypeError('Activity action is invalid.');
       if (!isJsonValue(value)) throw new TypeError('Activity interaction value must be JSON data.');
-      emit('interaction', { action, value });
+      if (readOnly) return;
+      queueInteraction(action, cloneJson(value));
     },
     reportError: (code) => {
       if (typeof code !== 'string' || !/^[a-z0-9-]{1,100}$/.test(code)) throw new TypeError('Activity error code is invalid.');

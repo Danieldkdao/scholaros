@@ -62,6 +62,7 @@ export type ActivityHostBridge = {
     versionId: string;
     attemptId: string;
     presentation: ActivityPresentation;
+    readOnly: boolean;
     bounds: ActivityBounds;
   }) => Promise<{ runId: string }>;
   updateActivityBounds: (input: {
@@ -111,6 +112,7 @@ type UseActivityHostOptions = {
   versionId: string;
   attemptId: string;
   presentation: ActivityPresentation;
+  readOnly: boolean;
   bridge?: ActivityHostBridge;
 };
 
@@ -186,6 +188,7 @@ export const useActivityHost = ({
   versionId,
   attemptId: initialAttemptId,
   presentation,
+  readOnly,
   bridge: bridgeOverride,
 }: UseActivityHostOptions) => {
   const bridge = bridgeOverride ?? getDefaultActivityHostBridge();
@@ -469,6 +472,7 @@ export const useActivityHost = ({
           versionId,
           attemptId,
           presentation: presentationRef.current,
+          readOnly,
           bounds: initialBounds,
         }),
       )
@@ -516,6 +520,7 @@ export const useActivityHost = ({
     bridge,
     canMount,
     receiveRuntimeChange,
+    readOnly,
     retryNonce,
     sessionId,
     versionId,
@@ -561,10 +566,11 @@ export const useActivityHost = ({
     () => () => {
       void closeCurrentRun();
     },
-    [bridge, closeCurrentRun, resourceKey],
+    [bridge, closeCurrentRun, readOnly, resourceKey],
   );
 
   const retry = useCallback(async () => {
+    if (readOnly) return;
     const activeRunId = runIdRef.current;
     if (status === 'checkpoint-error' && activeRunId) {
       try {
@@ -579,9 +585,10 @@ export const useActivityHost = ({
     setStatus('starting');
     setErrorCode(null);
     setRetryNonce((value) => value + 1);
-  }, [bridge, closeCurrentRun, status]);
+  }, [bridge, closeCurrentRun, readOnly, status]);
 
   const resetAttempt = useCallback(async () => {
+    if (readOnly) throw new Error('Activity is read-only.');
     await closeCurrentRun();
     try {
       const nextState = await bridge.resetArtifactAttempt({
@@ -602,17 +609,19 @@ export const useActivityHost = ({
       setRetryNonce((value) => value + 1);
       throw error;
     }
-  }, [artifactId, attemptId, bridge, closeCurrentRun, versionId]);
+  }, [artifactId, attemptId, bridge, closeCurrentRun, readOnly, versionId]);
 
   const saveArtifact = useCallback(
-    (courseId?: string | null) =>
-      bridge.saveArtifactToContext({
+    async (courseId?: string | null) => {
+      if (readOnly) throw new Error('Activity is read-only.');
+      return bridge.saveArtifactToContext({
         artifactId,
         versionId,
         ...(courseId === undefined ? {} : { courseId }),
         requestId: createRequestId(),
-      }),
-    [artifactId, bridge, versionId],
+      });
+    },
+    [artifactId, bridge, readOnly, versionId],
   );
 
   const slotBounds = geometry.bounds;

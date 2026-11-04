@@ -53,6 +53,9 @@ export const createActivityAdversaryScript = (
     popupWasDenied: false,
     permissionQueryDenied: false,
     webrtcState: 'not-started',
+    checkpointRejections: 0,
+    checkpointAcknowledgedRevision: 0,
+    interactionAcknowledged: false,
     attackError: null,
   };
   const setPhase = (phase) => {
@@ -66,38 +69,39 @@ export const createActivityAdversaryScript = (
   try { eval('1 + 1'); } catch { result.evalBlocked = true; }
 
   let stateRevision = Number(window.__scholarActivityStateRevision ?? 0);
-  let nextSequence = 2;
-  const ackResolvers = new Map();
-  window.addEventListener('message', (event) => {
-    if (event.source !== window.parent || typeof event.data !== 'string') return;
-    try {
-      const acknowledgement = JSON.parse(event.data);
-      if (acknowledgement.kind !== 'state-ack') return;
-      stateRevision = acknowledgement.revision;
-      ackResolvers.get(acknowledgement.sequence)?.();
-      ackResolvers.delete(acknowledgement.sequence);
-    } catch {}
+  let proposalResolver = null;
+  window.addEventListener('scholar-activity:state-rejected', (event) => {
+    result.checkpointRejections += 1;
+    stateRevision = event.detail.stateRevision;
+  });
+  window.addEventListener('scholar-activity:state-acknowledged', (event) => {
+    stateRevision = event.detail.stateRevision;
+    result.checkpointAcknowledgedRevision = stateRevision;
+    proposalResolver?.();
+    proposalResolver = null;
   });
 
   const sendProposal = (state) => new Promise((resolve) => {
-    const sequence = nextSequence++;
-    ackResolvers.set(sequence, resolve);
-    window.parent.postMessage(JSON.stringify({
-      protocolVersion: 1,
-      runtimeVersion: 'activity-runtime-v1',
-      source: 'activity',
-      ...binding,
-      sequence,
-      baseStateRevision: stateRevision,
-      kind: 'state-proposed',
-      payload: { state },
-    }), '*');
+    proposalResolver = resolve;
+    window.ScholarActivity.proposeState(state);
   });
 
   const settle = (promise, timeout = 1200) => Promise.race([
     promise,
     new Promise((resolve) => setTimeout(() => resolve(false), timeout)),
   ]);
+  const sendInteraction = async (value) => {
+    const acknowledgement = new Promise((resolve) => {
+      const onAcknowledged = (event) => {
+        window.removeEventListener('scholar-activity:interaction-acknowledged', onAcknowledged);
+        result.interactionAcknowledged = true;
+        resolve(event.detail.sequence);
+      };
+      window.addEventListener('scholar-activity:interaction-acknowledged', onAcknowledged);
+    });
+    window.ScholarActivity.interaction('fixture-progress', value);
+    return settle(acknowledgement, 3000);
+  };
   const deniedFetch = async (url) => {
     try {
       const response = await fetch(url, { signal: AbortSignal.timeout(1000) });
@@ -233,6 +237,7 @@ export const createActivityAdversaryScript = (
 
     setPhase('state-proposal');
     await sendProposal(result);
+    await sendInteraction({ checkpointRevision: stateRevision });
     if (!stressAfterProposal) return;
 
     await new Promise((resolve) => setTimeout(resolve, 3000));

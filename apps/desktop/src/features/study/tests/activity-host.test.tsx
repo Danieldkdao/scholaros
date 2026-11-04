@@ -56,7 +56,7 @@ Object.defineProperty(HTMLElement.prototype, 'getBoundingClientRect', {
   value: () => rect(0, 0, 1000, 800),
 });
 
-const renderActivity = async (
+const renderActivityWithRerender = async (
   bridge: ActivityHostBridge,
   props: Partial<React.ComponentProps<typeof ActivityHost>> = {},
 ) => {
@@ -64,25 +64,34 @@ const renderActivity = async (
   document.body.append(node);
   const root = createRoot(node);
   roots.push({ root, node });
-  await act(async () =>
-    root.render(
-      createElement(
-        ActivityPanel,
-        null,
-        createElement(ActivityHost, {
-          accountId: 'account-1',
-          sessionId: 'session-1',
-          artifactId: 'artifact-1',
-          versionId: 'version-1',
-          attemptId: 'attempt-1',
-          bridge,
-          ...props,
-        }),
+  const render = async (
+    nextProps: Partial<React.ComponentProps<typeof ActivityHost>> = props,
+  ) =>
+    act(async () =>
+      root.render(
+        createElement(
+          ActivityPanel,
+          null,
+          createElement(ActivityHost, {
+            accountId: 'account-1',
+            sessionId: 'session-1',
+            artifactId: 'artifact-1',
+            versionId: 'version-1',
+            attemptId: 'attempt-1',
+            bridge,
+            ...nextProps,
+          }),
+        ),
       ),
-    ),
-  );
-  return node;
+    );
+  await render();
+  return { node, render };
 };
+
+const renderActivity = async (
+  bridge: ActivityHostBridge,
+  props: Partial<React.ComponentProps<typeof ActivityHost>> = {},
+) => (await renderActivityWithRerender(bridge, props)).node;
 
 const createBridge = (): {
   bridge: ActivityHostBridge;
@@ -355,6 +364,64 @@ it('does not acknowledge a failed checkpoint and retries through the host', asyn
     }),
   );
   expect(node.textContent).toContain('Saved progress: revision 3');
+});
+
+it('mounts saved activities read-only without save, reset, or retry actions', async () => {
+  const { bridge, emit } = createBridge();
+  const node = await renderActivity(bridge, { readOnly: true });
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 80)));
+
+  expect(bridge.mountActivity).toHaveBeenCalledWith(
+    expect.objectContaining({ readOnly: true }),
+  );
+  expect(
+    node.querySelector('[aria-label="Activity options for Linear graph"]'),
+  ).toBeNull();
+
+  await act(async () =>
+    emit({
+      runId: 'run-1',
+      sessionId: 'session-1',
+      artifactId: 'artifact-1',
+      versionId: 'version-1',
+      attemptId: 'attempt-1',
+      kind: 'runtime-error',
+      errorCode: 'feature-unavailable',
+    }),
+  );
+
+  expect(node.querySelector('[aria-label="Retry activity"]')).toBeNull();
+  expect(bridge.retryActivityCheckpoint).not.toHaveBeenCalled();
+  expect(bridge.resetArtifactAttempt).not.toHaveBeenCalled();
+  expect(bridge.saveArtifactToContext).not.toHaveBeenCalled();
+  expect(node.textContent).toContain(
+    'Reconnect online to retry this activity.',
+  );
+});
+
+it('releases and reloads the saved run when the host changes read-only mode', async () => {
+  const { bridge } = createBridge();
+  const { render } = await renderActivityWithRerender(bridge, {
+    readOnly: false,
+  });
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 80)));
+  expect(bridge.mountActivity).toHaveBeenCalledTimes(1);
+
+  await render({ readOnly: true });
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 140)));
+  expect(bridge.closeActivity).toHaveBeenCalledWith({ runId: 'run-1' });
+  expect(bridge.mountActivity).toHaveBeenCalledTimes(2);
+  expect(bridge.mountActivity).toHaveBeenLastCalledWith(
+    expect.objectContaining({ readOnly: true }),
+  );
+
+  await render({ readOnly: false });
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 140)));
+  expect(bridge.closeActivity).toHaveBeenCalledWith({ runId: 'run-2' });
+  expect(bridge.mountActivity).toHaveBeenCalledTimes(3);
+  expect(bridge.mountActivity).toHaveBeenLastCalledWith(
+    expect.objectContaining({ readOnly: false }),
+  );
 });
 
 it('hides behind app overlays and closes offscreen before restoring the same attempt', async () => {

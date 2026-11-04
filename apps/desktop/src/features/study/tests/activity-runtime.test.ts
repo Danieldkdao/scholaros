@@ -44,7 +44,18 @@ const interactionMessage = (sequence: number, data: unknown = null) =>
     sequence,
     baseStateRevision: 0,
     kind: 'interaction',
-    payload: { name: 'input', data },
+    payload: { action: 'input', value: data },
+  });
+
+const readyMessage = (sequence: number, contentDigest: string) =>
+  JSON.stringify({
+    protocolVersion: 1,
+    source: 'activity',
+    ...binding,
+    sequence,
+    baseStateRevision: 0,
+    kind: 'ready',
+    payload: { contentDigest },
   });
 
 const stateMessageAtBytes = (sequence: number, targetBytes: number) => {
@@ -71,6 +82,55 @@ const interactionMessageAtBytes = (sequence: number, targetBytes: number) => {
 };
 
 describe('activity mailbox', () => {
+  it('accepts the canonical P22 ready envelope with the persisted artifact digest', () => {
+    const mailbox = createActivityMailbox({
+      binding,
+      stateRevision: 0,
+      now: () => 0,
+    });
+
+    expect(mailbox.enqueue(readyMessage(1, 'a'.repeat(64)))).toBe(true);
+    expect(mailbox.readNext()).toBe(readyMessage(1, 'a'.repeat(64)));
+  });
+
+  it('accepts the canonical action/value interaction envelope', () => {
+    const mailbox = createActivityMailbox({
+      binding,
+      stateRevision: 0,
+      now: () => 0,
+    });
+    const message = interactionMessage(1, { input: 3 });
+
+    expect(mailbox.enqueue(message)).toBe(true);
+    expect(mailbox.readNext()).toBe(message);
+  });
+
+  it('rejects persistence and host interactions in a read-only runtime', () => {
+    const readOnlyBinding = { ...binding, readOnly: true };
+    const mailbox = createActivityMailbox({
+      binding: readOnlyBinding,
+      stateRevision: 0,
+      now: () => 0,
+    });
+    expect(mailbox.enqueue(readyMessage(1, 'a'.repeat(64)))).toBe(true);
+    expect(mailbox.readNext()).toBe(readyMessage(1, 'a'.repeat(64)));
+
+    expect(
+      mailbox.enqueue(
+        JSON.stringify({
+          protocolVersion: 1,
+          source: 'activity',
+          ...binding,
+          sequence: 2,
+          baseStateRevision: 0,
+          kind: 'state-proposed',
+          payload: { state: { input: 5 } },
+        }),
+      ),
+    ).toBe(false);
+    expect(mailbox.enqueue(interactionMessage(2, { input: 5 }))).toBe(false);
+  });
+
   it('accepts a bounded full-state proposal larger than an ordinary event', () => {
     const mailbox = createActivityMailbox({
       binding,

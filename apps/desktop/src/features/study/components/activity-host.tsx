@@ -80,6 +80,7 @@ export type ActivityHostProps = {
   versionId: string;
   attemptId: string;
   presentation?: ActivityPresentation;
+  readOnly?: boolean;
   onExpand?: (presentation: ActivityPresentation) => void;
   courseId?: string | null;
   bridge?: ActivityHostBridge;
@@ -212,6 +213,7 @@ export const ActivityHost = ({
   versionId,
   attemptId,
   presentation = 'inline',
+  readOnly = false,
   onExpand,
   courseId,
   bridge,
@@ -224,6 +226,7 @@ export const ActivityHost = ({
     versionId,
     attemptId,
     presentation,
+    readOnly,
     bridge,
   });
   const activityPanel = useActivityPanelContext();
@@ -286,6 +289,7 @@ export const ActivityHost = ({
   );
 
   const saveArtifact = async (targetCourseId?: string | null) => {
+    if (readOnly) return;
     setIsSaving(true);
     try {
       await host.saveArtifact(targetCourseId);
@@ -306,6 +310,7 @@ export const ActivityHost = ({
   };
 
   const resetActivity = async () => {
+    if (readOnly) return;
     setIsResetting(true);
     try {
       await host.resetAttempt();
@@ -318,18 +323,19 @@ export const ActivityHost = ({
     }
   };
 
-  const renderActions = (): ReactNode => (
-    <ActivityActions
-      title={title}
-      courseId={courseId}
-      isSaving={isSaving}
-      isResetting={isResetting}
-      onSaveToContext={() => void saveArtifact()}
-      onSaveToCourse={() => void saveArtifact(courseId)}
-      onReset={() => confirmation.request(true)}
-      onShowDetails={() => setDetailsOpen(true)}
-    />
-  );
+  const renderActions = (): ReactNode =>
+    readOnly ? null : (
+      <ActivityActions
+        title={title}
+        courseId={courseId}
+        isSaving={isSaving}
+        isResetting={isResetting}
+        onSaveToContext={() => void saveArtifact()}
+        onSaveToCourse={() => void saveArtifact(courseId)}
+        onReset={() => confirmation.request(true)}
+        onShowDetails={() => setDetailsOpen(true)}
+      />
+    );
 
   const runtimeSlot = (
     <ActivityRuntimeSlot
@@ -366,6 +372,14 @@ export const ActivityHost = ({
               </div>
             </div>
             {runtimeSlot}
+            {readOnly && (
+              <p role="status" className="text-base text-muted-foreground">
+                {host.status === 'checkpoint-error' ||
+                host.status === 'runtime-error'
+                  ? 'Reconnect online to retry this activity.'
+                  : 'Read-only activity; changes stay in this viewing session.'}
+              </p>
+            )}
             <ActivityStatus status={host.status} announce={false} />
             {host.status === 'ready' && host.savedState && (
               <p className="text-base text-muted-foreground">
@@ -467,8 +481,25 @@ export const ActivityHost = ({
             ) : (
               <div className="flex min-w-0 flex-col gap-3">
                 {runtimeSlot}
-                {host.status === 'checkpoint-error' ||
-                host.status === 'runtime-error' ? (
+                {readOnly ? (
+                  host.status === 'checkpoint-error' ||
+                  host.status === 'runtime-error' ? (
+                    <p
+                      role="status"
+                      className="text-base text-muted-foreground"
+                    >
+                      Reconnect online to retry this activity.
+                    </p>
+                  ) : (
+                    <p
+                      role="status"
+                      className="text-base text-muted-foreground"
+                    >
+                      Read-only activity; changes stay in this viewing session.
+                    </p>
+                  )
+                ) : host.status === 'checkpoint-error' ||
+                  host.status === 'runtime-error' ? (
                   <Button
                     variant="outline"
                     aria-label={

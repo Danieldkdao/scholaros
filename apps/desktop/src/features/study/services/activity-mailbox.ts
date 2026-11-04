@@ -7,6 +7,7 @@ export type ActivityMailboxBinding = {
   contentVersionId: string;
   attemptId: string;
   runId: string;
+  readOnly?: boolean;
 };
 
 export const activityMessageLimits = {
@@ -42,7 +43,7 @@ const activityMessageSchema = z.discriminatedUnion('kind', [
     .extend({
       kind: z.literal('ready'),
       payload: z
-        .object({ digest: z.string().regex(/^[a-f0-9]{64}$/) })
+        .object({ contentDigest: z.string().regex(/^[a-f0-9]{64}$/) })
         .strict(),
     })
     .strict(),
@@ -57,8 +58,8 @@ const activityMessageSchema = z.discriminatedUnion('kind', [
       kind: z.literal('interaction'),
       payload: z
         .object({
-          name: z.string().min(1).max(80),
-          data: jsonValueSchema.nullable().optional(),
+          action: z.string().min(1).max(100),
+          value: jsonValueSchema.nullable(),
         })
         .strict(),
     })
@@ -176,6 +177,8 @@ export const decodeActivityMessage = (
     message.contentVersionId !== binding.contentVersionId ||
     message.attemptId !== binding.attemptId ||
     message.runId !== binding.runId ||
+    (binding.readOnly === true &&
+      (message.kind === 'state-proposed' || message.kind === 'interaction')) ||
     message.baseStateRevision !== stateRevision
   )
     return null;
@@ -197,9 +200,8 @@ export const decodeActivityMessage = (
     return null;
   } else if (
     message.kind === 'interaction' &&
-    message.payload.data !== undefined &&
     !isBoundedJsonValue(
-      message.payload.data,
+      message.payload.value,
       activityMessageLimits.ordinaryEventBytes,
     )
   ) {

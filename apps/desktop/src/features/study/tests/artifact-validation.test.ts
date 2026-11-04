@@ -1,5 +1,8 @@
 import { expect, it } from 'vitest';
-import { validateActivityCandidate } from '../services/artifact-validation';
+import {
+  createActivityCandidateDigest,
+  validateActivityCandidate,
+} from '../services/artifact-validation';
 
 const safeGraphCandidateFixture = {
   title: 'Explore a wave',
@@ -56,6 +59,15 @@ it('accepts a bounded, objective-driven activity and preserves its exact digest 
     JSON.stringify(safeGraphCandidateFixture),
   );
   expect(result.contentDigest).toMatch(/^[a-f0-9]{64}$/);
+});
+
+it('computes the persisted P20 digest from the canonical candidate fields', async () => {
+  const result = await validateActivityCandidate(safeGraphCandidateFixture);
+
+  expect(result).toMatchObject({ ok: true });
+  expect(createActivityCandidateDigest(safeGraphCandidateFixture)).toBe(
+    result.ok ? result.contentDigest : null,
+  );
 });
 
 it.each([

@@ -66,13 +66,14 @@ export const createActivityBootstrapScript = (
   };
   window.addEventListener('paste', blockFileTransfer, true);
   window.addEventListener('drop', blockFileTransfer, true);
+  Object.defineProperty(window, '__scholarActivityParentOrigin', { value: expectedParentOrigin, configurable: false, writable: false });
   window.parent.postMessage(JSON.stringify({ source: 'scholar-activity-frame', kind: 'frame-ready' }), '*');
   let initialized = false;
   const onHostMessage = (event) => {
-    if (initialized || event.source !== window.parent || (event.origin !== expectedParentOrigin && event.origin !== 'null') || typeof event.data !== 'string' || event.data.length > 700000) return;
+    if (initialized || event.source !== window.parent || event.origin !== expectedParentOrigin || typeof event.data !== 'string' || event.data.length > 700000) return;
     let message;
     try { message = JSON.parse(event.data); } catch { return; }
-    if (message.kind !== 'activity-bootstrap' || message.source !== 'scholar-host' || message.protocolVersion !== 1 || message.runtimeVersion !== 'activity-runtime-v1' || message.nonce !== expectedNonce) return;
+    if (message.kind !== 'activity-bootstrap' || message.source !== 'scholar-host' || message.protocolVersion !== 1 || message.runtimeVersion !== 'activity-runtime-v1' || message.nonce !== expectedNonce || typeof message.readOnly !== 'boolean' || typeof message.contentDigest !== 'string' || !/^[a-f0-9]{64}$/.test(message.contentDigest)) return;
     initialized = true;
     window.removeEventListener('message', onHostMessage, true);
     const style = document.createElement('style');
@@ -80,25 +81,33 @@ export const createActivityBootstrapScript = (
     document.head.appendChild(style);
     Object.defineProperty(window, '__scholarActivityInitialState', { value: message.initialState, configurable: false, writable: false });
     Object.defineProperty(window, '__scholarActivityStateRevision', { value: message.stateRevision, configurable: false, writable: false });
-    window.parent.postMessage(JSON.stringify({
+    const restore = {
       protocolVersion: 1,
       runtimeVersion: message.runtimeVersion,
-      source: 'activity',
+      source: 'scholar-host',
       sessionId: message.sessionId,
       artifactId: message.artifactId,
       contentVersionId: message.contentVersionId,
       attemptId: message.attemptId,
       runId: message.runId,
       sequence: 1,
-      baseStateRevision: message.stateRevision,
-      kind: 'ready',
-      payload: { digest: message.contentDigest }
-    }), '*');
+      kind: 'restore',
+      stateRevision: message.stateRevision,
+      contentDigest: message.contentDigest,
+      state: message.initialState,
+      theme: message.theme,
+      readOnly: message.readOnly
+    };
     if (message.sdk) {
       const sdk = document.createElement('script');
       sdk.textContent = message.sdk;
       document.head.appendChild(sdk);
     }
+    window.dispatchEvent(new MessageEvent('message', {
+      data: JSON.stringify(restore),
+      origin: expectedParentOrigin,
+      source: window.parent
+    }));
     const activity = document.createElement('script');
     activity.textContent = message.javascript;
     document.body.appendChild(activity);

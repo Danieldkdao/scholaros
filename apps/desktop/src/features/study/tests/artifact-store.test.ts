@@ -302,6 +302,42 @@ it('returns the exact active authorization DTO for a repeated request', async ()
   expect(replayedRun.runId).toBe(firstRun.runId);
 });
 
+it('returns exact digest source bytes separately from historical run provenance', async () => {
+  const sourceReference = {
+    sourceKind: 'course-material',
+    sourceId: 'material-1',
+    versionId: 'material-version-1',
+    courseId,
+    locator: { kind: 'page', page: 1 },
+    title: 'Wave notes',
+    provenance: 'connected-source',
+    observedAt: timestamp,
+    state: 'current',
+  } as const;
+  const createdArtifact = await createVersion({
+    candidate: {
+      ...safeGraphCandidateFixture,
+      sourceReferences: [sourceReference],
+    },
+  });
+  const authorizedRun = await store.authorizeActivityRun(
+    createAuthorizedContext(),
+    createAuthorizationInput(
+      createdArtifact.version.artifactId,
+      createdArtifact.version.versionId,
+      createdArtifact.attemptId,
+    ),
+  );
+
+  expect(authorizedRun.contentDigest).toBe(
+    createdArtifact.version.contentDigest,
+  );
+  expect(authorizedRun.digestSourceReferences).toEqual([sourceReference]);
+  expect(authorizedRun.sourceReferences).toEqual([
+    { ...sourceReference, state: 'historical' },
+  ]);
+});
+
 it('does not replay an authorization across account epochs', async () => {
   const createdArtifact = await createVersion();
   const input = createAuthorizationInput(

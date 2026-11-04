@@ -44,6 +44,7 @@ import {
 } from '../../../db/schema';
 import {
   acceptedActivityBundleByteLimit,
+  createActivityCandidateDigest,
   validateActivityCandidate,
 } from './artifact-validation';
 
@@ -90,6 +91,7 @@ export type AuthorizedActivityRun = {
     runtimeVersion: number;
   };
   sourceReferences: SourceReference[];
+  digestSourceReferences: SourceReference[];
   state: ArtifactStateDTO;
 };
 
@@ -331,9 +333,7 @@ const buildCandidateBytes = (
     runtimeVersion: version.runtimeVersion,
   };
   const serializedCandidate = JSON.stringify(candidate);
-  const contentDigest = createHash('sha256')
-    .update(serializedCandidate, 'utf8')
-    .digest('hex');
+  const contentDigest = createActivityCandidateDigest(candidate);
   return { candidate, serializedCandidate, contentDigest };
 };
 
@@ -1426,6 +1426,7 @@ export const createArtifactStore = ({
           contentDigest: version.contentDigest,
           bundle,
           sourceReferences: snapshotSourceReferences(version.sourceReferences),
+          digestSourceReferences: version.sourceReferences,
           state,
           courseId: session.courseId,
           sessionGenerationEpoch: session.generationEpoch,

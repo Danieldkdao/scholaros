@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 import { createHash } from 'node:crypto';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import {
   activityRuntimeSdkDigest,
   activityRuntimeSdkSource,
   activityRuntimeSdkVersion,
 } from '../lib/activity-runtime-sdk';
 import type { ActivityRuntimeSdkApi } from '../lib/activity-runtime-sdk';
+import { buildActivityDocument } from '../services/activity-policy';
 
 type ActivityWindow = Window &
   typeof globalThis & {
@@ -14,37 +15,67 @@ type ActivityWindow = Window &
   };
 
 const frames: HTMLIFrameElement[] = [];
+const parentPostMessageRestorers: Array<() => void> = [];
+const activityHostOrigin = 'scholar-activity://fixture';
 
 afterEach(() => {
   document.body.replaceChildren();
   frames.splice(0).forEach((frame) => frame.remove());
+  parentPostMessageRestorers
+    .splice(0)
+    .reverse()
+    .forEach((restore) => restore());
 });
 
-const runSdk = () => {
+const runSdk = (parentOrigin = activityHostOrigin) => {
   const messages: Record<string, unknown>[] = [];
+  const parentTargets: string[] = [];
   const frame = document.createElement('iframe');
   frame.src = 'about:blank';
   document.body.append(frame);
   frames.push(frame);
   const window = frame.contentWindow as unknown as ActivityWindow;
   Object.defineProperty(window, 'TextEncoder', { value: TextEncoder });
-  Object.defineProperty(window, 'postMessage', {
+  Object.defineProperty(window, '__scholarActivityParentOrigin', {
+    configurable: false,
+    value: parentOrigin,
+  });
+  const parent = window.parent;
+  const parentPostMessage = Object.getOwnPropertyDescriptor(
+    parent,
+    'postMessage',
+  );
+  Object.defineProperty(parent, 'postMessage', {
     configurable: true,
-    value: (message: string) => messages.push(JSON.parse(message)),
+    value: (message: string, targetOrigin?: string) => {
+      messages.push(JSON.parse(message));
+      parentTargets.push(targetOrigin ?? '');
+    },
+  });
+  parentPostMessageRestorers.push(() => {
+    if (parentPostMessage)
+      Object.defineProperty(parent, 'postMessage', parentPostMessage);
+    else Reflect.deleteProperty(parent, 'postMessage');
   });
   window.eval(activityRuntimeSdkSource);
-  return { document: frame.contentDocument!, messages, window };
+  return { document: frame.contentDocument!, messages, parentTargets, window };
 };
 
 const sendHostMessage = (
   window: ActivityWindow,
   message: Record<string, unknown>,
+  origin = activityHostOrigin,
 ) => {
+  const restoreDefaults = message.kind === 'restore' ? { readOnly: false } : {};
   window.dispatchEvent(
     new window.MessageEvent('message', {
-      data: JSON.stringify({ source: 'scholar-host', ...message }),
-      origin: 'null',
-      source: window,
+      data: JSON.stringify({
+        source: 'scholar-host',
+        ...restoreDefaults,
+        ...message,
+      }),
+      origin,
+      source: window.parent,
     }),
   );
 };
@@ -60,6 +91,153 @@ const runIdentity = {
 };
 
 const contentDigest = 'a'.repeat(64);
+
+it('accepts host messages only from the wrapper parent at its bound origin', () => {
+  const { messages, parentTargets, window } = runSdk();
+  const restore = {
+    kind: 'restore',
+    ...runIdentity,
+    sequence: 1,
+    stateRevision: 4,
+    contentDigest,
+    state: { inputs: { slope: 2 }, progress: {} },
+    theme: {},
+    readOnly: false,
+  };
+
+  window.dispatchEvent(
+    new window.MessageEvent('message', {
+      data: JSON.stringify({ source: 'scholar-host', ...restore }),
+      origin: 'null',
+      source: window,
+    }),
+  );
+  expect(window.ScholarActivity.acknowledgedRevision).toBeNull();
+
+  window.dispatchEvent(
+    new window.MessageEvent('message', {
+      data: JSON.stringify({ source: 'scholar-host', ...restore }),
+      origin: 'https://attacker.invalid',
+      source: window.parent,
+    }),
+  );
+  expect(window.ScholarActivity.acknowledgedRevision).toBeNull();
+
+  sendHostMessage(window, restore);
+
+  expect(window.ScholarActivity.acknowledgedRevision).toBe(4);
+  expect(messages).toHaveLength(1);
+  expect(parentTargets).toEqual([activityHostOrigin]);
+});
+
+it('uses a wildcard target for an opaque sandboxed wrapper origin', () => {
+  const { messages, parentTargets, window } = runSdk('null');
+  const restore = {
+    kind: 'restore',
+    ...runIdentity,
+    sequence: 1,
+    stateRevision: 0,
+    contentDigest,
+    state: {},
+    theme: {},
+    readOnly: false,
+  };
+
+  sendHostMessage(window, restore);
+  expect(window.ScholarActivity.acknowledgedRevision).toBeNull();
+  sendHostMessage(window, restore, 'null');
+
+  expect(window.ScholarActivity.acknowledgedRevision).toBe(0);
+  expect(messages[0]).toMatchObject({ kind: 'ready', sequence: 1 });
+  expect(parentTargets).toEqual(['*']);
+});
+
+it('bridges the private bootstrap into the canonical P22 restore and ready protocol', () => {
+  const restoredDigest = 'b'.repeat(64);
+  const hostMessages: Record<string, unknown>[] = [];
+  const bootstrapDocument = buildActivityDocument(
+    {
+      html: '<main></main>',
+      css: '',
+      sdk: '',
+      javascript: '',
+    },
+    'test-nonce',
+    'scholar-activity://fixture',
+  );
+  const bootstrapFrame = document.createElement('iframe');
+  bootstrapFrame.src = 'about:blank';
+  document.body.append(bootstrapFrame);
+  frames.push(bootstrapFrame);
+  const bootstrapWindow =
+    bootstrapFrame.contentWindow! as unknown as ActivityWindow;
+  bootstrapWindow.addEventListener('message', (event) => {
+    if (
+      event.source === bootstrapWindow.parent &&
+      typeof event.data === 'string'
+    )
+      hostMessages.push(JSON.parse(event.data));
+  });
+  bootstrapWindow.eval(bootstrapDocument.bootstrapScript);
+  const state = { inputs: { slope: 2 }, progress: { explored: true } };
+
+  bootstrapWindow.dispatchEvent(
+    new bootstrapWindow.MessageEvent('message', {
+      data: JSON.stringify({
+        source: 'scholar-host',
+        kind: 'activity-bootstrap',
+        protocolVersion: 1,
+        runtimeVersion: 'activity-runtime-v1',
+        nonce: 'test-nonce',
+        sessionId: runIdentity.sessionId,
+        artifactId: runIdentity.artifactId,
+        contentVersionId: runIdentity.contentVersionId,
+        attemptId: runIdentity.attemptId,
+        runId: runIdentity.runId,
+        contentDigest: restoredDigest,
+        stateRevision: 4,
+        initialState: state,
+        theme: {},
+        readOnly: false,
+        css: '',
+        sdk: '',
+        javascript: '',
+      }),
+      origin: activityHostOrigin,
+      source: bootstrapWindow.parent,
+    }),
+  );
+
+  const restore = hostMessages.find((message) => message.kind === 'restore');
+  expect(restore).toMatchObject({
+    source: 'scholar-host',
+    ...runIdentity,
+    sequence: 1,
+    kind: 'restore',
+    stateRevision: 4,
+    contentDigest: restoredDigest,
+    state,
+    theme: {},
+    readOnly: false,
+  });
+
+  const { messages, window } = runSdk();
+  const restored: unknown[] = [];
+  window.ScholarActivity.onRestore((value) => restored.push(value));
+  sendHostMessage(window, restore as Record<string, unknown>);
+
+  expect(restored).toEqual([state]);
+  expect(messages).toEqual([
+    expect.objectContaining({
+      ...runIdentity,
+      source: 'activity',
+      kind: 'ready',
+      sequence: 1,
+      baseStateRevision: 4,
+      payload: { contentDigest: restoredDigest },
+    }),
+  ]);
+});
 
 it('restores semantic state and reports only host-acknowledged revisions', () => {
   const { window, messages } = runSdk();
@@ -120,9 +298,148 @@ it('restores semantic state and reports only host-acknowledged revisions', () =>
     kind: 'state-acknowledged',
     ...runIdentity,
     sequence: 2,
+    acknowledgedSequence: 2,
     stateRevision: 5,
   });
   expect(window.ScholarActivity.acknowledgedRevision).toBe(5);
+});
+
+it('keeps saved activities locally interactive without sending writes in read-only mode', () => {
+  const { window, messages } = runSdk();
+  const initialState = {
+    version: 1,
+    inputs: { slope: 2 },
+    rngSeed: 17,
+    canvas: {},
+    progress: { explored: false },
+  };
+  sendHostMessage(window, {
+    kind: 'restore',
+    ...runIdentity,
+    sequence: 1,
+    stateRevision: 4,
+    contentDigest,
+    state: initialState,
+    theme: {},
+    readOnly: true,
+  });
+  const interactiveState = {
+    ...initialState,
+    inputs: { slope: 5 },
+    progress: { explored: true },
+  };
+
+  window.ScholarActivity.proposeState(
+    window.JSON.parse(JSON.stringify(interactiveState)),
+  );
+  window.ScholarActivity.interaction(
+    'submit-answer',
+    window.JSON.parse(JSON.stringify({ value: 5 })),
+  );
+
+  expect(window.ScholarActivity.readOnly).toBe(true);
+  expect(window.ScholarActivity.getState()).toEqual(interactiveState);
+  expect(window.ScholarActivity.acknowledgedRevision).toBe(4);
+  expect(messages).toEqual([
+    expect.objectContaining({
+      ...runIdentity,
+      source: 'activity',
+      kind: 'ready',
+      sequence: 1,
+      baseStateRevision: 4,
+      payload: { contentDigest },
+    }),
+  ]);
+});
+
+it('acknowledges interactions only through the sequenced host protocol', () => {
+  const { window, messages } = runSdk();
+  sendHostMessage(window, {
+    kind: 'restore',
+    ...runIdentity,
+    sequence: 1,
+    stateRevision: 4,
+    contentDigest,
+    state: {},
+    theme: {},
+    readOnly: false,
+  });
+  const acknowledged = vi.fn();
+  window.addEventListener(
+    'scholar-activity:interaction-acknowledged',
+    acknowledged,
+  );
+
+  window.ScholarActivity.interaction(
+    'answer-selected',
+    window.JSON.parse(JSON.stringify({ answer: 'b' })),
+  );
+  const interaction = messages.at(-1)!;
+  const interactionMessage = interaction as {
+    sequence: number;
+    payload: { action: string; value: unknown };
+  };
+  expect(interactionMessage.payload).toEqual({
+    action: 'answer-selected',
+    value: { answer: 'b' },
+  });
+
+  sendHostMessage(window, {
+    ...runIdentity,
+    sequence: 2,
+    kind: 'interaction-acknowledged',
+    acknowledgedSequence: interactionMessage.sequence,
+  });
+
+  expect(acknowledged).toHaveBeenCalledWith(
+    expect.objectContaining({
+      detail: expect.objectContaining({
+        sequence: interactionMessage.sequence,
+      }),
+    }),
+  );
+  expect(window.ScholarActivity.acknowledgedRevision).toBe(4);
+});
+
+it('keeps a rejected checkpoint pending until the host retries the same saved proposal', () => {
+  const { window, messages } = runSdk();
+  sendHostMessage(window, {
+    kind: 'restore',
+    ...runIdentity,
+    sequence: 1,
+    stateRevision: 4,
+    contentDigest,
+    state: { inputs: { frequency: 3 } },
+    theme: {},
+    readOnly: false,
+  });
+  const proposal = window.JSON.parse(
+    JSON.stringify({ inputs: { frequency: 8 } }),
+  );
+  window.ScholarActivity.proposeState(proposal);
+  const proposalMessage = messages.at(-1)! as { sequence: number };
+
+  sendHostMessage(window, {
+    ...runIdentity,
+    sequence: 2,
+    kind: 'state-rejected',
+    acknowledgedSequence: proposalMessage.sequence,
+    stateRevision: 4,
+  });
+  expect(window.ScholarActivity.acknowledgedRevision).toBe(4);
+  expect(window.ScholarActivity.getState()).toEqual(proposal);
+
+  sendHostMessage(window, {
+    ...runIdentity,
+    sequence: 3,
+    kind: 'state-acknowledged',
+    acknowledgedSequence: proposalMessage.sequence,
+    stateRevision: 5,
+  });
+
+  expect(window.ScholarActivity.acknowledgedRevision).toBe(5);
+  expect(window.ScholarActivity.getState()).toEqual(proposal);
+  expect(messages).toHaveLength(2);
 });
 
 it('requires a sequence-one restore and ignores later restore envelopes', () => {
@@ -207,6 +524,7 @@ it('rejects stale host identity, sequence, version, source, and revision envelop
     kind: 'state-acknowledged',
     ...runIdentity,
     sequence: 2,
+    acknowledgedSequence: 2,
     stateRevision: 5,
   });
   expect(window.ScholarActivity.acknowledgedRevision).toBe(5);
@@ -218,6 +536,7 @@ it('rejects stale host identity, sequence, version, source, and revision envelop
     kind: 'state-acknowledged',
     ...runIdentity,
     sequence: 2,
+    acknowledgedSequence: 3,
     stateRevision: 6,
   });
   expect(window.ScholarActivity.acknowledgedRevision).toBe(5);
@@ -226,6 +545,7 @@ it('rejects stale host identity, sequence, version, source, and revision envelop
     kind: 'state-acknowledged',
     ...runIdentity,
     sequence: 3,
+    acknowledgedSequence: 3,
     stateRevision: 6,
   });
   expect(window.ScholarActivity.acknowledgedRevision).toBe(6);
@@ -272,6 +592,7 @@ it('keeps a rejected checkpoint pending until the host retry is acknowledged', (
     kind: 'state-rejected',
     ...runIdentity,
     sequence: 2,
+    acknowledgedSequence: 2,
     stateRevision: 5,
   });
   expect(window.ScholarActivity.acknowledgedRevision).toBe(4);
@@ -282,6 +603,7 @@ it('keeps a rejected checkpoint pending until the host retry is acknowledged', (
     kind: 'state-rejected',
     ...runIdentity,
     sequence: 2,
+    acknowledgedSequence: 2,
     stateRevision: 4,
   });
   expect(window.ScholarActivity.acknowledgedRevision).toBe(4);
@@ -294,6 +616,7 @@ it('keeps a rejected checkpoint pending until the host retry is acknowledged', (
     kind: 'state-acknowledged',
     ...runIdentity,
     sequence: 3,
+    acknowledgedSequence: 2,
     stateRevision: 5,
   });
   expect(window.ScholarActivity.acknowledgedRevision).toBe(5);
@@ -332,6 +655,7 @@ it('coalesces state proposals while one checkpoint is awaiting acknowledgement',
     kind: 'state-acknowledged',
     ...runIdentity,
     sequence: 2,
+    acknowledgedSequence: 2,
     stateRevision: 1,
   });
   expect(

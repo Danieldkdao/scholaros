@@ -1,9 +1,15 @@
 import { createReadStream } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { createServer as createHttpServer } from 'node:http';
 import { createServer as createTcpServer } from 'node:net';
-import { createRequire } from 'node:module';
-import { tmpdir } from 'node:os';
+import { builtinModules, createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
@@ -35,6 +41,9 @@ type ActivityIntegrationReport = {
     tcp: boolean;
   };
   trustedRendererProcessId?: number;
+  wrapperOrigin?: string;
+  sdkParentOrigin?: string;
+  authorizationRuns?: Array<{ requestId: string; runId: string }>;
   filePickerFilesAfterUserGesture?: number;
   webRequestHttpBlocked?: boolean;
   sinkCountersBeforeRuntime?: SinkCounters;
@@ -57,6 +66,7 @@ type ActivityIntegrationReport = {
   proposalState?: Record<string, unknown>;
   proposalCount?: number;
   recovery?: {
+    runId?: string;
     elapsedMs?: number;
     proposalPersisted?: boolean;
     savedStateRestored?: boolean;
@@ -76,6 +86,29 @@ type ActivityIntegrationReport = {
     sourceId?: string;
   }>;
   recoveryMs?: number;
+  checkpointRetry?: {
+    firstWriteCommittedBeforeLostResponse: boolean;
+    retryWriteCount: number;
+    acknowledgedRevision: number;
+  };
+  hostInteractions?: Array<{ runId: string; action: string; value: unknown }>;
+  releaseCalls?: Array<{
+    requestId: string;
+    runId: string | null;
+    count: number;
+  }>;
+  navigationClose?: {
+    runId: string;
+    reason: string;
+    releaseCount: number;
+  };
+  hostWindowClose?: {
+    runId: string;
+    reason: string;
+    releaseCount: number;
+    hostWindowDestroyed: boolean;
+  };
+  navigationEvents?: Array<Record<string, unknown>>;
 };
 
 const enabled = process.env.RUN_ACTIVITY_INTEGRATION === '1';
@@ -217,7 +250,9 @@ const buildFixtureApp = async (appDirectory: string) => {
       lib: { formats: ['cjs'] },
       emptyOutDir: false,
       outDir: appDirectory,
-      rollupOptions: { external: ['electron', /^node:/] },
+      rollupOptions: {
+        external: ['electron', 'better-sqlite3', ...builtinModules, /^node:/],
+      },
     },
   };
 
@@ -346,7 +381,14 @@ describe.skipIf(!enabled)('actual Electron activity isolation', () => {
       await Promise.all([
         mkdir(appDirectory, { recursive: true, mode: 0o700 }),
         mkdir(userDataDirectory, { recursive: true, mode: 0o700 }),
+      ]);
+      await Promise.all([
         writeFile(filePath, 'fixture-only file sentinel', { mode: 0o600 }),
+        symlink(
+          resolve(desktopDirectory, '../../node_modules'),
+          join(appDirectory, 'node_modules'),
+          'dir',
+        ),
         writeFile(
           join(appDirectory, 'package.json'),
           JSON.stringify({
@@ -361,6 +403,7 @@ describe.skipIf(!enabled)('actual Electron activity isolation', () => {
       const config = {
         ...sinks.config,
         reportPath,
+        migrationsFolder: resolve(desktopDirectory, 'src/db/migrations'),
         runtimeBundlePath: join(appDirectory, 'activity-runtime.js'),
         filePath,
         electronBinaryDigest: await digestFile(electronBinary),
@@ -377,9 +420,16 @@ describe.skipIf(!enabled)('actual Electron activity isolation', () => {
       const report = JSON.parse(
         await readFile(reportPath, 'utf8'),
       ) as ActivityIntegrationReport;
+      const evidencePath = process.env.ACTIVITY_INTEGRATION_REPORT_PATH;
+      if (evidencePath) {
+        await mkdir(dirname(evidencePath), { recursive: true });
+        await writeFile(evidencePath, JSON.stringify(report, null, 2));
+      }
       expect(report.error).toBeUndefined();
       expect(report.processVersions?.electron).toBeTruthy();
       expect(report.processVersions?.chrome).toBeTruthy();
+      expect(report.wrapperOrigin).toMatch(/^scholar-activity:\/\/[a-f0-9-]+$/);
+      expect(report.sdkParentOrigin).toBe('null');
       expect(report.electronBinaryDigest).toMatch(/^[a-f0-9]{64}$/);
       expect(report.fuseWire?.version).not.toBe('unknown');
       expect(report.fuseWire?.bytes).not.toBe('');
@@ -470,11 +520,51 @@ describe.skipIf(!enabled)('actual Electron activity isolation', () => {
       expect(report.recovery?.trustedRendererSurvived).toBe(true);
       expect(report.recoveryMs).toBeGreaterThanOrEqual(0);
       expect(report.recoveryMs).toBeLessThan(8_000);
-      const evidencePath = process.env.ACTIVITY_INTEGRATION_REPORT_PATH;
-      if (evidencePath) {
-        await mkdir(dirname(evidencePath), { recursive: true });
-        await writeFile(evidencePath, JSON.stringify(report, null, 2));
-      }
+      expect(report.checkpointRetry).toMatchObject({
+        firstWriteCommittedBeforeLostResponse: true,
+        retryWriteCount: 2,
+        acknowledgedRevision: 1,
+      });
+      expect(report.hostInteractions).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            runId: presentation.runId,
+            action: 'fixture-progress',
+          }),
+        ]),
+      );
+      expect(report.releaseCalls).toHaveLength(4);
+      expect(report.releaseCalls?.every(({ count }) => count === 1)).toBe(true);
+      expect(report.authorizationRuns).toHaveLength(4);
+      expect(
+        report.authorizationRuns?.every(
+          ({ requestId, runId }) => requestId !== runId,
+        ),
+      ).toBe(true);
+      expect(report.releaseCalls).toEqual(
+        expect.arrayContaining(
+          (report.authorizationRuns ?? []).map(({ requestId, runId }) =>
+            expect.objectContaining({ requestId, runId, count: 1 }),
+          ),
+        ),
+      );
+      expect(report.releaseCalls?.map(({ runId }) => runId)).toEqual(
+        expect.arrayContaining([
+          presentation.runId,
+          report.recovery!.runId!,
+          report.navigationClose!.runId,
+          report.hostWindowClose!.runId,
+        ]),
+      );
+      expect(report.navigationClose).toMatchObject({
+        reason: 'blocked-navigation',
+        releaseCount: 1,
+      });
+      expect(report.hostWindowClose).toMatchObject({
+        reason: 'host-window-closed',
+        releaseCount: 1,
+        hostWindowDestroyed: true,
+      });
     } finally {
       await sinks.close();
       await rm(temporaryRoot, { recursive: true, force: true });
