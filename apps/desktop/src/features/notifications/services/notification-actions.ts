@@ -19,18 +19,18 @@ import type {
   NotificationTargetKind,
 } from '@scholaros/services/learning/notification-contracts';
 import {
+  authorizeNotificationClickForUser,
   cancelNotificationEventsForUser,
   claimNotificationEventsForUser,
+  enqueueNotificationEventForUser,
+  getNotificationEventForUser,
   getNotificationEventsForUser,
   getNotificationSettingsForUser,
-  insertNotificationEventForUser,
-  isNotificationTargetAvailable,
   saveNotificationSettingsForUser,
+  authorizeNotificationShowForUser,
+  settleNotificationEventForUser,
 } from './notification-store';
-import {
-  evaluateNotificationPolicy,
-  notificationPermissionStates,
-} from './notification-policy';
+import { notificationPermissionStates } from './notification-policy';
 import type { NotificationPermission } from './notification-policy';
 
 export const notificationOutcomeKinds = [
@@ -65,6 +65,57 @@ const cancelTargetSchema = z.strictObject({
   targetId: idSchema.nullable().optional(),
 });
 export type CancelTargetSchema = z.infer<typeof cancelTargetSchema>;
+const notificationDeliveryCommandSchema = z.discriminatedUnion('operation', [
+  z.strictObject({
+    operation: z.literal('claim'),
+    userId: idSchema,
+    now: instantSchema,
+    isFocused: z.boolean(),
+  }),
+  z.strictObject({
+    operation: z.literal('authorize-show'),
+    userId: idSchema,
+    eventId: idSchema,
+    claimedAt: instantSchema,
+    now: instantSchema,
+    isFocused: z.boolean(),
+  }),
+  z.strictObject({
+    operation: z.literal('settle'),
+    userId: idSchema,
+    eventId: idSchema,
+    claimedAt: instantSchema,
+    status: z.enum(['delivered', 'failed', 'cancelled']),
+    now: instantSchema,
+  }),
+  z.strictObject({
+    operation: z.literal('get-click'),
+    userId: idSchema,
+    eventId: idSchema,
+    now: instantSchema,
+  }),
+  z.strictObject({
+    operation: z.literal('authorize-click'),
+    userId: idSchema,
+    eventId: idSchema,
+    now: instantSchema,
+  }),
+  z.strictObject({
+    operation: z.literal('set-focus'),
+    userId: idSchema,
+    isFocused: z.boolean(),
+  }),
+  z.strictObject({
+    operation: z.literal('set-permission'),
+    userId: idSchema,
+    permission: permissionStateSchema,
+  }),
+  z.strictObject({ operation: z.literal('get-permission'), userId: idSchema }),
+  z.strictObject({ operation: z.literal('clear-account'), userId: idSchema }),
+]);
+export type NotificationDeliveryCommand = z.infer<
+  typeof notificationDeliveryCommandSchema
+>;
 
 const permissionStates = new Map<string, NotificationPermission>();
 const focusedAccountStates = new Map<string, boolean>();
@@ -157,6 +208,7 @@ export const setNotificationFocusState = (
 export const clearNotificationPermissionState = (
   context: AuthorizedContext,
 ) => {
+  requireCurrentContext(context);
   permissionStates.delete(context.userId);
   focusedAccountStates.delete(context.userId);
   cancelNotificationEventsForUser(context.userId);
@@ -227,44 +279,21 @@ export const enqueueProductNotification = async (
       'invalid-input',
       'This notification outcome is not supported.',
     );
-  const settings = getNotificationSettingsForUser(context.userId);
-  if (!settings)
-    throw createNotificationError(
-      'storage-failed',
-      'Notification settings are unavailable.',
-    );
   const now = new Date();
   const permission = permissionStates.get(context.userId) ?? 'unknown';
-  const policy = evaluateNotificationPolicy({
-    settings,
-    category: event.category,
-    now,
-    expiresAt: event.expiresAt,
-    isFocused: focusedAccountStates.get(context.userId) ?? false,
-    permission,
-    targetAvailable: isNotificationTargetAvailable(context.userId, {
-      targetKind: event.targetKind,
-      targetId: event.targetId,
-      safeRoute: event.route,
-    }),
-  });
+  const isFocused = focusedAccountStates.get(context.userId) ?? false;
   requireCurrentContext(context);
-  const status: NotificationStatus =
-    policy.decision === 'suppress' ? 'suppressed' : 'queued';
-  const insertedNotification = insertNotificationEventForUser(
+  const insertedNotification = enqueueNotificationEventForUser(
     context.userId,
     {
       category: event.category,
       targetKind: event.targetKind,
       targetId: event.targetId,
       outcomeId: event.outcomeId,
-      preferenceRevision: settings.revision,
-      status,
-      deliverAfter: policy.decision === 'defer' ? policy.deliverAfter : null,
       expiresAt: event.expiresAt,
       safeRoute: event.route,
     },
-    now,
+    { now, isFocused, permission },
   );
   requireCurrentContext(context);
   return {
@@ -286,6 +315,66 @@ export const claimDueNotifications = async (
   });
   requireCurrentContext(context);
   return claimedNotifications;
+};
+
+const handleNotificationDeliveryCommand = async (
+  context: AuthorizedContext,
+  input: unknown,
+) => {
+  requireCurrentContext(context);
+  const command = notificationDeliveryCommandSchema.parse(input);
+  if (command.userId !== context.userId)
+    throw createNotificationError('session-changed');
+  switch (command.operation) {
+    case 'claim':
+      return claimDueNotifications(context, {
+        now: new Date(command.now),
+        isFocused: command.isFocused,
+      });
+    case 'authorize-show':
+      return authorizeNotificationShowForUser(
+        context.userId,
+        command.eventId,
+        command.claimedAt,
+        {
+          now: new Date(command.now),
+          isFocused: command.isFocused,
+          permission: permissionStates.get(context.userId) ?? 'unknown',
+        },
+      );
+    case 'settle':
+      return settleNotificationEventForUser(
+        context.userId,
+        command.eventId,
+        command.claimedAt,
+        command.status,
+        new Date(command.now),
+      );
+    case 'get-click': {
+      const event = getNotificationEventForUser(
+        context.userId,
+        command.eventId,
+      );
+      return event?.status === 'delivered' &&
+        Date.parse(event.expiresAt) > Date.parse(command.now)
+        ? event
+        : null;
+    }
+    case 'authorize-click':
+      return authorizeNotificationClickForUser(
+        context.userId,
+        command.eventId,
+        new Date(command.now),
+      );
+    case 'set-focus':
+      return setNotificationFocusState(context, command.isFocused);
+    case 'set-permission':
+      return setNotificationPermissionState(context, command.permission);
+    case 'get-permission':
+      return getNotificationPermissionState(context);
+    case 'clear-account':
+      return clearNotificationPermissionState(context);
+  }
 };
 
 export const cancelNotificationsForTarget = async (
@@ -325,6 +414,17 @@ export const registerNotificationActions = (
       });
     return updatedSettings;
   });
+  // The queue operation remains internal and is excluded from renderer IPC.
+  const internalRegistrar = registrar as unknown as {
+    handle: (
+      name: 'claimDueNotifications',
+      handler: (context: AuthorizedContext, input: unknown) => Promise<unknown>,
+    ) => void;
+  };
+  internalRegistrar.handle(
+    'claimDueNotifications',
+    handleNotificationDeliveryCommand,
+  );
   return async () => {
     permissionStates.clear();
     focusedAccountStates.clear();

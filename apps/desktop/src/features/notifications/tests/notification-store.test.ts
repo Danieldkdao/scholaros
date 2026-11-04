@@ -38,7 +38,7 @@ const {
   setNotificationFocusState,
   setNotificationPermissionState,
 } = await import('../services/notification-actions');
-const { claimNotificationEventsForUser } =
+const { claimNotificationEventsForUser, settleNotificationEventForUser } =
   await import('../services/notification-store');
 const { createDefaultNotificationSettings } =
   await import('../services/notification-policy');
@@ -226,6 +226,66 @@ it('publishes the committed preference revision for Settings observers', async (
   await unregister();
 });
 
+it('claims and settles notifications only through its internal service action', async () => {
+  const context = authorizedContext(accountA);
+  setNotificationPermissionState(context, 'granted');
+  await saveNotificationSettings(context, {
+    settings: enabledSettings(),
+    expectedRevision: 0,
+  });
+  await enqueueProductNotification(context, outcome());
+  const handlers = new Map<
+    string,
+    (context: unknown, input: unknown) => Promise<unknown>
+  >();
+  const registrar = {
+    handle: (name: string, handler: unknown) => {
+      handlers.set(
+        name,
+        handler as (context: unknown, input: unknown) => Promise<unknown>,
+      );
+    },
+    publish: vi.fn(),
+  };
+  const unregister = registerNotificationActions(
+    registrar as unknown as AuthorizedRegistrar,
+  );
+  const deliveryAction = handlers.get('claimDueNotifications');
+  expect(deliveryAction).toBeDefined();
+  const now = '2026-11-03T12:00:00.000Z';
+  const claimed = (await deliveryAction!(context, {
+    operation: 'claim',
+    userId: accountA,
+    now,
+    isFocused: false,
+  })) as { id: string; claimedAt: string }[];
+  expect(claimed).toHaveLength(1);
+  expect(
+    await deliveryAction!(context, {
+      operation: 'authorize-show',
+      userId: accountA,
+      eventId: claimed[0]!.id,
+      claimedAt: claimed[0]!.claimedAt,
+      now,
+      isFocused: false,
+    }),
+  ).toBe(true);
+  expect(
+    await deliveryAction!(context, {
+      operation: 'settle',
+      userId: accountA,
+      eventId: claimed[0]!.id,
+      claimedAt: claimed[0]!.claimedAt,
+      status: 'delivered',
+      now,
+    }),
+  ).toBe(true);
+  expect(db.select().from(NotificationEventTable).all()[0]?.status).toBe(
+    'delivered',
+  );
+  await unregister();
+});
+
 it('records disabled outcomes as suppressed and rejects nonterminal work', async () => {
   const context = authorizedContext(accountA);
   const result = await enqueueProductNotification(context, outcome());
@@ -303,6 +363,141 @@ it('deduplicates the same persisted outcome within its account and category', as
     created: false,
   });
   expect(db.select().from(NotificationEventTable).all()).toHaveLength(1);
+});
+
+it('claims notifications in FIFO order with a stable tie-break for equal timestamps', async () => {
+  const context = authorizedContext(accountA);
+  setNotificationPermissionState(context, 'granted');
+  await saveNotificationSettings(context, {
+    settings: enabledSettings(),
+    expectedRevision: 0,
+  });
+  db.insert(NotificationEventTable)
+    .values([
+      {
+        id: 'event-z',
+        userId: accountA,
+        category: 'sync-completed',
+        targetKind: 'course',
+        targetId: 'course-a',
+        outcomeId: 'outcome-z',
+        preferenceRevision: 1,
+        status: 'queued',
+        deliverAfter: null,
+        expiresAt: '2030-01-01T00:00:00.000Z',
+        claimedAt: null,
+        deliveredAt: null,
+        safeRoute: { kind: 'course', courseId: 'course-a' },
+        createdAt: '2026-11-03T12:02:00.000Z',
+      },
+      {
+        id: 'event-c',
+        userId: accountA,
+        category: 'sync-completed',
+        targetKind: 'course',
+        targetId: 'course-a',
+        outcomeId: 'outcome-c',
+        preferenceRevision: 1,
+        status: 'queued',
+        deliverAfter: null,
+        expiresAt: '2030-01-01T00:00:00.000Z',
+        claimedAt: null,
+        deliveredAt: null,
+        safeRoute: { kind: 'course', courseId: 'course-a' },
+        createdAt: '2026-11-03T12:01:00.000Z',
+      },
+      {
+        id: 'event-a',
+        userId: accountA,
+        category: 'sync-completed',
+        targetKind: 'course',
+        targetId: 'course-a',
+        outcomeId: 'outcome-a',
+        preferenceRevision: 1,
+        status: 'queued',
+        deliverAfter: null,
+        expiresAt: '2030-01-01T00:00:00.000Z',
+        claimedAt: null,
+        deliveredAt: null,
+        safeRoute: { kind: 'course', courseId: 'course-a' },
+        createdAt: '2026-11-03T12:00:00.000Z',
+      },
+      {
+        id: 'event-b',
+        userId: accountA,
+        category: 'sync-completed',
+        targetKind: 'course',
+        targetId: 'course-a',
+        outcomeId: 'outcome-b',
+        preferenceRevision: 1,
+        status: 'queued',
+        deliverAfter: null,
+        expiresAt: '2030-01-01T00:00:00.000Z',
+        claimedAt: null,
+        deliveredAt: null,
+        safeRoute: { kind: 'course', courseId: 'course-a' },
+        createdAt: '2026-11-03T12:01:00.000Z',
+      },
+    ])
+    .run();
+
+  const claimed = claimNotificationEventsForUser(accountA, {
+    now: new Date('2026-11-03T12:03:00.000Z'),
+    isFocused: false,
+    permission: 'granted',
+  });
+
+  expect(claimed.map((event) => event.id)).toEqual([
+    'event-a',
+    'event-b',
+    'event-c',
+    'event-z',
+  ]);
+});
+
+it('fails an expired claim lease without replaying or accepting its late acknowledgement', async () => {
+  const context = authorizedContext(accountA);
+  setNotificationPermissionState(context, 'granted');
+  await saveNotificationSettings(context, {
+    settings: enabledSettings(),
+    expectedRevision: 0,
+  });
+  await enqueueProductNotification(context, outcome());
+  const claimTime = new Date('2026-11-03T12:00:00.000Z');
+  const claimedNotification = claimNotificationEventsForUser(accountA, {
+    now: claimTime,
+    isFocused: false,
+    permission: 'granted',
+  })[0];
+  expect(claimedNotification?.claimedAt).toBe(claimTime.toISOString());
+  expect(
+    claimNotificationEventsForUser(accountA, {
+      now: claimTime,
+      isFocused: false,
+      permission: 'granted',
+    }),
+  ).toEqual([]);
+
+  const recoveryTime = new Date('2026-11-03T12:10:00.000Z');
+  expect(
+    claimNotificationEventsForUser(accountA, {
+      now: recoveryTime,
+      isFocused: false,
+      permission: 'granted',
+    }),
+  ).toEqual([]);
+  expect(db.select().from(NotificationEventTable).all()[0]?.status).toBe(
+    'failed',
+  );
+  expect(
+    settleNotificationEventForUser(
+      accountA,
+      claimedNotification!.id,
+      claimedNotification!.claimedAt!,
+      'delivered',
+      recoveryTime,
+    ),
+  ).toBe(false);
 });
 
 it('recomputes a queued quiet-hours delay when quiet hours are changed', async () => {

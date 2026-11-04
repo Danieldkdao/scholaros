@@ -29,6 +29,7 @@ const {
 } = await import('../../../db/schema');
 const {
   cancelNotificationsForTarget,
+  clearNotificationPermissionState,
   enqueueProductNotification,
   getNotificationsForAccount,
   saveNotificationSettings,
@@ -123,6 +124,7 @@ beforeEach(() => {
   db.delete(CourseTable).run();
   db.delete(AcademicConnectionTable).run();
   db.delete(SettingTable).run();
+  clearNotificationPermissionState(authorizedContext());
   insertCourse();
 });
 
@@ -174,10 +176,40 @@ it('suppresses OS delivery while the app is focused', async () => {
   expect(eventsForAccount()[0]?.status).toBe('suppressed');
 });
 
-it('records native display failure and does not retry the same outcome', async () => {
+it('rechecks account settings after host validation and before native show', async () => {
   const context = authorizedContext();
   await setEnabledSettings(context);
   await enqueueCourseOutcome(context);
+  const show = vi.fn(async () => 'shown' as const);
+  const delivery = createNotificationDelivery({
+    isFocused: () => false,
+    show,
+    route: vi.fn(),
+    validateTarget: async () => {
+      const defaults = createDefaultNotificationSettings();
+      await saveNotificationSettings(context, {
+        settings: {
+          enabled: false,
+          categories: { ...defaults.categories, 'sync-completed': true },
+          quietHours: defaults.quietHours,
+        },
+        expectedRevision: 1,
+      });
+      return true;
+    },
+  });
+
+  await delivery.deliverDueNotifications(context);
+
+  expect(show).not.toHaveBeenCalled();
+  expect(eventsForAccount()[0]?.status).toBe('cancelled');
+});
+
+it('records native display failure and does not retry the same outcome', async () => {
+  const context = authorizedContext();
+  await setEnabledSettings(context);
+  const enqueued = await enqueueCourseOutcome(context);
+  expect(enqueued.status).toBe('queued');
   const show = vi.fn(async () => 'failed' as const);
   const delivery = createNotificationDelivery({
     isFocused: () => false,
@@ -306,4 +338,28 @@ it('cancels a claimed alert when the account becomes stale before display', asyn
 
   expect(show).not.toHaveBeenCalled();
   expect(eventsForAccount()[0]?.status).toBe('cancelled');
+});
+
+it('does not route an OS click after its originating account becomes stale', async () => {
+  let current = true;
+  const context = authorizedContext(() => current);
+  await setEnabledSettings(context);
+  await enqueueCourseOutcome(context);
+  let click: (() => Promise<boolean>) | undefined;
+  const route = vi.fn();
+  const delivery = createNotificationDelivery({
+    isFocused: () => false,
+    show: async (notification) => {
+      click = notification.onClick;
+      return 'shown';
+    },
+    route,
+    validateTarget: () => true,
+  });
+
+  await delivery.deliverDueNotifications(context);
+  current = false;
+
+  await expect(click?.()).resolves.toBe(false);
+  expect(route).not.toHaveBeenCalled();
 });

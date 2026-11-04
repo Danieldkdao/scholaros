@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull, lte, or } from 'drizzle-orm';
 import { z } from 'zod';
 import type {
   ProductPreferences,
@@ -42,9 +42,6 @@ export type NotificationEventInput = NotificationEventTarget & {
   category: NotificationCategory;
   outcomeId: string;
   expiresAt: string;
-  preferenceRevision: number;
-  status: NotificationStatus;
-  deliverAfter: string | null;
 };
 export type NotificationEventInsertResult = {
   event: NotificationEventSelectData;
@@ -55,6 +52,13 @@ export type NotificationClaimOptions = {
   isFocused: boolean;
   permission: NotificationPermission;
 };
+export type NotificationEnqueueOptions = {
+  now: Date;
+  isFocused: boolean;
+  permission: NotificationPermission;
+};
+
+const notificationClaimLeaseMilliseconds = 5 * 60_000;
 
 const notificationSettingsInputSchema = notificationSettingsSchema.omit({
   revision: true,
@@ -65,11 +69,13 @@ export type NotificationSettingsInputSchema = z.infer<
 export type NotificationSettingsInput = NotificationSettingsInputSchema;
 const createNotificationError = (code: SafeErrorCode, message: string = code) =>
   Object.assign(new Error(message), { code });
+type NotificationReader = Pick<typeof db, 'select'>;
 
 const getSettingsInTransaction = (
   userId: string,
+  reader: NotificationReader = db,
 ): NotificationSettings | null => {
-  const existingSettings = db
+  const existingSettings = reader
     .select({ productPreferences: SettingTable.productPreferences })
     .from(SettingTable)
     .where(eq(SettingTable.userId, userId))
@@ -204,7 +210,11 @@ export const saveNotificationSettingsForUser = (
           expiresAt: event.expiresAt,
           isFocused: false,
           permission: 'granted',
-          targetAvailable: isNotificationTargetAvailable(userId, event),
+          targetAvailable: isNotificationTargetAvailableWithReader(
+            tx,
+            userId,
+            event,
+          ),
         });
         if (policy.decision === 'deliver' || policy.decision === 'defer') {
           tx.update(NotificationEventTable)
@@ -243,13 +253,45 @@ export const saveNotificationSettingsForUser = (
   });
 };
 
-export const insertNotificationEventForUser = (
+export const enqueueNotificationEventForUser = (
   userId: string,
   input: NotificationEventInput,
-  now = new Date(),
+  options: NotificationEnqueueOptions,
 ): NotificationEventInsertResult =>
   db.transaction((tx) => {
     const safeRoute = safeRouteSchema.parse(input.safeRoute);
+    const storedSettings = tx
+      .select({ productPreferences: SettingTable.productPreferences })
+      .from(SettingTable)
+      .where(eq(SettingTable.userId, userId))
+      .get();
+    const parsedSettings = storedSettings
+      ? notificationSettingsSchema.safeParse(
+          storedSettings.productPreferences.notifications,
+        )
+      : null;
+    if (storedSettings && !parsedSettings?.success)
+      throw createNotificationError(
+        'storage-failed',
+        'Notification settings are unavailable.',
+      );
+    const settings = parsedSettings?.success
+      ? parsedSettings.data
+      : createDefaultNotificationSettings();
+    const policy = evaluateNotificationPolicy({
+      settings,
+      category: input.category,
+      now: options.now,
+      expiresAt: input.expiresAt,
+      isFocused: options.isFocused,
+      permission: options.permission,
+      targetAvailable: isNotificationTargetAvailableWithReader(tx, userId, {
+        ...input,
+        safeRoute,
+      }),
+    });
+    const status: NotificationStatus =
+      policy.decision === 'suppress' ? 'suppressed' : 'queued';
     const insertedNotification = tx
       .insert(NotificationEventTable)
       .values({
@@ -259,14 +301,14 @@ export const insertNotificationEventForUser = (
         targetKind: input.targetKind,
         targetId: input.targetId,
         outcomeId: input.outcomeId,
-        preferenceRevision: input.preferenceRevision,
-        status: input.status,
-        deliverAfter: input.deliverAfter,
+        preferenceRevision: settings.revision,
+        status,
+        deliverAfter: policy.decision === 'defer' ? policy.deliverAfter : null,
         expiresAt: input.expiresAt,
         claimedAt: null,
         deliveredAt: null,
         safeRoute,
-        createdAt: now.toISOString(),
+        createdAt: options.now.toISOString(),
       })
       .onConflictDoNothing()
       .run();
@@ -351,7 +393,8 @@ const routeMatchesEventTarget = (
   }
 };
 
-export const isNotificationTargetAvailable = (
+const isNotificationTargetAvailableWithReader = (
+  reader: NotificationReader,
   userId: string,
   event: NotificationEventTarget,
 ): boolean => {
@@ -361,7 +404,7 @@ export const isNotificationTargetAvailable = (
   switch (event.targetKind) {
     case 'context':
       if (event.targetId === null) return true;
-      return !!db
+      return !!reader
         .select({ id: ContextItemTable.id })
         .from(ContextItemTable)
         .where(
@@ -373,7 +416,7 @@ export const isNotificationTargetAvailable = (
         )
         .get();
     case 'study':
-      return !!db
+      return !!reader
         .select({ id: StudySessionTable.id })
         .from(StudySessionTable)
         .where(
@@ -385,7 +428,7 @@ export const isNotificationTargetAvailable = (
         )
         .get();
     case 'course':
-      return !!db
+      return !!reader
         .select({ id: CourseTable.id })
         .from(CourseTable)
         .where(
@@ -397,7 +440,7 @@ export const isNotificationTargetAvailable = (
         )
         .get();
     case 'connection':
-      return !!db
+      return !!reader
         .select({ id: AcademicConnectionTable.id })
         .from(AcademicConnectionTable)
         .where(
@@ -412,7 +455,49 @@ export const isNotificationTargetAvailable = (
   }
 };
 
+export const isNotificationTargetAvailable = (
+  userId: string,
+  event: NotificationEventTarget,
+): boolean => isNotificationTargetAvailableWithReader(db, userId, event);
+
+export const authorizeNotificationClickForUser = (
+  userId: string,
+  eventId: string,
+  now: Date,
+): SafeRoute | null =>
+  db.transaction((tx) => {
+    const event = tx
+      .select()
+      .from(NotificationEventTable)
+      .where(
+        and(
+          eq(NotificationEventTable.userId, userId),
+          eq(NotificationEventTable.id, eventId),
+          eq(NotificationEventTable.status, 'delivered'),
+        ),
+      )
+      .get();
+    const settings =
+      getSettingsInTransaction(userId, tx) ??
+      createDefaultNotificationSettings();
+    if (
+      !event ||
+      Date.parse(event.expiresAt) <= now.getTime() ||
+      !settings.enabled ||
+      !settings.categories[event.category]
+    )
+      return null;
+    const route = safeRouteSchema.safeParse(event.safeRoute);
+    if (
+      !route.success ||
+      !isNotificationTargetAvailableWithReader(tx, userId, event)
+    )
+      return null;
+    return route.data;
+  });
+
 const policyForEvent = (
+  reader: NotificationReader,
   userId: string,
   event: NotificationEventSelectData,
   settings: NotificationSettings | null,
@@ -425,7 +510,11 @@ const policyForEvent = (
     expiresAt: event.expiresAt,
     isFocused: options.isFocused,
     permission: options.permission,
-    targetAvailable: isNotificationTargetAvailable(userId, event),
+    targetAvailable: isNotificationTargetAvailableWithReader(
+      reader,
+      userId,
+      event,
+    ),
   });
 
 export const claimNotificationEventsForUser = (
@@ -434,7 +523,24 @@ export const claimNotificationEventsForUser = (
   limit = 100,
 ): NotificationEventSelectData[] =>
   db.transaction((tx) => {
-    const currentSettings = getSettingsInTransaction(userId);
+    const leaseCutoff = new Date(
+      options.now.getTime() - notificationClaimLeaseMilliseconds,
+    ).toISOString();
+    // An expired native-show claim may already have reached the OS, so recovery must not replay it.
+    tx.update(NotificationEventTable)
+      .set({ status: 'failed' })
+      .where(
+        and(
+          eq(NotificationEventTable.userId, userId),
+          eq(NotificationEventTable.status, 'claimed'),
+          or(
+            isNull(NotificationEventTable.claimedAt),
+            lte(NotificationEventTable.claimedAt, leaseCutoff),
+          ),
+        ),
+      )
+      .run();
+    const currentSettings = getSettingsInTransaction(userId, tx);
     const queuedNotifications = tx
       .select()
       .from(NotificationEventTable)
@@ -445,11 +551,21 @@ export const claimNotificationEventsForUser = (
         ),
       )
       .all()
-      .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+      .sort(
+        (left, right) =>
+          left.createdAt.localeCompare(right.createdAt) ||
+          left.id.localeCompare(right.id),
+      )
       .slice(0, limit);
     const claimedNotifications: NotificationEventSelectData[] = [];
     for (const event of queuedNotifications) {
-      const policy = policyForEvent(userId, event, currentSettings, options);
+      const policy = policyForEvent(
+        tx,
+        userId,
+        event,
+        currentSettings,
+        options,
+      );
       if (policy.decision === 'suppress') {
         tx.update(NotificationEventTable)
           .set({
@@ -500,7 +616,12 @@ export const claimNotificationEventsForUser = (
       const claimedNotification = tx
         .select()
         .from(NotificationEventTable)
-        .where(eq(NotificationEventTable.id, event.id))
+        .where(
+          and(
+            eq(NotificationEventTable.userId, userId),
+            eq(NotificationEventTable.id, event.id),
+          ),
+        )
         .get();
       if (claimedNotification) claimedNotifications.push(claimedNotification);
     }
@@ -510,6 +631,7 @@ export const claimNotificationEventsForUser = (
 export const authorizeNotificationShowForUser = (
   userId: string,
   eventId: string,
+  claimedAt: string,
   options: NotificationClaimOptions,
 ): boolean =>
   db.transaction((tx) => {
@@ -521,14 +643,34 @@ export const authorizeNotificationShowForUser = (
           eq(NotificationEventTable.userId, userId),
           eq(NotificationEventTable.id, eventId),
           eq(NotificationEventTable.status, 'claimed'),
+          eq(NotificationEventTable.claimedAt, claimedAt),
         ),
       )
       .get();
     if (!event) return false;
+    if (
+      !event.claimedAt ||
+      Date.parse(event.claimedAt) + notificationClaimLeaseMilliseconds <=
+        options.now.getTime()
+    ) {
+      tx.update(NotificationEventTable)
+        .set({ status: 'failed' })
+        .where(
+          and(
+            eq(NotificationEventTable.userId, userId),
+            eq(NotificationEventTable.id, event.id),
+            eq(NotificationEventTable.status, 'claimed'),
+            eq(NotificationEventTable.claimedAt, claimedAt),
+          ),
+        )
+        .run();
+      return false;
+    }
     const policy = policyForEvent(
+      tx,
       userId,
       event,
-      getSettingsInTransaction(userId),
+      getSettingsInTransaction(userId, tx),
       options,
     );
     if (policy.decision === 'deliver') return true;
@@ -539,7 +681,14 @@ export const authorizeNotificationShowForUser = (
           deliverAfter: policy.deliverAfter,
           claimedAt: null,
         })
-        .where(eq(NotificationEventTable.id, event.id))
+        .where(
+          and(
+            eq(NotificationEventTable.userId, userId),
+            eq(NotificationEventTable.id, event.id),
+            eq(NotificationEventTable.status, 'claimed'),
+            eq(NotificationEventTable.claimedAt, claimedAt),
+          ),
+        )
         .run();
       return false;
     }
@@ -548,7 +697,14 @@ export const authorizeNotificationShowForUser = (
         status:
           policy.reason === 'target-unavailable' ? 'cancelled' : 'suppressed',
       })
-      .where(eq(NotificationEventTable.id, event.id))
+      .where(
+        and(
+          eq(NotificationEventTable.userId, userId),
+          eq(NotificationEventTable.id, event.id),
+          eq(NotificationEventTable.status, 'claimed'),
+          eq(NotificationEventTable.claimedAt, claimedAt),
+        ),
+      )
       .run();
     return false;
   });
@@ -556,23 +712,44 @@ export const authorizeNotificationShowForUser = (
 export const settleNotificationEventForUser = (
   userId: string,
   eventId: string,
+  claimedAt: string,
   status: Extract<NotificationStatus, 'delivered' | 'failed' | 'cancelled'>,
   now = new Date(),
-) =>
-  db
-    .update(NotificationEventTable)
-    .set({
-      status,
-      ...(status === 'delivered' ? { deliveredAt: now.toISOString() } : {}),
-    })
-    .where(
-      and(
-        eq(NotificationEventTable.userId, userId),
-        eq(NotificationEventTable.id, eventId),
-        eq(NotificationEventTable.status, 'claimed'),
-      ),
-    )
-    .run().changes > 0;
+) => {
+  const leaseExpired =
+    Date.parse(claimedAt) + notificationClaimLeaseMilliseconds <= now.getTime();
+  if (leaseExpired && status !== 'cancelled') {
+    db.update(NotificationEventTable)
+      .set({ status: 'failed' })
+      .where(
+        and(
+          eq(NotificationEventTable.userId, userId),
+          eq(NotificationEventTable.id, eventId),
+          eq(NotificationEventTable.status, 'claimed'),
+          eq(NotificationEventTable.claimedAt, claimedAt),
+        ),
+      )
+      .run();
+    return false;
+  }
+  return (
+    db
+      .update(NotificationEventTable)
+      .set({
+        status,
+        ...(status === 'delivered' ? { deliveredAt: now.toISOString() } : {}),
+      })
+      .where(
+        and(
+          eq(NotificationEventTable.userId, userId),
+          eq(NotificationEventTable.id, eventId),
+          eq(NotificationEventTable.status, 'claimed'),
+          eq(NotificationEventTable.claimedAt, claimedAt),
+        ),
+      )
+      .run().changes > 0
+  );
+};
 
 export const cancelNotificationEventsForUser = (
   userId: string,
