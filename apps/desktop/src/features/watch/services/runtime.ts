@@ -7,11 +7,12 @@ import {
 import { createMissionNavigator } from '../../onboarding/services/mission-navigation';
 import { openBackgroundPage } from '../../onboarding/services/background-page';
 import { protectMissionPage } from '../../onboarding/services/mission-request-guard';
-import * as courseRefreshApi from '../../courses/services/refresh';
-import type {
-  CourseCollectionKind,
-  CourseScanStatus,
-} from '../../courses/types';
+import {
+  refreshSingleCourseWithReceipt,
+  startConnectionRefreshWithReceipt,
+  type CourseRefreshExecutionReceipt,
+  type CourseRefreshExecutionScope,
+} from '../../courses/services/refresh';
 import { createWatchBrowserSession, settleWatchPage } from './browser-session';
 import { createWatchController } from './controller';
 import { createWatchLifecycle } from './lifecycle';
@@ -48,45 +49,6 @@ type ActiveWatchWorkspace = {
   isCurrent: () => boolean;
   sessionEpoch: number;
 };
-
-type CourseRefreshExecutionReceipt = {
-  runId: string;
-  sessionEpoch: number;
-  coveredRevisions: Readonly<Record<string, string>>;
-  status: 'complete' | 'partial' | 'sign-in-required';
-  collections: Array<{
-    courseId: string | null;
-    kind: CourseCollectionKind;
-    status: CourseScanStatus;
-  }>;
-};
-type CourseRefreshExecution<TResult> = {
-  result: TResult;
-  receipt: CourseRefreshExecutionReceipt;
-};
-type CaptureRefreshScope = () => {
-  sessionEpoch: number;
-  coveredRevisions: Readonly<Record<string, string>>;
-};
-type P06ReceiptApi = {
-  refreshSingleCourseWithReceipt?: (
-    userId: string,
-    courseId: string,
-    captureExecutionScope: CaptureRefreshScope,
-    isCurrent: () => boolean,
-    signal: AbortSignal,
-  ) => Promise<CourseRefreshExecution<unknown>>;
-  startConnectionRefreshWithReceipt?: (
-    userId: string,
-    connectionId: string,
-    captureExecutionScope: CaptureRefreshScope,
-    isCurrent: () => boolean,
-    signal: AbortSignal,
-  ) => Promise<CourseRefreshExecution<unknown>>;
-};
-
-// P06's receipt exports arrive in the sibling integration commit.
-const p06ReceiptApi = courseRefreshApi as unknown as P06ReceiptApi;
 
 const toWatchCoverageReceipt = (
   receipt: CourseRefreshExecutionReceipt,
@@ -233,10 +195,7 @@ export const createWatchRuntime = ({ onStatus }: WatchRuntimeOptions) => {
       activeWorkspace === workspace && workspace.isCurrent() && !signal.aborted;
     signal.throwIfAborted();
     if (!isCurrent()) throw new Error('Your session changed; sign in again.');
-    const refresh = p06ReceiptApi.startConnectionRefreshWithReceipt;
-    if (!refresh)
-      throw new Error('Exact academic refresh coverage is unavailable.');
-    const execution = await refresh(
+    const execution = await startConnectionRefreshWithReceipt(
       userId,
       connectionId,
       () => {
@@ -263,7 +222,7 @@ export const createWatchRuntime = ({ onStatus }: WatchRuntimeOptions) => {
         activeWorkspace === workspace &&
         workspace.isCurrent() &&
         !signal.aborted;
-      const captureExecutionScope: CaptureRefreshScope = () => {
+      const captureExecutionScope = (): CourseRefreshExecutionScope => {
         signal.throwIfAborted();
         if (!isCurrent())
           throw new Error('Your session changed; sign in again.');
@@ -272,20 +231,15 @@ export const createWatchRuntime = ({ onStatus }: WatchRuntimeOptions) => {
           coveredRevisions: { [target.id]: fingerprint },
         };
       };
-      const refresh = target.courseId
-        ? p06ReceiptApi.refreshSingleCourseWithReceipt
-        : p06ReceiptApi.startConnectionRefreshWithReceipt;
-      if (!refresh)
-        throw new Error('Exact academic refresh coverage is unavailable.');
       const execution = target.courseId
-        ? await p06ReceiptApi.refreshSingleCourseWithReceipt!(
+        ? await refreshSingleCourseWithReceipt(
             target.userId,
             target.courseId,
             captureExecutionScope,
             isCurrent,
             signal,
           )
-        : await p06ReceiptApi.startConnectionRefreshWithReceipt!(
+        : await startConnectionRefreshWithReceipt(
             target.userId,
             target.connectionId,
             captureExecutionScope,
