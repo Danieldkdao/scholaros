@@ -1,5 +1,6 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { createConnection } from 'node:net';
 import path from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { createAcademicServer, academicRequest } from '../transport';
@@ -28,6 +29,44 @@ it('returns cached data and rejects unauthorized clients before dispatch', async
     academicRequest({ ...service.endpoint, token: 'invalid' }, 'getCourses'),
   ).rejects.toThrow('Unauthorized');
   expect(service.read).toHaveBeenCalledOnce();
+});
+it('sends a valid request without leaking endpoint metadata', async () => {
+  const service = await server();
+  const endpoint = { ...service.endpoint, instanceId: 'private-metadata' };
+
+  await expect(academicRequest(endpoint, 'getCourses')).resolves.toEqual({
+    courses: ['cached'],
+  });
+  expect(service.read).toHaveBeenCalledOnce();
+});
+it('rejects extra wire fields before dispatch even with valid credentials', async () => {
+  const service = await server();
+  const response = await new Promise<string>((resolve, reject) => {
+    const socket = createConnection(service.endpoint.address);
+    let data = '';
+    socket.setEncoding('utf8');
+    socket.on('connect', () =>
+      socket.write(
+        `${JSON.stringify({
+          version: service.endpoint.version,
+          token: service.endpoint.token,
+          id: 'forged',
+          method: 'getCourses',
+          address: service.endpoint.address,
+        })}\n`,
+      ),
+    );
+    socket.on('data', (chunk) => {
+      data += chunk;
+    });
+    socket.on('end', () => resolve(data));
+    socket.on('error', reject);
+  });
+  expect(JSON.parse(response)).toMatchObject({
+    kind: 'result',
+    error: 'Unauthorized academic service request.',
+  });
+  expect(service.read).not.toHaveBeenCalled();
 });
 it('rejects unsupported operations and protocol versions', async () => {
   const service = await server();

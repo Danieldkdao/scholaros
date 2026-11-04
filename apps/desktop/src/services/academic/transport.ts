@@ -232,7 +232,13 @@ const connect = (
   const socket = createConnection(endpoint.address);
   const id = randomUUID();
   socket.once('connect', () =>
-    send(socket, { ...endpoint, id, method, input }),
+    send(socket, {
+      version: endpoint.version,
+      token: endpoint.token,
+      id,
+      method,
+      input,
+    }),
   );
   receive(socket, (value) => onMessage(academicMessageSchema.parse(value)));
   return socket;
