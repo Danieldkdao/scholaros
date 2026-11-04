@@ -8,6 +8,7 @@ import { idSchema } from '@scholaros/services/learning/product-contracts';
 import { authClient } from '../../lib/auth/client';
 import {
   academicEndpointFileSchema,
+  deleteLocalAcademicDataInputSchema,
   rendererAcademicMethods,
   type AcademicEndpointSchema,
   type AcademicEventChannel,
@@ -29,6 +30,8 @@ let currentAccountId: string | null = null;
 export type AcademicClientLifecycle = {
   onIdentityChange?: () => Promise<void>;
   beforeSessionDelete?: (sessionId: string) => Promise<void>;
+  beforeLocalDataDelete?: () => Promise<void>;
+  afterLocalDataDelete?: () => Promise<void>;
   beforeDisconnect?: () => Promise<void>;
 };
 
@@ -202,7 +205,7 @@ const ensureService = (): Promise<AcademicEndpointSchema> =>
         starting = null;
       }));
 
-export const requestAcademicService = async (
+const requestAcademicServiceOperation = async (
   method: AcademicMethod,
   input?: unknown,
 ) => {
@@ -250,6 +253,26 @@ export const requestAcademicService = async (
     publishAuthIdentity(null);
   }
   return result;
+};
+
+export const requestAcademicService = async (
+  method: AcademicMethod,
+  input?: unknown,
+) => {
+  if (method !== 'deleteLocalAcademicData')
+    return requestAcademicServiceOperation(method, input);
+  const parsed = deleteLocalAcademicDataInputSchema.parse(input);
+  const cookie = observeCookie();
+  const epoch = identityEpoch;
+  await identityBarrier;
+  try {
+    await lifecycle.beforeLocalDataDelete?.();
+    if (cookie !== observeCookie() || epoch !== identityEpoch)
+      throw new Error('Your session changed; sign in again.');
+    return await requestAcademicServiceOperation(method, parsed);
+  } finally {
+    await lifecycle.afterLocalDataDelete?.();
+  }
 };
 
 export const registerAcademicClient = async (

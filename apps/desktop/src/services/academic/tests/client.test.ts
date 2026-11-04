@@ -490,6 +490,44 @@ it('does not restore an account from a lookup started before sign-out', async ()
   await rejected;
 });
 it.each(['cookie', 'account'])(
+  'never deletes local data for a changed %s and releases native admission on failure',
+  async (changed) => {
+    const client = await import('../client');
+    let accountId = 'student';
+    mocks.request.mockImplementation(async (_endpoint, method) =>
+      method === 'health'
+        ? { ready: true }
+        : method === 'getCurrentUser'
+          ? { id: accountId }
+          : undefined,
+    );
+    const afterLocalDataDelete = vi.fn(async () => undefined);
+    await client.registerAcademicClient({
+      beforeLocalDataDelete: async () => {
+        if (changed === 'cookie') mocks.cookie = 'test-cookie-b';
+        else {
+          accountId = 'student-b';
+          await client.requestAcademicService('getCurrentUser');
+        }
+      },
+      afterLocalDataDelete,
+    });
+    await client.requestAcademicService('getCurrentUser');
+    await expect(
+      client.requestAcademicService('deleteLocalAcademicData', {
+        requestId: '11111111-1111-4111-8111-111111111111',
+        scope: 'account-local',
+      }),
+    ).rejects.toThrow('session changed');
+    expect(afterLocalDataDelete).toHaveBeenCalledOnce();
+    expect(
+      mocks.request.mock.calls.some(
+        (call) => call[1] === 'deleteLocalAcademicData',
+      ),
+    ).toBe(false);
+  },
+);
+it.each(['cookie', 'account'])(
   'does not delete a session under a changed %s after native teardown awaits',
   async (changed) => {
     const client = await import('../client');

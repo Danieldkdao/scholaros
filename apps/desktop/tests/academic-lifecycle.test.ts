@@ -5,12 +5,14 @@ import type {
   ActivityMountInput,
   AuthorizedActivityRun as RuntimeAuthorizedActivityRun,
 } from '../src/features/study/services/activity-runtime';
+import type { DictationHostAdapterDependencies } from '../src/services/academic/dictation-host-adapter';
 const mocks = vi.hoisted(() => ({
   serviceMode: false,
   authCookie: 'test-session-a',
   windows: 0,
   hostWindows: [] as {
     webContents: {
+      id: number;
       mainFrame: { url: string };
       send: ReturnType<typeof vi.fn>;
       isDestroyed: () => boolean;
@@ -27,6 +29,15 @@ const mocks = vi.hoisted(() => ({
   retryActivity: vi.fn(),
   closeActivity: vi.fn(),
   disposeActivities: vi.fn(),
+  dictationDependencies: null as DictationHostAdapterDependencies | null,
+  createDictationHost: vi.fn(),
+  startDictation: vi.fn(),
+  appendDictationAudio: vi.fn(),
+  stopDictation: vi.fn(),
+  cancelDictation: vi.fn(),
+  disposeDictation: vi.fn(),
+  cancelSessionDictation: vi.fn(),
+  fetch: vi.fn(),
   listeners: new Map<string, ((event?: unknown) => void)[]>(),
   ipcHandlers: new Map<string, (event: unknown, input?: unknown) => unknown>(),
   ready: vi.fn(),
@@ -84,6 +95,7 @@ vi.mock('electron', () => ({
       return [];
     }
     webContents = {
+      id: mocks.windows + 1,
       mainFrame: { url: 'file:///scholaros/index.html' },
       send: vi.fn(),
       isDestroyed: () => false,
@@ -113,7 +125,11 @@ vi.mock('electron', () => ({
   },
   dialog: { showErrorBox: mocks.errorBox, showOpenDialog: mocks.chooseFiles },
   Notification: { isSupported: mocks.notificationIsSupported },
-  systemPreferences: { askForMediaAccess: mocks.askForMicrophone },
+  systemPreferences: {
+    askForMediaAccess: mocks.askForMicrophone,
+    getMediaAccessStatus: () => 'granted',
+  },
+  net: { fetch: mocks.fetch },
   ipcMain: {
     handle: (
       channel: string,
@@ -123,6 +139,12 @@ vi.mock('electron', () => ({
   webContents: { getFocusedWebContents: () => null },
 }));
 vi.mock('electron-squirrel-startup', () => ({ default: false }));
+vi.mock('../src/data/env/client', () => ({
+  clientEnv: { VITE_API_URL: 'https://account.example' },
+}));
+vi.mock('../src/services/academic/dictation-host-adapter', () => ({
+  createDictationHostAdapter: mocks.createDictationHost,
+}));
 vi.mock('../src/lib/auth/client', () => ({
   authClient: {
     setupMain: mocks.setupAuth,
@@ -178,6 +200,27 @@ beforeEach(() => {
   mocks.windows = 0;
   mocks.hostWindows = [];
   mocks.activityDependencies = null;
+  mocks.dictationDependencies = null;
+  mocks.createDictationHost.mockImplementation((dependencies) => {
+    mocks.dictationDependencies = dependencies;
+    return {
+      startDictation: mocks.startDictation,
+      appendDictationAudio: mocks.appendDictationAudio,
+      stopDictation: mocks.stopDictation,
+      cancelDictation: mocks.cancelDictation,
+      cancelForSession: mocks.cancelSessionDictation,
+      dispose: mocks.disposeDictation,
+    };
+  });
+  mocks.startDictation.mockResolvedValue({ operationId: 'dictation-a' });
+  mocks.appendDictationAudio.mockResolvedValue({ acceptedSequence: 0 });
+  mocks.stopDictation.mockResolvedValue(undefined);
+  mocks.cancelDictation.mockResolvedValue(undefined);
+  mocks.cancelSessionDictation.mockResolvedValue(undefined);
+  mocks.disposeDictation.mockResolvedValue(undefined);
+  mocks.fetch.mockImplementation(async () =>
+    Response.json({ operationId: 'dictation-a' }),
+  );
   mocks.createActivityManager.mockImplementation((dependencies) => {
     mocks.activityDependencies = dependencies;
     return {
@@ -315,6 +358,177 @@ const activityEvent = (window = mocks.hostWindows[0]!) => ({
   window,
   sender: window.webContents,
   senderFrame: window.webContents.mainFrame,
+});
+const dictationInput = () => ({
+  requestId: '11111111-1111-4111-8111-111111111111',
+  sessionId: 'session-a',
+  composerRevision: 0,
+});
+it('binds dictation to the exact trusted online document and originating owner', async () => {
+  mockActivityService();
+  await import('../src/main');
+  await vi.waitFor(() => expect(mocks.windows).toBe(1));
+  const start = mocks.ipcHandlers.get('scholar:native:startDictation');
+  expect(start).toBeTypeOf('function');
+  await expect(start!({ trusted: false }, dictationInput())).rejects.toThrow(
+    'Untrusted',
+  );
+  await expect(
+    start!(activityEvent(), { ...dictationInput(), accountId: 'other' }),
+  ).rejects.toThrow();
+  const event = activityEvent();
+  await expect(start!(event, dictationInput())).resolves.toEqual({
+    operationId: 'dictation-a',
+  });
+  expect(mocks.startDictation).toHaveBeenCalledWith(dictationInput(), {
+    accountId: 'student-a',
+    senderId: 1,
+  });
+  const scope = {
+    accountId: 'student-a',
+    senderId: 1,
+    sessionId: 'session-a',
+    composerRevision: 0,
+    operationId: 'dictation-a',
+  };
+  await expect(mocks.dictationDependencies!.isCurrent(scope)).resolves.toBe(
+    true,
+  );
+  const dictationEvent = {
+    version: 1 as const,
+    operationId: 'dictation-a',
+    sessionId: 'session-a',
+    composerRevision: 0,
+    sequence: 0,
+    kind: 'ready' as const,
+  };
+  mocks.dictationDependencies!.publishEvent(1, dictationEvent);
+  expect(event.sender.send).toHaveBeenCalledWith(
+    'scholar:native:dictationEvent',
+    dictationEvent,
+  );
+  event.sender.send.mockClear();
+  event.sender.mainFrame = { url: 'https://outside.example' };
+  await expect(mocks.dictationDependencies!.isCurrent(scope)).resolves.toBe(
+    false,
+  );
+  mocks.dictationDependencies!.publishEvent(1, dictationEvent);
+  expect(event.sender.send).not.toHaveBeenCalled();
+});
+it('admits only one pending dictation and fences a pre-delete authorization after the native gate reopens', async () => {
+  mockActivityService();
+  await import('../src/main');
+  await vi.waitFor(() => expect(mocks.windows).toBe(1));
+  let finish!: (value: ReturnType<typeof activeStudySnapshot>) => void;
+  mocks.request.mockImplementation(async (method) => {
+    if (method === 'getCurrentUser') return { id: 'student-a' };
+    if (method === 'getStudySession')
+      return new Promise((resolve) => {
+        finish = resolve;
+      });
+    throw new Error('Unexpected method');
+  });
+  const start = mocks.ipcHandlers.get('scholar:native:startDictation')!;
+  const pending = Promise.resolve(start(activityEvent(), dictationInput()));
+  const rejected = expect(pending).rejects.toThrow('session changed');
+  await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+  await expect(start(activityEvent(), dictationInput())).rejects.toThrow(
+    'already active',
+  );
+  const lifecycle = mocks.register.mock.calls[0]![0] as {
+    beforeLocalDataDelete: () => Promise<void>;
+    afterLocalDataDelete: () => Promise<void>;
+  };
+  await lifecycle.beforeLocalDataDelete();
+  await lifecycle.afterLocalDataDelete();
+  mockActivityService();
+  finish(activeStudySnapshot());
+  await rejected;
+  expect(mocks.createDictationHost).not.toHaveBeenCalled();
+});
+it('authenticates only fixed dictation routes and rejects offline or foreign native commands', async () => {
+  mockActivityService('offline-local');
+  await import('../src/main');
+  await vi.waitFor(() => expect(mocks.windows).toBe(1));
+  const start = mocks.ipcHandlers.get('scholar:native:startDictation')!;
+  expect(start).toBeTypeOf('function');
+  await expect(start(activityEvent(), dictationInput())).rejects.toThrow(
+    'Reconnect',
+  );
+  expect(mocks.startDictation).not.toHaveBeenCalled();
+  mockActivityService();
+  await start(activityEvent(), dictationInput());
+  await mocks.dictationDependencies!.authorizedFetch('/api/dictation', {
+    method: 'POST',
+    body: '{}',
+  });
+  expect(mocks.fetch).toHaveBeenCalledWith(
+    'https://account.example/api/dictation',
+    expect.objectContaining({
+      redirect: 'error',
+      credentials: 'omit',
+      cache: 'no-store',
+    }),
+  );
+  const request = mocks.fetch.mock.calls[0]![1] as RequestInit;
+  expect(new Headers(request.headers).get('cookie')).toBe('test-session-a');
+  await expect(
+    mocks.dictationDependencies!.authorizedFetch(
+      'https://outside.example' as never,
+      { method: 'POST' },
+    ),
+  ).rejects.toThrow();
+  const foreign = {
+    ...activityEvent(),
+    sender: { ...activityEvent().sender, id: 2 },
+  };
+  for (const method of [
+    'appendDictationAudio',
+    'stopDictation',
+    'cancelDictation',
+  ]) {
+    const invoke = mocks.ipcHandlers.get(`scholar:native:${method}`)!;
+    await expect(
+      invoke(foreign, {
+        operationId: 'dictation-a',
+        sequence: 0,
+        bytes: new Uint8Array(2),
+      }),
+    ).rejects.toThrow();
+  }
+});
+it('awaits dictation settlement before local data deletion and closes native admission until released', async () => {
+  mockActivityService();
+  await import('../src/main');
+  await vi.waitFor(() => expect(mocks.windows).toBe(1));
+  const start = mocks.ipcHandlers.get('scholar:native:startDictation')!;
+  expect(start).toBeTypeOf('function');
+  await start(activityEvent(), dictationInput());
+  let finish!: () => void;
+  mocks.disposeDictation.mockImplementationOnce(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const lifecycle = mocks.register.mock.calls[0]![0] as {
+    beforeLocalDataDelete: () => Promise<void>;
+    afterLocalDataDelete: () => Promise<void>;
+  };
+  let settled = false;
+  const deleting = lifecycle.beforeLocalDataDelete().then(() => {
+    settled = true;
+  });
+  await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+  await expect(start(activityEvent(), dictationInput())).rejects.toThrow();
+  expect(settled).toBe(false);
+  finish();
+  await deleting;
+  await expect(start(activityEvent(), dictationInput())).rejects.toThrow();
+  await lifecycle.afterLocalDataDelete();
+  await expect(start(activityEvent(), dictationInput())).resolves.toEqual({
+    operationId: 'dictation-a',
+  });
 });
 it('mounts a native activity contract with host-derived offline read-only and rejects hostile senders', async () => {
   mockActivityService('offline-local');

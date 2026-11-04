@@ -4,6 +4,7 @@ import {
   BrowserWindow,
   dialog,
   ipcMain,
+  net,
   Notification,
   systemPreferences,
   webContents,
@@ -13,6 +14,17 @@ import { pathToFileURL } from 'node:url';
 import started from 'electron-squirrel-startup';
 import { mkdirSync } from 'node:fs';
 import { z } from 'zod';
+import {
+  dictationAudioChunkSchema,
+  dictationEventSchema,
+  dictationStartInputSchema,
+} from '@scholaros/services/learning/speech-contracts';
+import { clientEnv } from './data/env/client';
+import {
+  createDictationHostAdapter,
+  type DictationHostAdapter,
+  type DictationHostScope,
+} from './services/academic/dictation-host-adapter';
 import {
   idSchema,
   jsonValueSchema,
@@ -133,6 +145,307 @@ const requireActiveStudySession = async (
     throw new Error('Open an active study session to use this feature.');
 };
 
+let nativeAdmissionBlocks = 0;
+const assertNativeAdmission = () => {
+  if (nativeAdmissionBlocks > 0)
+    throw new Error('Native work is being closed; try again afterward.');
+};
+
+type NativeDictationScope = {
+  event: Electron.IpcMainInvokeEvent;
+  window: BrowserWindow;
+  frame: Electron.WebFrameMain | null;
+  user: TrustedOnlineServiceUser;
+  sessionId: string;
+  composerRevision: number;
+  sessionEpoch: number;
+  epoch: number;
+  host: DictationHostAdapter;
+  operationId?: string;
+  ended: boolean;
+};
+let dictationEpoch = 0;
+let dictationStarting = false;
+let dictationScope: NativeDictationScope | null = null;
+let dictationDisposal: Promise<void> = Promise.resolve();
+
+const assertDictationDocument = (scope: NativeDictationScope) => {
+  if (
+    dictationScope !== scope ||
+    scope.epoch !== dictationEpoch ||
+    requireTrustedSender(scope.event) !== scope.window ||
+    scope.event.sender !== scope.window.webContents ||
+    scope.event.senderFrame !== scope.frame ||
+    scope.window.webContents.mainFrame !== scope.frame ||
+    closingActivityWindows.has(scope.window) ||
+    !isTrustedWebContents(scope.event.sender) ||
+    !isAccountSessionCurrent(scope.user.cookie) ||
+    (process.platform === 'darwin' &&
+      systemPreferences.getMediaAccessStatus('microphone') !== 'granted')
+  )
+    throw new Error('Your dictation session changed; start again.');
+};
+
+const isDictationCurrent = async (
+  scope: NativeDictationScope,
+  claimed: DictationHostScope,
+) => {
+  try {
+    assertDictationDocument(scope);
+    if (
+      claimed.accountId !== scope.user.id ||
+      claimed.senderId !== scope.event.sender.id ||
+      claimed.sessionId !== scope.sessionId ||
+      claimed.composerRevision !== scope.composerRevision ||
+      (scope.operationId !== undefined &&
+        claimed.operationId !== scope.operationId)
+    )
+      return false;
+    await requireSameTrustedOnlineServiceUser(scope.event, scope.user);
+    const snapshot = sessionSnapshotSchema.parse(
+      await requestAcademicService('getStudySession', {
+        sessionId: scope.sessionId,
+      }),
+    );
+    assertDictationDocument(scope);
+    await requireSameTrustedOnlineServiceUser(scope.event, scope.user);
+    assertDictationDocument(scope);
+    return (
+      snapshot.session.id === scope.sessionId &&
+      snapshot.session.status === 'in-progress' &&
+      snapshot.session.generationEpoch === scope.sessionEpoch
+    );
+  } catch {
+    return false;
+  }
+};
+
+const disposeDictationHost = () => {
+  dictationEpoch += 1;
+  const scope = dictationScope;
+  dictationScope = null;
+  if (scope)
+    dictationDisposal = Promise.all([
+      dictationDisposal,
+      scope.host.dispose(),
+    ]).then(() => undefined);
+  return dictationDisposal;
+};
+
+const dictationOperationSchema = z.strictObject({ operationId: idSchema });
+export type DictationOperationSchema = z.infer<typeof dictationOperationSchema>;
+
+const requireDictationScope = async (
+  event: Electron.IpcMainInvokeEvent,
+  operationId: string,
+) => {
+  const window = requireTrustedSender(event);
+  const scope = dictationScope;
+  if (
+    !scope ||
+    scope.ended ||
+    scope.operationId !== operationId ||
+    scope.window !== window ||
+    scope.event.sender !== event.sender ||
+    scope.frame !== event.senderFrame
+  )
+    throw new Error('This dictation is unavailable.');
+  if (
+    !(await isDictationCurrent(scope, {
+      accountId: scope.user.id,
+      senderId: event.sender.id,
+      sessionId: scope.sessionId,
+      composerRevision: scope.composerRevision,
+      operationId,
+    }))
+  )
+    throw new Error('Your dictation session changed; start again.');
+  return scope;
+};
+
+const registerDictationIpc = () => {
+  ipcMain.handle(
+    'scholar:native:startDictation',
+    async (event, input: unknown) => {
+      const window = requireTrustedSender(event);
+      assertNativeAdmission();
+      const parsed = dictationStartInputSchema.parse(input);
+      if (dictationStarting) throw new Error('A dictation is already active.');
+      dictationStarting = true;
+      try {
+        let epoch = dictationEpoch;
+        const frame = event.senderFrame;
+        const user = await requireTrustedOnlineServiceUser(event);
+        await dictationDisposal;
+        assertNativeAdmission();
+        if (epoch !== dictationEpoch || frame !== event.sender.mainFrame)
+          throw new Error('Your dictation session changed; start again.');
+        if (dictationScope && !dictationScope.ended)
+          throw new Error('A dictation is already active.');
+        if (dictationScope) {
+          await disposeDictationHost();
+          epoch = dictationEpoch;
+        }
+        await requireActiveStudySession(event, user, parsed.sessionId);
+        const snapshot = sessionSnapshotSchema.parse(
+          await requestAcademicService('getStudySession', {
+            sessionId: parsed.sessionId,
+          }),
+        );
+        assertNativeAdmission();
+        await requireSameTrustedOnlineServiceUser(event, user);
+        if (
+          epoch !== dictationEpoch ||
+          frame !== event.sender.mainFrame ||
+          snapshot.session.status !== 'in-progress'
+        )
+          throw new Error('Your dictation session changed; start again.');
+        if (
+          process.platform === 'darwin' &&
+          systemPreferences.getMediaAccessStatus('microphone') !== 'granted'
+        )
+          throw new Error('Allow microphone access before starting dictation.');
+        const scope: NativeDictationScope = {
+          event,
+          window,
+          frame,
+          user,
+          sessionId: parsed.sessionId,
+          composerRevision: parsed.composerRevision,
+          sessionEpoch: snapshot.session.generationEpoch,
+          epoch: dictationEpoch,
+          host: null!,
+          ended: false,
+        };
+        scope.host = createDictationHostAdapter({
+          isCurrent: (claimed) => isDictationCurrent(scope, claimed),
+          authorizedFetch: async (requestPath, init) => {
+            const base = new URL(clientEnv.VITE_API_URL);
+            const url = new URL(requestPath, base);
+            const method = init.method ?? 'GET';
+            const operationId = url.searchParams.get('operationId');
+            const valid =
+              url.origin === base.origin &&
+              !url.hash &&
+              !url.username &&
+              !url.password &&
+              ((requestPath === '/api/dictation' && method === 'POST') ||
+                (requestPath === '/api/dictation/control' &&
+                  method === 'POST') ||
+                ([
+                  '/api/dictation/audio',
+                  '/api/dictation/events',
+                  '/api/dictation/control',
+                ].includes(url.pathname) &&
+                  operationId !== null &&
+                  [...url.searchParams.keys()].length === 1 &&
+                  operationId === scope.operationId &&
+                  ((url.pathname.endsWith('/audio') && method === 'PUT') ||
+                    (url.pathname.endsWith('/events') && method === 'GET') ||
+                    (url.pathname.endsWith('/control') &&
+                      method === 'DELETE'))));
+            if (!valid) throw new Error('The dictation route is invalid.');
+            // Teardown can cancel only this captured account, never the new account's cookie.
+            const cancelling = url.pathname === '/api/dictation/control';
+            if (!cancelling) assertDictationDocument(scope);
+            const headers = new Headers(init.headers);
+            headers.set('cookie', user.cookie);
+            headers.set('origin', base.origin);
+            const response = await net.fetch(url.href, {
+              ...init,
+              headers,
+              redirect: 'error',
+              credentials: 'omit',
+              cache: 'no-store',
+            });
+            if (response.redirected) {
+              await response.body?.cancel().catch(() => undefined);
+              throw new Error('The dictation route redirected.');
+            }
+            if (!cancelling) {
+              try {
+                assertDictationDocument(scope);
+              } catch (error) {
+                await response.body?.cancel().catch(() => undefined);
+                throw error;
+              }
+            }
+            return response;
+          },
+          publishEvent: (senderId, value) => {
+            try {
+              assertDictationDocument(scope);
+              const change = dictationEventSchema.parse(value);
+              if (
+                senderId !== event.sender.id ||
+                change.operationId !== scope.operationId ||
+                change.sessionId !== scope.sessionId ||
+                change.composerRevision !== scope.composerRevision
+              )
+                return;
+              event.sender.send('scholar:native:dictationEvent', change);
+              if (change.kind === 'ended') scope.ended = true;
+            } catch {
+              // Navigation or identity changes cannot receive a transcript.
+            }
+          },
+        });
+        dictationScope = scope;
+        try {
+          const started = await scope.host.startDictation(parsed, {
+            accountId: user.id,
+            senderId: event.sender.id,
+          });
+          assertNativeAdmission();
+          assertDictationDocument(scope);
+          scope.operationId = idSchema.parse(started.operationId);
+          return { operationId: scope.operationId };
+        } catch (error) {
+          if (dictationScope === scope) await disposeDictationHost();
+          throw error;
+        }
+      } finally {
+        dictationStarting = false;
+      }
+    },
+  );
+  ipcMain.handle(
+    'scholar:native:appendDictationAudio',
+    async (event, input: unknown) => {
+      requireTrustedSender(event);
+      assertNativeAdmission();
+      const parsed = dictationAudioChunkSchema.parse(input);
+      const scope = await requireDictationScope(event, parsed.operationId);
+      return scope.host.appendDictationAudio(parsed, {
+        accountId: scope.user.id,
+        senderId: event.sender.id,
+      });
+    },
+  );
+  ipcMain.handle(
+    'scholar:native:stopDictation',
+    async (event, input: unknown) => {
+      requireTrustedSender(event);
+      const parsed = dictationOperationSchema.parse(input);
+      const scope = await requireDictationScope(event, parsed.operationId);
+      await scope.host.stopDictation(parsed, {
+        accountId: scope.user.id,
+        senderId: event.sender.id,
+      });
+    },
+  );
+  ipcMain.handle(
+    'scholar:native:cancelDictation',
+    async (event, input: unknown) => {
+      requireTrustedSender(event);
+      const parsed = dictationOperationSchema.parse(input);
+      const scope = await requireDictationScope(event, parsed.operationId);
+      await disposeDictationHost();
+      scope.ended = true;
+    },
+  );
+};
+
 const activityBoundsSchema = z.strictObject({
   x: z.number().finite(),
   y: z.number().finite(),
@@ -245,6 +558,23 @@ const disposeActivityManager = () => {
       () => undefined,
     );
   return activityDisposal;
+};
+
+const disposeNativeOwners = async () => {
+  nativeAdmissionBlocks += 1;
+  try {
+    const results = await Promise.allSettled([
+      disposeDictationHost(),
+      disposeActivityManager(),
+    ]);
+    const failures = results.flatMap((result) =>
+      result.status === 'rejected' ? [result.reason] : [],
+    );
+    if (failures.length > 0)
+      throw new AggregateError(failures, 'Native work could not close.');
+  } finally {
+    nativeAdmissionBlocks -= 1;
+  }
 };
 
 const reportActivityTeardownFailure = () =>
@@ -519,6 +849,7 @@ const registerActivityIpc = () => {
     'scholar:native:mountActivity',
     async (event, input: unknown) => {
       const hostWindow = requireTrustedSender(event);
+      assertNativeAdmission();
       const selection = mountActivitySchema.parse(input);
       const epoch = activityEpoch;
       const frame = event.senderFrame;
@@ -529,6 +860,7 @@ const registerActivityIpc = () => {
       );
       const operation = activityMountQueue.then(async () => {
         await activityDisposal;
+        assertNativeAdmission();
         const user = await getActivityUser(event);
         if (user.cookie !== cookie)
           throw new Error('Your session changed; reopen the activity.');
@@ -624,8 +956,10 @@ const registerActivityIpc = () => {
 
 const registerTrustedNativeIpc = () => {
   registerActivityIpc();
+  registerDictationIpc();
   ipcMain.handle('scholar:native:chooseContextFiles', async (event, input) => {
     const hostWindow = requireTrustedSender(event);
+    assertNativeAdmission();
     const selection = contextFileSelectionSchema.parse(input);
     const user = await requireTrustedOnlineServiceUser(event);
     if (selection.sessionId)
@@ -640,6 +974,7 @@ const registerTrustedNativeIpc = () => {
       await requireActiveStudySession(event, user, selection.sessionId);
     if (selected.canceled || selected.filePaths.length === 0)
       return { items: [], cancelled: true };
+    assertNativeAdmission();
     if (selected.filePaths.length > 8)
       throw new Error('Choose no more than eight files.');
     const result = await requestAcademicService(
@@ -659,6 +994,7 @@ const registerTrustedNativeIpc = () => {
     'scholar:native:requestMicrophonePermission',
     async (event, input) => {
       requireTrustedSender(event);
+      assertNativeAdmission();
       const { sessionId } = requestMicrophonePermissionSchema.parse(input);
       const user = await requireTrustedOnlineServiceUser(event);
       await requireActiveStudySession(event, user, sessionId);
@@ -697,7 +1033,7 @@ if (!started && !serviceMode && !app.commandLine.hasSwitch('migrate-db')) {
   });
   ipcMain.handle('better-auth:requestAuth', async (event) => {
     requireTrustedSender(event);
-    await disposeActivityManager();
+    await disposeNativeOwners();
     requireTrustedSender(event);
     const result = await authClient.requestAuth();
     requireTrustedSender(event);
@@ -739,7 +1075,7 @@ const createWindow = () => {
     if (closing) return;
     closing = true;
     closingActivityWindows.add(mainWindow);
-    void disposeActivityManager()
+    void disposeNativeOwners()
       .then(() => {
         allowClose = true;
         if (!mainWindow.isDestroyed()) mainWindow.close();
@@ -752,7 +1088,7 @@ const createWindow = () => {
   });
   mainWindow.once('closed', () => {
     closingActivityWindows.add(mainWindow);
-    void disposeActivityManager().catch(reportActivityTeardownFailure);
+    void disposeNativeOwners().catch(reportActivityTeardownFailure);
   });
 
   if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
@@ -788,8 +1124,10 @@ app
       return;
     }
     await registerAcademicClient({
-      onIdentityChange: disposeActivityManager,
+      onIdentityChange: disposeNativeOwners,
       beforeSessionDelete: async (sessionId) => {
+        if (dictationScope?.sessionId === sessionId)
+          await disposeDictationHost();
         if (
           pendingActivitySessions.has(sessionId) ||
           [...activityScopes.values()].some(
@@ -798,7 +1136,14 @@ app
         )
           await disposeActivityManager();
       },
-      beforeDisconnect: disposeActivityManager,
+      beforeDisconnect: disposeNativeOwners,
+      beforeLocalDataDelete: async () => {
+        nativeAdmissionBlocks += 1;
+        await disposeNativeOwners();
+      },
+      afterLocalDataDelete: async () => {
+        nativeAdmissionBlocks = Math.max(0, nativeAdmissionBlocks - 1);
+      },
     });
     createWindow();
 
@@ -829,7 +1174,7 @@ app.on('before-quit', (event) => {
   event.preventDefault();
   quitting = true;
   void (async () => {
-    await disposeActivityManager();
+    await disposeNativeOwners();
     if (keepService) await disconnectAcademicService();
     else await stopAcademicService();
     app.quit();
@@ -841,7 +1186,7 @@ app.on('before-quit', (event) => {
 
 app.on('window-all-closed', () => {
   if (serviceMode || quitting) return;
-  void disposeActivityManager()
+  void disposeNativeOwners()
     .then(() => requestAcademicService('getState'))
     .then((state) => {
       const currentState = state as {
