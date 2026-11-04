@@ -80,6 +80,7 @@ const practiceAnswerKeySchema = z.array(
     }),
   ]),
 );
+export type PracticeAnswerKeySchema = z.infer<typeof practiceAnswerKeySchema>;
 
 type PracticeAnswerKey = z.infer<typeof practiceAnswerKeySchema>;
 
@@ -131,6 +132,9 @@ const createPracticeAttemptInputSchema = z
         message: 'Every question objective must belong to the attempt.',
       });
   });
+export type CreatePracticeAttemptInputSchema = z.infer<
+  typeof createPracticeAttemptInputSchema
+>;
 
 const savePracticeAnswerInputSchema = z.strictObject({
   attemptId: idSchema,
@@ -139,23 +143,35 @@ const savePracticeAnswerInputSchema = z.strictObject({
   value: jsonValueSchema,
   requestId: requestIdSchema,
 });
+export type SavePracticeAnswerInputSchema = z.infer<
+  typeof savePracticeAnswerInputSchema
+>;
 
 const submitPracticeAttemptInputSchema = z.strictObject({
   attemptId: idSchema,
   expectedRevision: revisionSchema,
   requestId: requestIdSchema,
 });
+export type SubmitPracticeAttemptInputSchema = z.infer<
+  typeof submitPracticeAttemptInputSchema
+>;
 
 const switchPracticeToGuidedInputSchema = z.strictObject({
   attemptId: idSchema,
   expectedRevision: revisionSchema,
   requestId: requestIdSchema,
 });
+export type SwitchPracticeToGuidedInputSchema = z.infer<
+  typeof switchPracticeToGuidedInputSchema
+>;
 
 const retryPracticeAttemptInputSchema = z.strictObject({
   attemptId: idSchema,
   requestId: requestIdSchema,
 });
+export type RetryPracticeAttemptInputSchema = z.infer<
+  typeof retryPracticeAttemptInputSchema
+>;
 
 const savePracticeEvaluationsInputSchema = z.strictObject({
   attemptId: idSchema,
@@ -171,6 +187,9 @@ const savePracticeEvaluationsInputSchema = z.strictObject({
     .min(1)
     .max(20),
 });
+export type SavePracticeEvaluationsInputSchema = z.infer<
+  typeof savePracticeEvaluationsInputSchema
+>;
 
 const stableJson = (value: unknown): string => {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;

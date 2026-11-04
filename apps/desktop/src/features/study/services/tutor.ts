@@ -53,6 +53,7 @@ export const sendStudyTurnInputSchema = z
   .refine(
     (input) => input.text.trim().length > 0 || input.attachmentIds.length > 0,
   );
+export type SendStudyTurnInputSchema = z.infer<typeof sendStudyTurnInputSchema>;
 export type SendStudyTurnInput = z.infer<typeof sendStudyTurnInputSchema>;
 
 export const retryStudyTurnInputSchema = z.strictObject({
@@ -60,12 +61,18 @@ export const retryStudyTurnInputSchema = z.strictObject({
   turnId: idSchema,
   requestId: requestIdSchema,
 });
+export type RetryStudyTurnInputSchema = z.infer<
+  typeof retryStudyTurnInputSchema
+>;
 export type RetryStudyTurnInput = z.infer<typeof retryStudyTurnInputSchema>;
 
 export const cancelStudyTurnInputSchema = z.strictObject({
   sessionId: idSchema,
   turnId: idSchema,
 });
+export type CancelStudyTurnInputSchema = z.infer<
+  typeof cancelStudyTurnInputSchema
+>;
 export type CancelStudyTurnInput = z.infer<typeof cancelStudyTurnInputSchema>;
 
 export type BeginStudyTurnRequest =

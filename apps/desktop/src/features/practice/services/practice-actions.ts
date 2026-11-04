@@ -53,6 +53,9 @@ export const practiceAttemptCreationInputSchema = z
         message: 'Per-answer feedback is unavailable for practice exams.',
       });
   });
+export type PracticeAttemptCreationInputSchema = z.infer<
+  typeof practiceAttemptCreationInputSchema
+>;
 
 export type PracticeAttemptCreationInput = z.infer<
   typeof practiceAttemptCreationInputSchema

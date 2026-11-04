@@ -113,6 +113,9 @@ const notificationDeliveryCommandSchema = z.discriminatedUnion('operation', [
   z.strictObject({ operation: z.literal('get-permission'), userId: idSchema }),
   z.strictObject({ operation: z.literal('clear-account'), userId: idSchema }),
 ]);
+export type NotificationDeliveryCommandSchema = z.infer<
+  typeof notificationDeliveryCommandSchema
+>;
 export type NotificationDeliveryCommand = z.infer<
   typeof notificationDeliveryCommandSchema
 >;

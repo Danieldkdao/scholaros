@@ -156,26 +156,31 @@ const listSessionsInput = z.strictObject({
   ...pageInputSchema.shape,
   status: z.enum(studySessionStatuses).optional(),
 });
+export type ListSessionsInputSchema = z.infer<typeof listSessionsInput>;
 const getSessionInput = z.strictObject({
   sessionId: z.string().min(1).max(300),
   beforeSequence: z.number().int().nonnegative().safe().optional(),
   limit: z.number().int().min(1).max(100).optional(),
 });
+export type GetSessionInputSchema = z.infer<typeof getSessionInput>;
 const renameSessionInput = z.strictObject({
   sessionId: z.string().min(1).max(300),
   title: z.string().trim().min(1).max(160),
   expectedRevision: z.number().int().nonnegative().safe(),
 });
+export type RenameSessionInputSchema = z.infer<typeof renameSessionInput>;
 const saveDraftInput = z.strictObject({
   sessionId: z.string().min(1).max(300),
   text: z.string().max(8000),
   expectedDraftRevision: z.number().int().nonnegative().safe(),
 });
+export type SaveDraftInputSchema = z.infer<typeof saveDraftInput>;
 const deleteSessionInput = z.strictObject({
   sessionId: z.string().min(1).max(300),
   expectedRevision: z.number().int().nonnegative().safe(),
   requestId: z.uuid(),
 });
+export type DeleteSessionInputSchema = z.infer<typeof deleteSessionInput>;
 const beginTurnInput = z.strictObject({
   sessionId: z.string().min(1).max(300),
   requestId: z.uuid(),
@@ -183,6 +188,7 @@ const beginTurnInput = z.strictObject({
   text: z.string().max(8000),
   attachmentIds: z.array(z.string().min(1).max(300)).max(8),
 });
+export type BeginTurnInputSchema = z.infer<typeof beginTurnInput>;
 const commitTurnInput = z.strictObject({
   turnId: z.string().min(1).max(300),
   generationEpoch: z.number().int().nonnegative().safe(),
@@ -193,6 +199,7 @@ const commitTurnInput = z.strictObject({
   gradeDerived: z.boolean(),
   gradeConsentRevision: z.number().int().nonnegative().safe().nullable(),
 });
+export type CommitTurnInputSchema = z.infer<typeof commitTurnInput>;
 const appendTurnPartsInput = z.strictObject({
   sessionId: z.string().min(1).max(300),
   turnId: z.string().min(1).max(300),
@@ -200,19 +207,26 @@ const appendTurnPartsInput = z.strictObject({
   idempotencyKey: z.string().min(1).max(1000),
   parts: z.unknown(),
 });
+export type AppendTurnPartsInputSchema = z.infer<typeof appendTurnPartsInput>;
 const appendTurnPartsSchema = z.array(studyMessagePartSchema).min(1).max(100);
+export type AppendTurnPartsSchema = z.infer<typeof appendTurnPartsSchema>;
 const settleTurnInput = z.strictObject({
   turnId: z.string().min(1).max(300),
   status: z.enum(['failed', 'cancelled']),
   errorCode: safeErrorCodeSchema.optional(),
 });
+export type SettleTurnInputSchema = z.infer<typeof settleTurnInput>;
 const updateTurnStatusInput = z.strictObject({
   turnId: z.string().min(1).max(300),
   status: z.enum(['generating', 'checking']),
 });
+export type UpdateTurnStatusInputSchema = z.infer<typeof updateTurnStatusInput>;
 const purgeGradeContentInput = z.strictObject({
   consentRevision: z.number().int().nonnegative().safe(),
 });
+export type PurgeGradeContentInputSchema = z.infer<
+  typeof purgeGradeContentInput
+>;
 
 const sha256 = (value: string) =>
   createHash('sha256').update(value).digest('hex');

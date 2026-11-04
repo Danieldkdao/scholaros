@@ -23,6 +23,7 @@ const offlineGrantSchema = z.strictObject({
   authenticatedAt: z.number().int().nonnegative().safe(),
   expiresAt: z.number().int().nonnegative().safe(),
 });
+export type OfflineGrantSchema = z.infer<typeof offlineGrantSchema>;
 
 type OfflineGrant = z.infer<typeof offlineGrantSchema>;
 const maxAgeMs = 7 * 24 * 60 * 60 * 1000;
