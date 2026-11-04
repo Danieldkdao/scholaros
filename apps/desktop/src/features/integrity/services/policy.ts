@@ -845,6 +845,37 @@ const validateCandidateEffects = (
       return 'scope-denied';
     const kind = effect.kind ?? effect.type;
     if (kind === 'retrieve-source') {
+      if (Object.hasOwn(effect, 'references')) {
+        const selectors = z
+          .array(
+            sourceReferenceSchema.pick({
+              sourceKind: true,
+              sourceId: true,
+              versionId: true,
+              locator: true,
+            }),
+          )
+          .min(1)
+          .max(20)
+          .safeParse(effect.references);
+        if (
+          !selectors.success ||
+          selectors.data.some(
+            (selector) =>
+              !references.some(
+                (reference) =>
+                  reference.state === 'current' &&
+                  reference.sourceKind === selector.sourceKind &&
+                  reference.sourceId === selector.sourceId &&
+                  reference.versionId === selector.versionId &&
+                  JSON.stringify(reference.locator) ===
+                    JSON.stringify(selector.locator),
+              ),
+          )
+        )
+          return 'scope-denied';
+        continue;
+      }
       const sourceId = effect.sourceId ?? effect.id;
       if (
         typeof sourceId !== 'string' ||

@@ -327,6 +327,50 @@ beforeEach(() => {
 });
 
 describe('coursework assistance policy', () => {
+  it('assesses actual P18 source selectors and denies an unoffered selector version', () => {
+    const reference = createAssignmentReference();
+    const policy = resolveAssistancePolicy(context(), {
+      sessionId,
+      targetAssignmentId: assignmentId,
+      sourceIds: [assignmentId],
+    });
+    setTurn('turn-selector', sessionId, policy.policyRevision);
+    const selector = {
+      sourceKind: reference.sourceKind,
+      sourceId: reference.sourceId,
+      versionId: reference.versionId,
+      locator: reference.locator,
+    };
+    const input = {
+      sessionId,
+      turnId: 'turn-selector',
+      policy,
+      sourceReferences: [reference],
+      candidate: {
+        parts: [{ kind: 'text', text: 'Read the stated requirements.' }],
+        proposedEffects: [{ kind: 'retrieve-source', references: [selector] }],
+      },
+    };
+    expect(assessCandidate(context(), input)).toMatchObject({
+      allowed: true,
+      reasonCode: 'approved',
+    });
+    expect(
+      assessCandidate(context(), {
+        ...input,
+        candidate: {
+          ...input.candidate,
+          proposedEffects: [
+            {
+              kind: 'retrieve-source',
+              references: [{ ...selector, versionId: 'unoffered-version' }],
+            },
+          ],
+        },
+      }),
+    ).toMatchObject({ allowed: false, reasonCode: 'scope-denied' });
+  });
+
   it('allows completed-work review only with current consent, an actual zero grade, and no opportunity', () => {
     const policy = resolveAssistancePolicy(context(), {
       sessionId,
