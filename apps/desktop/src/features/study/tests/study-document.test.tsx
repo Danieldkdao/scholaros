@@ -501,7 +501,7 @@ describe('StudyDocument', () => {
     expect(container.textContent).toContain('Understand a topic');
     expect(container.textContent).toContain('In progress');
     expect(
-      container.querySelector('a[href="/dashboard/study"]'),
+      container.querySelector('button[aria-label="Leave study session"]'),
     ).not.toBeNull();
   });
 
@@ -1642,4 +1642,30 @@ describe('useStudySession account and session fences', () => {
     expect(currentBridge.continueStudyUntimed).not.toHaveBeenCalled();
     expect(currentBridge.chooseContextFiles).not.toHaveBeenCalled();
   });
+});
+
+it('places a destructive leave control on the right and confirms that saved work is kept', async () => {
+  const currentBridge = bridge();
+  const { container } = await mountDocument({}, currentBridge);
+  await vi.waitFor(() => expect(container.querySelector('h1')).not.toBeNull());
+  const header = container.querySelector('header')!;
+  const leave = header.querySelector<HTMLButtonElement>(
+    'button[aria-label="Leave study session"]',
+  );
+  expect(leave).not.toBeNull();
+  expect(header.lastElementChild?.contains(leave)).toBe(true);
+  expect(leave?.className).toContain('destructive');
+  expect(container.querySelector('a[href="/dashboard/study"]')).toBeNull();
+  await act(async () => leave!.click());
+  const dialog = document.querySelector('[role="alertdialog"]');
+  expect(dialog?.textContent).toContain('nothing is deleted');
+  expect(dialog?.querySelector('a[href="/dashboard/study"]')).not.toBeNull();
+  const cancel = [
+    ...dialog!.querySelectorAll<HTMLButtonElement>('button'),
+  ].find((button) => button.textContent === 'Stay in session');
+  await act(async () => cancel!.click());
+  expect(document.querySelector('[role="alertdialog"]')).toBeNull();
+  expect(container.querySelector('h1')?.textContent).toBe(
+    'Cell biology review',
+  );
 });

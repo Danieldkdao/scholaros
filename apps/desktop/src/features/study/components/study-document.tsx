@@ -23,6 +23,16 @@ import type {
 import type { SourceReference } from '@scholaros/services/learning/context-contracts';
 import { Button } from '@scholaros/ui/components/button';
 import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogCancel,
+} from '@scholaros/ui/components/alert-dialog';
+import { useConfirm } from '../../../hooks/use-confirm';
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -80,6 +90,7 @@ type PracticeViewProps = {
 type ProgressSummaryProps = {
   accountId: string;
   courseId?: string;
+  variant?: 'card' | 'embedded';
 };
 export type StudyDocumentRenderers = {
   ActivityHost?: ComponentType<ActivityHostProps>;
@@ -187,7 +198,7 @@ const activityKey = (
 
 const LoadingStudyDocument = () => (
   <main className="flex h-full min-h-0 flex-col bg-background text-foreground">
-    <header className="flex shrink-0 items-center gap-3 border-b p-4">
+    <header className="flex shrink-0 items-center justify-end gap-3 border-b p-4">
       <Skeleton className="size-9 rounded-md" />
       <div className="flex min-w-0 flex-1 flex-col gap-2">
         <Skeleton className="h-6 w-56 max-w-full" />
@@ -212,6 +223,51 @@ const LoadingStudyDocument = () => (
   </main>
 );
 
+const LeaveSessionButton = () => {
+  const confirmation = useConfirm<boolean>();
+  return (
+    <>
+      <Button
+        type="button"
+        variant="destructive"
+        aria-label="Leave study session"
+        onClick={() => confirmation.request(true)}
+      >
+        <ArrowLeftIcon aria-hidden="true" />
+        <span>Leave session</span>
+      </Button>
+      <AlertDialog
+        open={confirmation.pending !== null}
+        onOpenChange={(open) => {
+          if (!open) confirmation.cancel();
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Leave this study session?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Your saved session, messages, and materials are kept; nothing is
+              deleted. Return from Study history whenever you are ready. A
+              running timer continues until its deadline.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Stay in session</AlertDialogCancel>
+            <Button
+              nativeButton={false}
+              render={<Link to="/dashboard/study" />}
+              variant="destructive"
+              aria-label="Confirm leave study session"
+            >
+              Leave session
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
+  );
+};
+
 const SessionLoadError = ({
   code,
   onRetry,
@@ -220,16 +276,8 @@ const SessionLoadError = ({
   onRetry: () => void;
 }) => (
   <main className="flex h-full min-h-0 flex-col bg-background text-foreground">
-    <header className="flex shrink-0 items-center gap-3 border-b p-4">
-      <Button
-        nativeButton={false}
-        render={<Link to="/dashboard/study" />}
-        variant="ghost"
-        aria-label="Leave study session"
-      >
-        <ArrowLeftIcon aria-hidden="true" />
-        <span>Leave session</span>
-      </Button>
+    <header className="flex shrink-0 items-center justify-end gap-3 border-b p-4">
+      <LeaveSessionButton />
     </header>
     <Empty role="alert" className="min-h-0 flex-1 border-0 p-6">
       <EmptyMedia variant="icon">
@@ -483,18 +531,9 @@ export const StudyDocument = ({
   );
 
   return (
-    <main className="flex h-full min-h-0 w-full flex-col bg-background text-foreground">
+    <main className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-background text-foreground">
       <header className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b bg-background px-4 py-3">
         <div className="flex min-w-0 flex-1 items-center gap-3">
-          <Button
-            nativeButton={false}
-            render={<Link to="/dashboard/study" />}
-            variant="ghost"
-            aria-label="Leave study session"
-          >
-            <ArrowLeftIcon aria-hidden="true" />
-            <span>Leave session</span>
-          </Button>
           <div className="flex min-w-0 flex-col gap-1">
             <h1 className="truncate text-lg font-semibold">{session.title}</h1>
             <div className="flex min-w-0 flex-wrap items-center gap-2 text-base text-muted-foreground">
@@ -559,6 +598,7 @@ export const StudyDocument = ({
               </Button>
             </TooltipWrapper>
           )}
+          <LeaveSessionButton />
         </div>
       </header>
       {readOnly && (
@@ -592,35 +632,38 @@ export const StudyDocument = ({
       )}
       <section
         aria-label="Study conversation"
-        className="flex min-h-0 flex-1 flex-col"
+        className="flex min-h-0 flex-1 flex-col overflow-hidden"
       >
         <ActivityPanel key={`${accountId}:${sessionId}`} className="flex-1">
           {conversation}
         </ActivityPanel>
       </section>
-      <StudyComposer
-        key={`${accountId}:${sessionId}:composer`}
-        sessionId={sessionId}
-        initialDraft={session.draft}
-        offline={study.offline}
-        readOnly={readOnly}
-        activeTurn={snapshot.activeTurn}
-        failedTurnId={failedTurnMessage?.turnId ?? null}
-        attachmentRevision={snapshot.revision}
-        onSaveDraft={study.saveDraft}
-        onSend={study.sendTurn}
-        onStop={async () => {
-          if (snapshot.activeTurn) await study.stopTurn(snapshot.activeTurn.id);
-        }}
-        onRetry={study.retryTurn}
-        onAddAttachments={study.addAttachments}
-        onRefreshAttachment={study.refreshAttachment}
-        renderDictation={
-          DictationControl
-            ? (props) => <DictationControl {...props} />
-            : undefined
-        }
-      />
+      <div className="sticky bottom-0 z-10 shrink-0 bg-background">
+        <StudyComposer
+          key={`${accountId}:${sessionId}:composer`}
+          sessionId={sessionId}
+          initialDraft={session.draft}
+          offline={study.offline}
+          readOnly={readOnly}
+          activeTurn={snapshot.activeTurn}
+          failedTurnId={failedTurnMessage?.turnId ?? null}
+          attachmentRevision={snapshot.revision}
+          onSaveDraft={study.saveDraft}
+          onSend={study.sendTurn}
+          onStop={async () => {
+            if (snapshot.activeTurn)
+              await study.stopTurn(snapshot.activeTurn.id);
+          }}
+          onRetry={study.retryTurn}
+          onAddAttachments={study.addAttachments}
+          onRefreshAttachment={study.refreshAttachment}
+          renderDictation={
+            DictationControl
+              ? (props) => <DictationControl {...props} />
+              : undefined
+          }
+        />
+      </div>
       <StudySourcePanel
         key={`${accountId}:${sessionId}:source-panel`}
         sessionId={sessionId}
@@ -648,6 +691,7 @@ export const StudyDocument = ({
             <ProgressSummary
               accountId={accountId}
               courseId={session.courseId}
+              variant="embedded"
             />
           </DialogContent>
         </Dialog>

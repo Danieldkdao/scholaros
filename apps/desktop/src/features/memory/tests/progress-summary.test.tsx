@@ -214,3 +214,22 @@ it('ignores progress from the previous account', async () => {
   expect(container.textContent).toContain('Cell structure');
   expect(container.textContent).not.toContain('Old account topic');
 });
+
+it('embeds progress evidence without a repeated card or heading', async () => {
+  const container = document.createElement('div');
+  document.body.append(container);
+  root = createRoot(container);
+  await act(async () =>
+    root.render(
+      createElement(ProgressSummary, {
+        accountId: 'student-a',
+        courseId: 'course-biology',
+        variant: 'embedded',
+      }),
+    ),
+  );
+  await vi.waitFor(() => expect(container.textContent).toContain('Strengths'));
+  expect(container.querySelector('[data-slot="card"]')).toBeNull();
+  expect(container.textContent).not.toContain('Learning progress');
+  expect(container.textContent).toContain('Cell structure');
+});

@@ -43,6 +43,7 @@ import { useLearningProgress } from '../hooks/use-memory';
 export type ProgressSummaryProps = {
   accountId: string;
   courseId?: string;
+  variant?: 'card' | 'embedded';
 };
 
 type ProgressSectionProps = {
@@ -160,10 +161,67 @@ const ProgressSections = ({ progress }: { progress: LearningProgress }) => (
 export const ProgressSummary = ({
   accountId,
   courseId,
+  variant = 'card',
 }: ProgressSummaryProps) => {
   const progressState = useLearningProgress(accountId, courseId);
   const status = formatMemoryLoadStatus(progressState.status);
 
+  const content = (
+    <>
+      {progressState.status === 'loading' && (
+        <div
+          aria-busy="true"
+          aria-label={status.label}
+          className="flex flex-col gap-3"
+          role="status"
+        >
+          <Skeleton className="h-16 w-full motion-reduce:animate-none" />
+          <Skeleton className="h-16 w-full motion-reduce:animate-none" />
+        </div>
+      )}
+      {(progressState.status === 'error' ||
+        progressState.status === 'offline') && (
+        <Alert variant="destructive">
+          <AlertTitle>{status.label}</AlertTitle>
+          <AlertDescription>
+            {progressState.error ?? 'Could not load study progress.'}
+            <Button
+              className="mt-2 w-full sm:w-fit"
+              type="button"
+              variant="outline"
+              onClick={() => void progressState.reload()}
+            >
+              Try again
+            </Button>
+          </AlertDescription>
+        </Alert>
+      )}
+      {progressState.status === 'ready' &&
+        progressState.progress &&
+        (progressState.progress.strengths.length === 0 &&
+        progressState.progress.practiceTopics.length === 0 &&
+        progressState.progress.recentChanges.length === 0 &&
+        progressState.progress.unknownCount === 0 ? (
+          <Empty className={variant === 'embedded' ? 'border-0' : 'border'}>
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <BookOpen aria-hidden="true" />
+              </EmptyMedia>
+              <EmptyTitle role="heading" aria-level={3}>
+                No progress evidence yet
+              </EmptyTitle>
+              <EmptyDescription className="text-base">
+                Study responses and practice will appear here when evidence is
+                available.
+              </EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+        ) : (
+          <ProgressSections progress={progressState.progress} />
+        ))}
+    </>
+  );
+  if (variant === 'embedded') return <div className="min-w-0">{content}</div>;
   return (
     <Card className="min-w-0">
       <CardHeader>
@@ -175,59 +233,7 @@ export const ProgressSummary = ({
           visible.
         </CardDescription>
       </CardHeader>
-      <CardContent>
-        {progressState.status === 'loading' && (
-          <div
-            aria-busy="true"
-            aria-label={status.label}
-            className="flex flex-col gap-3"
-            role="status"
-          >
-            <Skeleton className="h-16 w-full motion-reduce:animate-none" />
-            <Skeleton className="h-16 w-full motion-reduce:animate-none" />
-          </div>
-        )}
-        {(progressState.status === 'error' ||
-          progressState.status === 'offline') && (
-          <Alert variant="destructive">
-            <AlertTitle>{status.label}</AlertTitle>
-            <AlertDescription>
-              {progressState.error ?? 'Could not load study progress.'}
-              <Button
-                className="mt-2 w-full sm:w-fit"
-                type="button"
-                variant="outline"
-                onClick={() => void progressState.reload()}
-              >
-                Try again
-              </Button>
-            </AlertDescription>
-          </Alert>
-        )}
-        {progressState.status === 'ready' &&
-          progressState.progress &&
-          (progressState.progress.strengths.length === 0 &&
-          progressState.progress.practiceTopics.length === 0 &&
-          progressState.progress.recentChanges.length === 0 &&
-          progressState.progress.unknownCount === 0 ? (
-            <Empty className="border">
-              <EmptyHeader>
-                <EmptyMedia variant="icon">
-                  <BookOpen aria-hidden="true" />
-                </EmptyMedia>
-                <EmptyTitle role="heading" aria-level={3}>
-                  No progress evidence yet
-                </EmptyTitle>
-                <EmptyDescription className="text-base">
-                  Study responses and practice will appear here when evidence is
-                  available.
-                </EmptyDescription>
-              </EmptyHeader>
-            </Empty>
-          ) : (
-            <ProgressSections progress={progressState.progress} />
-          ))}
-      </CardContent>
+      <CardContent>{content}</CardContent>
     </Card>
   );
 };
