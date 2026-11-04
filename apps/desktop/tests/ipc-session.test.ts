@@ -692,6 +692,57 @@ describe('academic service session boundaries', () => {
     await registerTestAcademicActions();
   });
 
+  it('validates private notification commands without widening renderer authority', async () => {
+    const deliver = vi.fn(async () => 'unknown' as const);
+    await registerTestAcademicActions([
+      (registrar) => registrar.handleInternal('claimDueNotifications', deliver),
+    ]);
+    mocks.getCurrentUser.mockResolvedValue({ id: 'student-a' });
+    try {
+      expect(rendererAcademicMethods).not.toContain('claimDueNotifications');
+      const command = { operation: 'get-permission', userId: 'student-a' };
+      await expect(invoke('claimDueNotifications', command)).resolves.toBe(
+        'unknown',
+      );
+      expect(deliver).toHaveBeenCalledWith(
+        expect.objectContaining({ userId: 'student-a' }),
+        command,
+      );
+      deliver.mockClear();
+      for (const input of [
+        { ...command, path: '/private' },
+        { operation: 'set-permission', userId: 'student-a', permission: 'yes' },
+        {
+          operation: 'claim',
+          userId: 'student-a',
+          now: 'invalid',
+          isFocused: false,
+        },
+        {
+          operation: 'settle',
+          userId: 'student-a',
+          eventId: 'event-a',
+          claimedAt: '2026-11-04T00:00:00.000Z',
+          now: '2026-11-04T00:00:01.000Z',
+          status: 'queued',
+        },
+      ])
+        await expect(
+          invoke('claimDueNotifications', input),
+        ).rejects.toMatchObject({ code: 'invalid-input' });
+      expect(deliver).not.toHaveBeenCalled();
+      mocks.getCurrentUser.mockResolvedValue({
+        id: 'student-a',
+        authMode: 'offline-local',
+      });
+      await expect(invoke('claimDueNotifications', command)).rejects.toThrow(
+        'Reconnect',
+      );
+    } finally {
+      await registerTestAcademicActions();
+    }
+  });
+
   it('dispatches internal activity calls to the adapter registered by the authenticated account epoch', async () => {
     const usedEpochs: number[] = [];
     const module: LearningActionModule = (registrar) => {

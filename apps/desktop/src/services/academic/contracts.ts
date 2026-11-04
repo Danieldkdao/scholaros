@@ -12,12 +12,18 @@ import type {
 } from '@scholaros/services/learning/product-contracts';
 import {
   idSchema,
+  instantSchema,
   jsonValueSchema,
   requestIdSchema,
   revisionSchema,
   safeErrorCodeSchema,
 } from '@scholaros/services/learning/product-contracts';
 import { z } from 'zod';
+import type {
+  NotificationDeliveryCommand,
+  NotificationDeliveryCommandResult,
+} from '../../features/notifications/services/notification-actions';
+import { notificationPermissionStates } from '../../features/notifications/services/notification-policy';
 import type {
   ActivityAuthorizationRequest,
   ActivityRunRelease,
@@ -247,6 +253,10 @@ export type ActivityInternalMethodContracts = {
 export type ActivityInternalMethod = keyof ActivityInternalMethodContracts;
 export type LearningInternalMethodContracts =
   ActivityInternalMethodContracts & {
+    claimDueNotifications: {
+      input: NotificationDeliveryCommand;
+      result: NotificationDeliveryCommandResult;
+    };
     registerSelectedContextFiles: {
       input: RegisterSelectedContextFilesInput;
       result: ContextFileSelectionResult;
@@ -376,12 +386,77 @@ export const contextFileSelectionResultSchema = z.strictObject({
 export type ContextFileSelectionResult = z.infer<
   typeof contextFileSelectionResultSchema
 >;
+export const notificationDeliverySettlementStatuses = [
+  'delivered',
+  'failed',
+  'cancelled',
+] as const;
+export type NotificationDeliverySettlementStatus =
+  (typeof notificationDeliverySettlementStatuses)[number];
+export const notificationDeliveryInputSchema = z.discriminatedUnion(
+  'operation',
+  [
+    z.strictObject({
+      operation: z.literal('claim'),
+      userId: idSchema,
+      now: instantSchema,
+      isFocused: z.boolean(),
+    }),
+    z.strictObject({
+      operation: z.literal('authorize-show'),
+      userId: idSchema,
+      eventId: idSchema,
+      claimedAt: instantSchema,
+      now: instantSchema,
+      isFocused: z.boolean(),
+    }),
+    z.strictObject({
+      operation: z.literal('settle'),
+      userId: idSchema,
+      eventId: idSchema,
+      claimedAt: instantSchema,
+      status: z.enum(notificationDeliverySettlementStatuses),
+      now: instantSchema,
+    }),
+    z.strictObject({
+      operation: z.literal('get-click'),
+      userId: idSchema,
+      eventId: idSchema,
+      now: instantSchema,
+    }),
+    z.strictObject({
+      operation: z.literal('authorize-click'),
+      userId: idSchema,
+      eventId: idSchema,
+      now: instantSchema,
+    }),
+    z.strictObject({
+      operation: z.literal('set-focus'),
+      userId: idSchema,
+      isFocused: z.boolean(),
+    }),
+    z.strictObject({
+      operation: z.literal('set-permission'),
+      userId: idSchema,
+      permission: z.enum(notificationPermissionStates),
+    }),
+    z.strictObject({
+      operation: z.literal('get-permission'),
+      userId: idSchema,
+    }),
+    z.strictObject({ operation: z.literal('clear-account'), userId: idSchema }),
+  ],
+) satisfies z.ZodType<NotificationDeliveryCommand>;
+export type NotificationDeliveryInputSchema = z.infer<
+  typeof notificationDeliveryInputSchema
+>;
 export const internalLearningInputSchemas: {
   [Method in LearningInternalMethod]: z.ZodType<
     LearningInternalMethodContracts[Method]['input']
   >;
 } = {
   ...activityInternalInputSchemas,
+  claimDueNotifications: notificationDeliveryInputSchema,
   registerSelectedContextFiles: registerSelectedContextFilesInputSchema,
 };
 export const requestMicrophonePermissionSchema = z.strictObject({
