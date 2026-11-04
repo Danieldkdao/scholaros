@@ -118,8 +118,12 @@ const setInput = async (label: string, value: string) => {
 };
 
 const selectOption = async (triggerLabel: string, optionLabel: string) => {
-  const trigger = button(triggerLabel);
-  expect(trigger).not.toBeNull();
+  let trigger = button(triggerLabel);
+  if (!trigger) {
+    await act(async () => button('Study history filters')!.click());
+    trigger = button(triggerLabel);
+  }
+  expect(trigger).toBeDefined();
   await act(async () => trigger!.click());
   const option = [...document.querySelectorAll('[role="option"]')].find(
     (element) => element.textContent?.trim() === optionLabel,

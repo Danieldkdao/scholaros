@@ -41,6 +41,7 @@ import {
   FieldLabel,
 } from '@scholaros/ui/components/field';
 import { Input } from '@scholaros/ui/components/input';
+import { FilterPopover } from '@scholaros/ui/components/filter-popover';
 import {
   Item,
   ItemActions,
@@ -210,8 +211,8 @@ export const StudyHistory = ({
             </AlertDescription>
           </Alert>
         )}
-        <FieldGroup className="grid grid-cols-1 gap-3 md:grid-cols-3">
-          <Field className="md:col-span-1">
+        <FieldGroup className="flex w-full min-w-0 flex-row items-end gap-3">
+          <Field className="min-w-0 flex-1">
             <FieldLabel htmlFor="study-history-search">Search</FieldLabel>
             <Input
               id="study-history-search"
@@ -224,66 +225,80 @@ export const StudyHistory = ({
               className="w-full text-base"
             />
           </Field>
-          <Field>
-            <FieldLabel id="study-history-course-label">Course</FieldLabel>
-            <Select
-              value={courseId ?? allCoursesValue}
-              onValueChange={(value) =>
-                setCourseId(
-                  typeof value === 'string' && value !== allCoursesValue
-                    ? value
-                    : null,
-                )
-              }
-              items={courseItems}
-            >
-              <SelectTrigger
-                className="w-full"
-                aria-label="History course"
-                aria-labelledby="study-history-course-label"
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={allCoursesValue}>All courses</SelectItem>
-                {courses.map((course) => (
-                  <SelectItem key={course.id} value={course.id}>
-                    {course.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </Field>
-          <Field>
-            <FieldLabel id="study-history-status-label">Status</FieldLabel>
-            <Select
-              value={status ?? allStatusesValue}
-              onValueChange={(value) =>
-                setStatus(
-                  typeof value === 'string' && value !== allStatusesValue
-                    ? (value as StudySessionStatus)
-                    : null,
-                )
-              }
-              items={statusItems}
-            >
-              <SelectTrigger
-                className="w-full"
-                aria-label="History status"
-                aria-labelledby="study-history-status-label"
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={allStatusesValue}>All statuses</SelectItem>
-                {studySessionStatuses.map((value) => (
-                  <SelectItem key={value} value={value}>
-                    {formatStudySessionStatus(value).label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </Field>
+          <FilterPopover label="Study history filters">
+            <div className="flex flex-col gap-4">
+              <Field>
+                <FieldLabel id="study-history-course-label">Course</FieldLabel>
+                <Select
+                  value={courseId ?? allCoursesValue}
+                  onValueChange={(value) =>
+                    setCourseId(
+                      typeof value === 'string' && value !== allCoursesValue
+                        ? value
+                        : null,
+                    )
+                  }
+                  items={courseItems}
+                >
+                  <SelectTrigger
+                    className="w-full"
+                    aria-label="History course"
+                    aria-labelledby="study-history-course-label"
+                  >
+                    <SelectValue>
+                      {courseItems.find(
+                        (item) => item.value === (courseId ?? allCoursesValue),
+                      )?.label ?? 'All courses'}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={allCoursesValue}>All courses</SelectItem>
+                    {courses.map((course) => (
+                      <SelectItem key={course.id} value={course.id}>
+                        {course.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field>
+                <FieldLabel id="study-history-status-label">Status</FieldLabel>
+                <Select
+                  value={status ?? allStatusesValue}
+                  onValueChange={(value) =>
+                    setStatus(
+                      typeof value === 'string' && value !== allStatusesValue
+                        ? (value as StudySessionStatus)
+                        : null,
+                    )
+                  }
+                  items={statusItems}
+                >
+                  <SelectTrigger
+                    className="w-full"
+                    aria-label="History status"
+                    aria-labelledby="study-history-status-label"
+                  >
+                    <SelectValue>
+                      {status
+                        ? formatStudySessionStatus(status).label
+                        : 'All statuses'}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={allStatusesValue}>
+                      All statuses
+                    </SelectItem>
+                    {studySessionStatuses.map((value) => (
+                      <SelectItem key={value} value={value}>
+                        {formatStudySessionStatus(value).label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+            </div>
+          </FilterPopover>
         </FieldGroup>
 
         {loading && (

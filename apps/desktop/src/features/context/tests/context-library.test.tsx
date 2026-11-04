@@ -412,6 +412,10 @@ it('keeps pagination available when a local type filter has no current-page matc
     });
   await mount(libraryApi);
 
+  expect(
+    document.querySelector('[aria-labelledby="context-kind-filter-label"]'),
+  ).toBeNull();
+  await click(document.querySelector('button[aria-label="Context filters"]'));
   const typeFilter = document.querySelector<HTMLButtonElement>(
     '[aria-labelledby="context-kind-filter-label"]',
   );

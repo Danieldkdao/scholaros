@@ -164,11 +164,12 @@ it('shows explicit and provisional provenance, course scope, and bounded filters
   expect(container.textContent).toContain('Biology');
   expect(container.textContent).toContain('1 evidence record');
   expect(container.querySelector('input[maxlength="200"]')).not.toBeNull();
+  await clickButton('Remembered information filters');
   expect(
-    container.querySelector('[aria-label="Filter memories by type"]'),
+    document.querySelector('[aria-label="Filter memories by type"]'),
   ).not.toBeNull();
   expect(
-    container.querySelector('[aria-label="Filter memories by course"]'),
+    document.querySelector('[aria-label="Filter memories by course"]'),
   ).not.toBeNull();
 });
 
@@ -270,7 +271,8 @@ it('bounds search text and applies type and course filters to paged reads', asyn
     ),
   );
 
-  const typeTrigger = container.querySelector<HTMLButtonElement>(
+  await clickButton('Remembered information filters');
+  const typeTrigger = document.querySelector<HTMLButtonElement>(
     '[aria-label="Filter memories by type"]',
   )!;
   await act(async () => typeTrigger.click());
@@ -294,7 +296,7 @@ it('bounds search text and applies type and course filters to paged reads', asyn
     ),
   );
 
-  const courseTrigger = container.querySelector<HTMLButtonElement>(
+  const courseTrigger = document.querySelector<HTMLButtonElement>(
     '[aria-label="Filter memories by course"]',
   )!;
   await act(async () => courseTrigger.click());

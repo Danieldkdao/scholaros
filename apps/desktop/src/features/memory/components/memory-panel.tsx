@@ -39,6 +39,7 @@ import {
 } from '@scholaros/ui/components/empty';
 import { Field, FieldGroup, FieldLabel } from '@scholaros/ui/components/field';
 import { Input } from '@scholaros/ui/components/input';
+import { FilterPopover } from '@scholaros/ui/components/filter-popover';
 import {
   Item,
   ItemActions,
@@ -161,8 +162,8 @@ const MemoryPanelContent = ({ accountId, courseId }: MemoryPanelProps) => {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <FieldGroup className="gap-4">
-            <Field>
+          <FieldGroup className="flex w-full min-w-0 flex-row items-end gap-3">
+            <Field className="min-w-0 flex-1">
               <FieldLabel htmlFor="memory-search">
                 Search remembered information
               </FieldLabel>
@@ -177,87 +178,102 @@ const MemoryPanelContent = ({ accountId, courseId }: MemoryPanelProps) => {
                   value={query}
                   onChange={(event) => setQuery(event.currentTarget.value)}
                 />
-                <Button
-                  type="button"
-                  variant="outline"
-                  aria-label="Clear memory search"
-                  disabled={!query}
-                  onClick={() => setQuery('')}
-                >
-                  <X aria-hidden="true" />
-                  Clear search
-                </Button>
+                <TooltipWrapper content="Clear search">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    aria-label="Clear memory search"
+                    disabled={!query}
+                    onClick={() => setQuery('')}
+                  >
+                    <X aria-hidden="true" />
+                  </Button>
+                </TooltipWrapper>
               </div>
             </Field>
-            <div className="grid w-full grid-cols-1 gap-3 sm:grid-cols-2">
-              <Field>
-                <FieldLabel id="memory-type-label">Type</FieldLabel>
-                <Select
-                  value={typeFilter}
-                  onValueChange={(nextValue) => {
-                    if (nextValue === 'all') setTypeFilter('all');
-                    else {
-                      const selectedType = memoryTypes.find(
-                        (memoryType) => memoryType === nextValue,
-                      );
-                      if (selectedType) setTypeFilter(selectedType);
-                    }
-                  }}
-                >
-                  <SelectTrigger
-                    aria-label="Filter memories by type"
-                    aria-labelledby="memory-type-label"
-                    className="w-full"
-                  >
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All memory types</SelectItem>
-                    {memoryTypes.map((memoryType) => (
-                      <SelectItem key={memoryType} value={memoryType}>
-                        {formatMemoryType(memoryType).label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </Field>
-              {courseId ? (
+            <FilterPopover label="Remembered information filters">
+              <div className="flex flex-col gap-4">
                 <Field>
-                  <FieldLabel>Course scope</FieldLabel>
-                  <div className="flex min-h-9 items-center gap-2 text-base">
-                    <BookOpen aria-hidden="true" className="size-4" />
-                    <span>{courseNameFor(courseId) ?? 'Course-specific'}</span>
-                  </div>
-                </Field>
-              ) : (
-                <Field>
-                  <FieldLabel id="memory-course-label">Course</FieldLabel>
+                  <FieldLabel id="memory-type-label">Type</FieldLabel>
                   <Select
-                    value={courseFilter}
+                    value={typeFilter}
                     onValueChange={(nextValue) => {
-                      if (typeof nextValue === 'string')
-                        setCourseFilter(nextValue);
+                      if (nextValue === 'all') setTypeFilter('all');
+                      else {
+                        const selectedType = memoryTypes.find(
+                          (memoryType) => memoryType === nextValue,
+                        );
+                        if (selectedType) setTypeFilter(selectedType);
+                      }
                     }}
                   >
                     <SelectTrigger
-                      aria-label="Filter memories by course"
-                      aria-labelledby="memory-course-label"
+                      aria-label="Filter memories by type"
+                      aria-labelledby="memory-type-label"
                       className="w-full"
                     >
-                      <SelectValue />
+                      <SelectValue>
+                        {typeFilter === 'all'
+                          ? 'All memory types'
+                          : formatMemoryType(typeFilter).label}
+                      </SelectValue>
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="all">All courses</SelectItem>
-                      {courseState.snapshot?.courses.map((course) => (
-                        <SelectItem key={course.id} value={course.id}>
-                          {course.name}
+                      <SelectItem value="all">All memory types</SelectItem>
+                      {memoryTypes.map((memoryType) => (
+                        <SelectItem key={memoryType} value={memoryType}>
+                          {formatMemoryType(memoryType).label}
                         </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
                 </Field>
-              )}
-            </div>
+                {courseId ? (
+                  <Field>
+                    <FieldLabel>Course scope</FieldLabel>
+                    <div className="flex min-h-9 items-center gap-2 text-base">
+                      <BookOpen aria-hidden="true" className="size-4" />
+                      <span>
+                        {courseNameFor(courseId) ?? 'Course-specific'}
+                      </span>
+                    </div>
+                  </Field>
+                ) : (
+                  <Field>
+                    <FieldLabel id="memory-course-label">Course</FieldLabel>
+                    <Select
+                      value={courseFilter}
+                      onValueChange={(nextValue) => {
+                        if (typeof nextValue === 'string')
+                          setCourseFilter(nextValue);
+                      }}
+                    >
+                      <SelectTrigger
+                        aria-label="Filter memories by course"
+                        aria-labelledby="memory-course-label"
+                        className="w-full"
+                      >
+                        <SelectValue>
+                          {courseFilter === 'all'
+                            ? 'All courses'
+                            : (courseNameFor(courseFilter) ??
+                              'Unavailable course')}
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All courses</SelectItem>
+                        {courseState.snapshot?.courses.map((course) => (
+                          <SelectItem key={course.id} value={course.id}>
+                            {course.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                )}
+              </div>
+            </FilterPopover>
           </FieldGroup>
           {statusAlert && (
             <Alert variant="destructive" className="mt-4">

@@ -29,6 +29,7 @@ import {
   AttachmentTitle,
 } from '@scholaros/ui/components/attachment';
 import { Button } from '@scholaros/ui/components/button';
+import { FilterPopover } from '@scholaros/ui/components/filter-popover';
 import {
   Card,
   CardContent,
@@ -261,7 +262,10 @@ const ContextCourseSelect = ({
         }}
       >
         <SelectTrigger aria-labelledby={labelId} className="w-full">
-          <SelectValue placeholder="No course" />
+          <SelectValue>
+            {selectedCourse?.name ??
+              (courseId ? 'Unavailable course' : 'No course')}
+          </SelectValue>
         </SelectTrigger>
         <SelectContent>
           <SelectItem value={null}>No course</SelectItem>
@@ -286,8 +290,8 @@ const ContextFilters = ({
   library: ReturnType<typeof useContextLibrary>;
   courses: ContextCourse[];
 }) => (
-  <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
-    <InputGroup className="lg:min-w-64 lg:flex-1">
+  <div className="flex w-full min-w-0 items-center gap-3">
+    <InputGroup className="min-w-0 flex-1">
       <InputGroupAddon>
         <InputGroupText>
           <Search aria-hidden="true" />
@@ -301,91 +305,110 @@ const ContextFilters = ({
         onChange={(event) => library.setQuery(event.target.value)}
       />
     </InputGroup>
-    <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-      <div className="flex flex-col gap-2">
-        <span id="context-kind-filter-label">Type</span>
-        <Select
-          value={library.kindFilter}
-          onValueChange={(value) => {
-            if (typeof value === 'string')
-              library.setKindFilter(value as typeof library.kindFilter);
-          }}
-        >
-          <SelectTrigger
-            aria-labelledby="context-kind-filter-label"
-            className="w-full"
+    <FilterPopover label="Context filters">
+      <div className="flex flex-col gap-4">
+        <div className="flex flex-col gap-2">
+          <span id="context-kind-filter-label">Type</span>
+          <Select
+            value={library.kindFilter}
+            onValueChange={(value) => {
+              if (typeof value === 'string')
+                library.setKindFilter(value as typeof library.kindFilter);
+            }}
           >
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All types</SelectItem>
-            {contextKinds.map((kind) => (
-              <SelectItem key={kind} value={kind}>
-                {formatContextKind(kind).label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-      <div className="flex flex-col gap-2">
-        <span id="context-status-filter-label">Status</span>
-        <Select
-          value={library.statusFilter}
-          onValueChange={(value) => {
-            if (typeof value === 'string')
-              library.setStatusFilter(value as typeof library.statusFilter);
-          }}
-        >
-          <SelectTrigger
-            aria-labelledby="context-status-filter-label"
-            className="w-full"
+            <SelectTrigger
+              aria-labelledby="context-kind-filter-label"
+              className="w-full"
+            >
+              <SelectValue>
+                {library.kindFilter === 'all'
+                  ? 'All types'
+                  : formatContextKind(library.kindFilter).label}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All types</SelectItem>
+              {contextKinds.map((kind) => (
+                <SelectItem key={kind} value={kind}>
+                  {formatContextKind(kind).label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="flex flex-col gap-2">
+          <span id="context-status-filter-label">Status</span>
+          <Select
+            value={library.statusFilter}
+            onValueChange={(value) => {
+              if (typeof value === 'string')
+                library.setStatusFilter(value as typeof library.statusFilter);
+            }}
           >
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All statuses</SelectItem>
-            {ingestionStatuses.map((status) => (
-              <SelectItem key={status} value={status}>
-                {formatContextStatus(status).label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-      <div className="flex flex-col gap-2">
-        <span id="context-course-filter-label">Course</span>
-        <p
-          id="context-course-filter-help"
-          className="text-base text-muted-foreground"
-        >
-          New files use this course, if any.
-        </p>
-        <Select
-          value={library.courseFilter}
-          onValueChange={(value) => {
-            if (typeof value === 'string')
-              library.setCourseFilter(value as typeof library.courseFilter);
-          }}
-        >
-          <SelectTrigger
-            aria-labelledby="context-course-filter-label"
-            aria-describedby="context-course-filter-help"
-            className="w-full"
+            <SelectTrigger
+              aria-labelledby="context-status-filter-label"
+              className="w-full"
+            >
+              <SelectValue>
+                {library.statusFilter === 'all'
+                  ? 'All statuses'
+                  : formatContextStatus(library.statusFilter).label}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All statuses</SelectItem>
+              {ingestionStatuses.map((status) => (
+                <SelectItem key={status} value={status}>
+                  {formatContextStatus(status).label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="flex flex-col gap-2">
+          <span id="context-course-filter-label">Course</span>
+          <p
+            id="context-course-filter-help"
+            className="text-base text-muted-foreground"
           >
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All courses</SelectItem>
-            <SelectItem value="unassigned">No course</SelectItem>
-            {courses.map((course) => (
-              <SelectItem key={course.id} value={`course:${course.id}`}>
-                {course.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+            New files use this course, if any.
+          </p>
+          <Select
+            value={library.courseFilter}
+            onValueChange={(value) => {
+              if (typeof value === 'string')
+                library.setCourseFilter(value as typeof library.courseFilter);
+            }}
+          >
+            <SelectTrigger
+              aria-labelledby="context-course-filter-label"
+              aria-describedby="context-course-filter-help"
+              className="w-full"
+            >
+              <SelectValue>
+                {library.courseFilter === 'all'
+                  ? 'All courses'
+                  : library.courseFilter === 'unassigned'
+                    ? 'No course'
+                    : (courses.find(
+                        (course) =>
+                          `course:${course.id}` === library.courseFilter,
+                      )?.name ?? 'Unavailable course')}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All courses</SelectItem>
+              <SelectItem value="unassigned">No course</SelectItem>
+              {courses.map((course) => (
+                <SelectItem key={course.id} value={`course:${course.id}`}>
+                  {course.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
       </div>
-    </div>
+    </FilterPopover>
   </div>
 );
 
