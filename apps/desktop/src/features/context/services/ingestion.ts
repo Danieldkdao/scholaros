@@ -42,6 +42,7 @@ const maxRememberedOperations = 256;
 export const ingestSelectedFileInputSchema = z.strictObject({
   ticketId: idSchema,
   itemId: idSchema,
+  operationId: requestIdSchema.optional(),
   sessionId: idSchema.optional(),
   courseId: idSchema.optional(),
 });
@@ -85,7 +86,11 @@ export type ContextIngestionErrorCode =
   | 'unsupported'
   | 'unreadable'
   | 'feature-unavailable'
+  | 'needs-sign-in'
+  | 'permission-revoked'
   | 'provider-failed'
+  | 'rate-limited'
+  | 'revision-conflict'
   | 'storage-failed';
 
 export class ContextIngestionError extends Error {
@@ -258,6 +263,14 @@ export type ContextIngestionDependencies = {
     context: AuthorizedContext,
     input: ContextIngestionVersionInput,
   ) => Promise<ContextIngestionVersionCommit>;
+  cleanupOriginal?: (
+    context: AuthorizedContext,
+    storageKeys: string[],
+  ) => Promise<void>;
+  onOperationSettled?: (
+    context: AuthorizedContext,
+    operationId: string,
+  ) => void | Promise<void>;
   publish: (event: ProductEventV1) => void | Promise<void>;
   extractPdf?: (
     bytes: Uint8Array,
@@ -680,12 +693,17 @@ export const createContextIngestionService = (
     pendingAdmissions = Math.max(0, pendingAdmissions - 1);
   };
 
-  const finishJob = (job: IngestionJob) => {
+  const finishJob = async (job: IngestionJob) => {
     job.state = 'finished';
     const key = operationKey(job.context, job.operationId);
     jobs.delete(key);
     reservedFileBytes.delete(key);
     job.context.signal.removeEventListener('abort', job.onContextAbort);
+    await Promise.resolve()
+      .then(() =>
+        dependencies.onOperationSettled?.(job.context, job.operationId),
+      )
+      .catch(() => undefined);
     job.resolveDone();
   };
 
@@ -1067,6 +1085,7 @@ export const createContextIngestionService = (
   const processJob = async (job: IngestionJob) => {
     job.state = 'running';
     activeJob = job;
+    let newlyStoredOriginalKey: string | null = null;
     try {
       await assertItemAvailable(job);
       const processing = await dependencies.updateAttemptStatus(job.context, {
@@ -1128,6 +1147,7 @@ export const createContextIngestionService = (
           bytes,
           signal: job.controller.signal,
         });
+        newlyStoredOriginalKey = stored.storageKey;
         assertCurrent(job);
         if (stored.originalHash !== originalHash || !stored.storageKey)
           throw new ContextIngestionError('storage-failed');
@@ -1256,7 +1276,11 @@ export const createContextIngestionService = (
       await completeAttempt(job, status, errorCode);
     } finally {
       activeJob = null;
-      finishJob(job);
+      if (newlyStoredOriginalKey && dependencies.cleanupOriginal)
+        await dependencies
+          .cleanupOriginal(job.context, [newlyStoredOriginalKey])
+          .catch(() => undefined);
+      await finishJob(job);
     }
   };
 
@@ -1400,8 +1424,8 @@ export const createContextIngestionService = (
         });
         if (!currentItem || currentItem.removed)
           throw new ContextIngestionError('not-found');
-        const operationId = randomUUID();
-        const attemptId = randomUUID();
+        const operationId = input.operationId ?? randomUUID();
+        const attemptId = operationId;
         const result = await addJob({
           context,
           operationId,
@@ -1497,7 +1521,7 @@ export const createContextIngestionService = (
       const index = queue.indexOf(job);
       if (index >= 0) queue.splice(index, 1);
       await completeAttempt(job, 'cancelled', 'cancelled');
-      finishJob(job);
+      await finishJob(job);
       return;
     }
     await job.done;
@@ -1632,6 +1656,9 @@ const getConfiguredService = () => {
     throw new ContextIngestionError('feature-unavailable');
   return configuredService;
 };
+
+export const waitForContextIngestionIdle = () =>
+  getConfiguredService().whenIdle();
 
 export const ingestSelectedFile = (
   context: AuthorizedContext,

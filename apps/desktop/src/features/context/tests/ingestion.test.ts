@@ -361,6 +361,23 @@ describe('Context ingestion', () => {
     await waitForIdle(service);
   });
 
+  it('settles jobs even when operation cleanup throws synchronously', async () => {
+    const state = makeDependencies({
+      onOperationSettled: () => {
+        throw new Error('cleanup failed');
+      },
+    });
+    const service = createContextIngestionService(state.dependencies);
+
+    await service.ingestSelectedFile(context(), {
+      ticketId: 'good',
+      itemId: 'item-settlement',
+    });
+    await waitForIdle(service);
+
+    expect(state.versions).toHaveLength(1);
+  });
+
   it('returns a queued operation promptly, checkpoints a valid version, and keeps markup literal', async () => {
     const state = makeDependencies();
     const service = createContextIngestionService(state.dependencies);
