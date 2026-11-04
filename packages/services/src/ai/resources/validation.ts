@@ -716,6 +716,18 @@ const validateRecords = <
     const headingValue =
       'name' in item ? item.name : 'title' in item ? item.title : '';
     const heading = typeof headingValue === 'string' ? headingValue : '';
+    const headingOnlyAnnouncement =
+      'body' in item &&
+      'author' in item &&
+      'published' in item &&
+      /^\s*announcements?\s*:?\s*$/i.test(heading) &&
+      (item.body === null ||
+        (typeof item.body === 'string' && !item.body.trim())) &&
+      item.author === null &&
+      item.published === null &&
+      (!('updated' in item) || item.updated === null) &&
+      (!('sourceId' in item) || item.sourceId === null) &&
+      (item.resources?.length ?? 0) === 0;
     const sourceTargets = targets.filter((target) =>
       item.evidence.targetIds.includes(target.id),
     );
@@ -809,7 +821,13 @@ const validateRecords = <
       if (checked === undefined) validDates = false;
       else (validatedItem as Record<string, unknown>)[field] = checked;
     }
-    if (!validEvidence || !observedUrl || !validLinks || !validDates) {
+    if (
+      headingOnlyAnnouncement ||
+      !validEvidence ||
+      !observedUrl ||
+      !validLinks ||
+      !validDates
+    ) {
       invalid = true;
       continue;
     }

@@ -1335,3 +1335,61 @@ it('keeps a verified card date after its introductory sentence', () => {
     result,
   );
 });
+
+it.each(['Announcement', 'Announcement:', 'Announcements'])(
+  'does not save a bare %s section heading as an announcement',
+  (title) => {
+    const announcement: ExtractedAnnouncementSchema = {
+      title,
+      body: null,
+      author: null,
+      published: null,
+      updated: null,
+      url: null,
+      sourceId: null,
+      resources: [],
+      evidence: { sourceUrl: url, excerpts: [title], targetIds: [] },
+    };
+    const result = validateResourceExtraction(
+      { ...input, pages: [{ ...input.pages[0], text: title }], targets: [] },
+      'announcements',
+      { announcements: [announcement], coverage: 'complete' },
+    );
+
+    expect(result).toMatchObject({ coverage: 'partial', announcements: [] });
+  },
+);
+
+it.each([
+  { body: 'The field trip starts tomorrow.', sourceId: null },
+  { body: null, sourceId: 'post-42' },
+])(
+  'keeps a generic-titled announcement with actual content or item identity %j',
+  (fields) => {
+    const announcement: ExtractedAnnouncementSchema = {
+      title: 'Announcement',
+      body: fields.body,
+      author: null,
+      published: null,
+      updated: null,
+      url: null,
+      sourceId: fields.sourceId,
+      resources: [],
+      evidence: { sourceUrl: url, excerpts: ['Announcement'], targetIds: [] },
+    };
+    const result = validateResourceExtraction(
+      {
+        ...input,
+        pages: [
+          { ...input.pages[0], text: `Announcement ${fields.body ?? ''}` },
+        ],
+        targets: [],
+      },
+      'announcements',
+      { announcements: [announcement], coverage: 'complete' },
+    );
+
+    expect(result.coverage).toBe('complete');
+    expect(result.announcements).toHaveLength(1);
+  },
+);
