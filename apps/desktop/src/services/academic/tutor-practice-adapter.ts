@@ -110,6 +110,7 @@ const sourceSelector = ({
 const toLocalEffects = (
   request: LocalTutorRequest,
   effects: ReturnType<typeof learningResponseSchema.parse>['proposedEffects'],
+  citations: SourceReference[],
 ): LearningEffect[] =>
   effects.map((effect): LearningEffect => {
     const offered = request.input.context.sourcePassages.map(
@@ -139,16 +140,20 @@ const toLocalEffects = (
           objective: request.input.message.slice(0, 1000),
           references: offered.map(sourceSelector),
         };
-      case 'offer-practice':
+      case 'offer-practice': {
+        const questionReferences = effect.questions.flatMap(
+          ({ sourceReferences }) => sourceReferences,
+        );
+        // Proposed questions are discarded; trusted citations scope a new generation.
+        // The learning client validates every citation before any effect executes.
+        const references =
+          questionReferences.length > 0 ? questionReferences : citations;
         return {
           kind: effect.kind,
           objective: effect.objective,
-          references: uniqueReferences(
-            effect.questions.flatMap(
-              ({ sourceReferences }) => sourceReferences,
-            ),
-          ).map(sourceSelector),
+          references: uniqueReferences(references).map(sourceSelector),
         };
+      }
       case 'practice-feedback':
         throw new LearningClientError('scope-denied', true);
     }
@@ -577,6 +582,7 @@ export const registerTutorPracticeActions = (
           proposedEffects: toLocalEffects(
             localRequest,
             response.proposedEffects,
+            response.citations,
           ),
         };
       },

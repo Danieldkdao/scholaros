@@ -513,20 +513,62 @@ describe('real tutor and practice academic registration', () => {
     artifactStore.dispose();
   });
 
-  it('creates real exam practice through the tutor effect and withholds private keys and feedback until submission', async () => {
-    await createContextNote(context, {
-      requestId: randomUUID(),
-      title: 'Membrane notes',
-      text: 'Explain cell membranes conceptually. A cell membrane separates the cell from its surroundings.',
-      kind: 'note',
-      courseId,
-    });
-    const requestLearning = vi.fn<TutorPracticeDependencies['requestLearning']>(
-      async (request, signal) => {
+  it.each([
+    'question-references',
+    'cited-source',
+    'missing-citations',
+    'foreign-citation',
+    'stale-citation',
+    'cross-course-citation',
+    'invalid-question-reference',
+  ] as const)(
+    'validates practice source selection with %s',
+    async (sourceMode) => {
+      await createContextNote(context, {
+        requestId: randomUUID(),
+        title: 'Membrane notes',
+        text: 'Explain cell membranes conceptually. A cell membrane separates the cell from its surroundings.',
+        kind: 'note',
+        courseId,
+      });
+      await createContextNote(context, {
+        requestId: randomUUID(),
+        title: 'Additional membrane notes',
+        text: 'Explain cell membranes conceptually. Membrane proteins help transport substances.',
+        kind: 'note',
+        courseId,
+      });
+      let selectedSourceId = '';
+      const succeeds = ['question-references', 'cited-source'].includes(
+        sourceMode,
+      );
+      const requestLearning = vi.fn<
+        TutorPracticeDependencies['requestLearning']
+      >(async (request, signal) => {
         if (request.kind === 'tutor-turn') {
+          expect(request.input.sources).toHaveLength(2);
           const reference = request.input.sources[0]!.reference;
+          selectedSourceId = reference.sourceId;
+          const citation = {
+            ...reference,
+            ...(sourceMode === 'foreign-citation'
+              ? { sourceId: 'foreign-source' }
+              : {}),
+            ...(sourceMode === 'stale-citation'
+              ? { versionId: 'stale-version' }
+              : {}),
+            ...(sourceMode === 'cross-course-citation'
+              ? { courseId: 'foreign-course' }
+              : {}),
+          };
           return {
             ...(await tutorResponse(request, signal)),
+            citations:
+              sourceMode === 'missing-citations'
+                ? []
+                : sourceMode === 'question-references'
+                  ? [request.input.sources[1]!.reference]
+                  : [citation],
             proposedEffects: [
               {
                 kind: 'offer-practice',
@@ -539,7 +581,17 @@ describe('real tutor and practice academic registration', () => {
                     unit: null,
                     options: null,
                     objectiveIds: ['objective'],
-                    sourceReferences: [reference],
+                    sourceReferences:
+                      sourceMode === 'question-references'
+                        ? [reference]
+                        : sourceMode === 'invalid-question-reference'
+                          ? [
+                              {
+                                ...reference,
+                                sourceId: 'invalid-question-source',
+                              },
+                            ]
+                          : [],
                   },
                 ],
               },
@@ -547,6 +599,10 @@ describe('real tutor and practice academic registration', () => {
           };
         }
         if (request.kind === 'practice-generate') {
+          expect(request.input.sources).toHaveLength(1);
+          expect(request.input.sources[0]!.reference.sourceId).toBe(
+            selectedSourceId,
+          );
           const reference = request.input.sources[0]!.reference;
           return {
             version: 1,
@@ -593,74 +649,99 @@ describe('real tutor and practice academic registration', () => {
             },
           };
         throw new Error('Unexpected synthetic operation.');
-      },
-    );
-    cleanup = registerTutorPracticeActions(registrar, {
-      sessionStore,
-      requestLearning,
-      createActivity,
-    });
-    const session = await sessionStore.createStudySession(context, {
-      requestId: randomUUID(),
-      courseId,
-      activity: 'prepare-exam',
-      targetAssignmentId: null,
-      topic: 'Cell membranes',
-      contextItemIds: [],
-      durationMinutes: null,
-      title: 'Exam practice',
-    });
-    await send(session.id);
-    let attemptId = '';
-    await vi.waitFor(async () => {
-      const part = (await snapshot(session.id))?.messages
-        .flatMap(({ parts }) => parts)
-        .find((part) => part.kind === 'practice');
-      expect(part?.kind).toBe('practice');
-      if (part?.kind === 'practice') attemptId = part.practiceAttemptId;
-    });
-    let attempt = await call('getPracticeAttempt', { attemptId });
-    expect(attempt.mode).toBe('exam');
-    expect(attempt.feedback).toEqual([]);
-    expect(JSON.stringify(attempt)).not.toContain('hostAnswerKey');
-    expect(JSON.stringify(attempt)).not.toContain('acceptedValues');
-    for (const question of attempt.questions) {
-      attempt = await call('savePracticeAnswer', {
+      });
+      cleanup = registerTutorPracticeActions(registrar, {
+        sessionStore,
+        requestLearning,
+        createActivity,
+      });
+      const session = await sessionStore.createStudySession(context, {
+        requestId: randomUUID(),
+        courseId,
+        activity: 'prepare-exam',
+        targetAssignmentId: null,
+        topic: 'Cell membranes',
+        contextItemIds: [],
+        durationMinutes: null,
+        title: 'Exam practice',
+      });
+      const admitted = await send(session.id);
+      if (!succeeds) {
+        await vi.waitFor(() =>
+          expect(
+            db
+              .select()
+              .from(StudyTurnTable)
+              .where(eq(StudyTurnTable.id, admitted.turnId))
+              .get()?.status,
+          ).toBe('complete'),
+        );
+        expect(
+          requestLearning.mock.calls.filter(
+            ([request]) => request.kind === 'practice-generate',
+          ),
+        ).toHaveLength(0);
+        expect(db.select().from(PracticeAttemptTable).all()).toHaveLength(0);
+        const messages = (await snapshot(session.id))!.messages;
+        expect(
+          messages
+            .filter(({ role }) => role === 'tutor')
+            .flatMap(({ parts }) => parts)
+            .some(({ kind }) => kind === 'text' || kind === 'practice'),
+        ).toBe(false);
+        return;
+      }
+      let attemptId = '';
+      await vi.waitFor(async () => {
+        const part = (await snapshot(session.id))?.messages
+          .flatMap(({ parts }) => parts)
+          .find((part) => part.kind === 'practice');
+        expect(part?.kind).toBe('practice');
+        if (part?.kind === 'practice') attemptId = part.practiceAttemptId;
+      });
+      let attempt = await call('getPracticeAttempt', { attemptId });
+      expect(attempt.mode).toBe('exam');
+      expect(attempt.feedback).toEqual([]);
+      expect(JSON.stringify(attempt)).not.toContain('hostAnswerKey');
+      expect(JSON.stringify(attempt)).not.toContain('acceptedValues');
+      for (const question of attempt.questions) {
+        attempt = await call('savePracticeAnswer', {
+          attemptId,
+          questionId: question.id,
+          expectedRevision: attempt.revision,
+          value: 3,
+          requestId: randomUUID(),
+        });
+        expect(attempt.feedback).toEqual([]);
+      }
+      expect(
+        requestLearning.mock.calls.filter(
+          ([request]) => request.kind === 'practice-evaluate',
+        ),
+      ).toHaveLength(0);
+      attempt = await call('submitPracticeAttempt', {
         attemptId,
-        questionId: question.id,
         expectedRevision: attempt.revision,
-        value: 3,
         requestId: randomUUID(),
       });
-      expect(attempt.feedback).toEqual([]);
-    }
-    expect(
-      requestLearning.mock.calls.filter(
-        ([request]) => request.kind === 'practice-evaluate',
-      ),
-    ).toHaveLength(0);
-    attempt = await call('submitPracticeAttempt', {
-      attemptId,
-      expectedRevision: attempt.revision,
-      requestId: randomUUID(),
-    });
-    expect(attempt.status).toBe('evaluated');
-    expect(attempt.feedback).toHaveLength(3);
-    expect(attempt.feedback.every(({ assisted }) => !assisted)).toBe(true);
-    db.update(AssistanceLedgerTable)
-      .set({ answerRiskTags: ['cumulative-fragment'] })
-      .run();
-    expect((await call('getPracticeAttempt', { attemptId })).feedback).toEqual(
-      [],
-    );
-    await expect(
-      call(
-        'getPracticeAttempt',
-        { attemptId },
-        { ...context, userId: 'other-fixture-account' },
-      ),
-    ).rejects.toMatchObject({ code: 'not-found' });
-  });
+      expect(attempt.status).toBe('evaluated');
+      expect(attempt.feedback).toHaveLength(3);
+      expect(attempt.feedback.every(({ assisted }) => !assisted)).toBe(true);
+      db.update(AssistanceLedgerTable)
+        .set({ answerRiskTags: ['cumulative-fragment'] })
+        .run();
+      expect(
+        (await call('getPracticeAttempt', { attemptId })).feedback,
+      ).toEqual([]);
+      await expect(
+        call(
+          'getPracticeAttempt',
+          { attemptId },
+          { ...context, userId: 'other-fixture-account' },
+        ),
+      ).rejects.toMatchObject({ code: 'not-found' });
+    },
+  );
 
   it('keeps a failed provider response private and retries the saved message instead of the new draft', async () => {
     const requestLearning = vi.fn<TutorPracticeDependencies['requestLearning']>(
