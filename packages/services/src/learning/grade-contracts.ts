@@ -29,6 +29,7 @@ export const observedGradeSchema = z.discriminatedUnion('scale', [
   z.strictObject({ scale: z.literal('letter'), value: z.string().max(100) }),
   z.strictObject({ scale: z.literal('other'), value: z.string().max(100) }),
 ]);
+export type ObservedGradeSchema = z.infer<typeof observedGradeSchema>;
 export type ObservedGrade = z.infer<typeof observedGradeSchema>;
 
 export const gradeSettingsSchema = z.strictObject({
@@ -38,6 +39,7 @@ export const gradeSettingsSchema = z.strictObject({
   collectedCount: z.number().int().nonnegative(),
   updatedAt: instantSchema,
 });
+export type GradeSettingsSchema = z.infer<typeof gradeSettingsSchema>;
 export type GradeSettings = z.infer<typeof gradeSettingsSchema>;
 
 export const gradeVerificationStates = [
@@ -62,6 +64,7 @@ export const gradeVerificationSchema = z.strictObject({
   sourceReferences: z.array(sourceReferenceSchema).max(20),
   reasonCode: z.string().max(100),
 });
+export type GradeVerificationSchema = z.infer<typeof gradeVerificationSchema>;
 export type GradeVerificationDTO = z.infer<typeof gradeVerificationSchema>;
 
 export const allowedAssistanceOperations = [
@@ -89,4 +92,5 @@ export const assistancePolicySchema = z.strictObject({
   reasonCode: z.string().max(100),
   priorAssistanceSummary: z.string().max(2000),
 });
+export type AssistancePolicySchema = z.infer<typeof assistancePolicySchema>;
 export type AssistancePolicy = z.infer<typeof assistancePolicySchema>;

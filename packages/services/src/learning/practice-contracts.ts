@@ -37,6 +37,7 @@ export const practiceQuestionSchema = z.strictObject({
   objectiveIds: z.array(idSchema).max(20),
   sourceReferences: z.array(sourceReferenceSchema).max(20),
 });
+export type PracticeQuestionSchema = z.infer<typeof practiceQuestionSchema>;
 export type PracticeQuestionDTO = z.infer<typeof practiceQuestionSchema>;
 
 export const practiceEvaluationOutcomes = [
@@ -55,6 +56,7 @@ export const practiceEvaluationSchema = z.strictObject({
   rubricVersion: idSchema,
   assisted: z.boolean(),
 });
+export type PracticeEvaluationSchema = z.infer<typeof practiceEvaluationSchema>;
 export type PracticeEvaluationDTO = z.infer<typeof practiceEvaluationSchema>;
 
 export const practiceAnswerSchema = z.strictObject({
@@ -63,6 +65,7 @@ export const practiceAnswerSchema = z.strictObject({
   value: jsonValueSchema,
   savedAt: instantSchema,
 });
+export type PracticeAnswerSchema = z.infer<typeof practiceAnswerSchema>;
 export type PracticeAnswerDTO = z.infer<typeof practiceAnswerSchema>;
 
 export const practiceSnapshotSchema = z.strictObject({
@@ -79,4 +82,5 @@ export const practiceSnapshotSchema = z.strictObject({
   answers: z.array(practiceAnswerSchema).max(20),
   feedback: z.array(practiceEvaluationSchema).max(20),
 });
+export type PracticeSnapshotSchema = z.infer<typeof practiceSnapshotSchema>;
 export type PracticeSnapshot = z.infer<typeof practiceSnapshotSchema>;

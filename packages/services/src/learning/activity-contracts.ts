@@ -30,6 +30,7 @@ export const activityCandidateSchema = z
         message: 'Activity candidate exceeds the byte limit.',
       });
   });
+export type ActivityCandidateSchema = z.infer<typeof activityCandidateSchema>;
 export type ActivityCandidate = z.infer<typeof activityCandidateSchema>;
 
 export const artifactVersionSchema = z.strictObject({
@@ -43,6 +44,7 @@ export const artifactVersionSchema = z.strictObject({
   sourceReferences: z.array(sourceReferenceSchema).max(20),
   available: z.boolean(),
 });
+export type ArtifactVersionSchema = z.infer<typeof artifactVersionSchema>;
 export type ArtifactVersionDTO = z.infer<typeof artifactVersionSchema>;
 
 export const artifactStateSchema = z
@@ -66,6 +68,7 @@ export const artifactStateSchema = z
       });
     }
   });
+export type ArtifactStateSchema = z.infer<typeof artifactStateSchema>;
 export type ArtifactStateDTO = z.infer<typeof artifactStateSchema>;
 
 export const activityMessageProtocolVersion = 1 as const;
@@ -107,6 +110,7 @@ export const activityMessageSchema = z.discriminatedUnion('kind', [
     payload: z.strictObject({ code: z.string().max(100) }),
   }),
 ]);
+export type ActivityMessageSchema = z.infer<typeof activityMessageSchema>;
 export type ActivityMessage = z.infer<typeof activityMessageSchema>;
 
 export const activityMessageByteLimit = 16 * 1024;

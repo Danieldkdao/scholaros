@@ -25,6 +25,7 @@ export const preferenceContentSchema = z.strictObject({
   field: z.enum(preferenceFields),
   value: z.string().max(300),
 });
+export type PreferenceContentSchema = z.infer<typeof preferenceContentSchema>;
 export type PreferenceContent = z.infer<typeof preferenceContentSchema>;
 export const observationOutcomes = [
   'independent-success',
@@ -46,12 +47,14 @@ export const observationSummarySchema = z.strictObject({
   outcome: z.enum(observationOutcomes),
   summary: z.string().max(1000),
 });
+export type ObservationSummarySchema = z.infer<typeof observationSummarySchema>;
 export type ObservationSummary = z.infer<typeof observationSummarySchema>;
 
 export const memoryContentSchema = z.union([
   preferenceContentSchema,
   observationSummarySchema,
 ]);
+export type MemoryContentSchema = z.infer<typeof memoryContentSchema>;
 export type MemoryContent = z.infer<typeof memoryContentSchema>;
 export const memorySchema = z.strictObject({
   id: idSchema,
@@ -65,6 +68,7 @@ export const memorySchema = z.strictObject({
   createdAt: instantSchema,
   updatedAt: instantSchema,
 });
+export type MemorySchema = z.infer<typeof memorySchema>;
 export type MemoryDTO = z.infer<typeof memorySchema>;
 
 export const personalContextSchema = z.strictObject({
@@ -72,6 +76,7 @@ export const personalContextSchema = z.strictObject({
   observations: z.array(memorySchema).max(10),
   revision: revisionSchema,
 });
+export type PersonalContextSchema = z.infer<typeof personalContextSchema>;
 export type PersonalContext = z.infer<typeof personalContextSchema>;
 
 export const progressItemSchema = z.strictObject({
@@ -82,6 +87,7 @@ export const progressItemSchema = z.strictObject({
   assisted: z.boolean(),
   sourceReferences: z.array(sourceReferenceSchema).max(20),
 });
+export type ProgressItemSchema = z.infer<typeof progressItemSchema>;
 export type ProgressItem = z.infer<typeof progressItemSchema>;
 export const learningProgressSchema = z.strictObject({
   courseId: idSchema.nullable(),
@@ -91,4 +97,5 @@ export const learningProgressSchema = z.strictObject({
   unknownCount: z.number().int().nonnegative(),
   revision: revisionSchema,
 });
+export type LearningProgressSchema = z.infer<typeof learningProgressSchema>;
 export type LearningProgress = z.infer<typeof learningProgressSchema>;

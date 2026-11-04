@@ -62,6 +62,9 @@ export const createStudySessionInputSchema = z.strictObject({
   durationMinutes: z.number().int().min(1).max(240).nullable(),
   title: z.string().max(160).optional(),
 });
+export type CreateStudySessionInputSchema = z.infer<
+  typeof createStudySessionInputSchema
+>;
 export type CreateStudySessionInput = z.infer<
   typeof createStudySessionInputSchema
 >;
@@ -73,6 +76,7 @@ export const studyTimerSchema = z.strictObject({
   resolvedExpiredRevision: revisionSchema.nullable(),
   finishedAt: instantSchema.nullable(),
 });
+export type StudyTimerSchema = z.infer<typeof studyTimerSchema>;
 export type StudyTimerDTO = z.infer<typeof studyTimerSchema>;
 
 export const studySessionSchema = z.strictObject({
@@ -94,6 +98,7 @@ export const studySessionSchema = z.strictObject({
   }),
   timer: studyTimerSchema,
 });
+export type StudySessionSchema = z.infer<typeof studySessionSchema>;
 export type StudySessionDTO = z.infer<typeof studySessionSchema>;
 
 export const studyMessagePartSchema = z.discriminatedUnion('kind', [
@@ -120,6 +125,7 @@ export const studyMessagePartSchema = z.discriminatedUnion('kind', [
     label: z.string().max(300),
   }),
 ]);
+export type StudyMessagePartSchema = z.infer<typeof studyMessagePartSchema>;
 export type MessagePart = z.infer<typeof studyMessagePartSchema>;
 
 export const studyMessageSchema = z.strictObject({
@@ -134,6 +140,7 @@ export const studyMessageSchema = z.strictObject({
   gradeDerived: z.boolean(),
   gradeConsentRevision: revisionSchema.nullable(),
 });
+export type StudyMessageSchema = z.infer<typeof studyMessageSchema>;
 export type StudyMessageDTO = z.infer<typeof studyMessageSchema>;
 
 export const turnSchema = z.strictObject({
@@ -145,6 +152,7 @@ export const turnSchema = z.strictObject({
   startedAt: instantSchema,
   settledAt: instantSchema.nullable(),
 });
+export type TurnSchema = z.infer<typeof turnSchema>;
 export type TurnDTO = z.infer<typeof turnSchema>;
 
 export const sessionSnapshotSchema = z.strictObject({
@@ -155,6 +163,7 @@ export const sessionSnapshotSchema = z.strictObject({
   sourceReferences: z.array(sourceReferenceSchema).max(200),
   revision: revisionSchema,
 });
+export type SessionSnapshotSchema = z.infer<typeof sessionSnapshotSchema>;
 export type SessionSnapshot = z.infer<typeof sessionSnapshotSchema>;
 
 export const preparedStudyContextSchema = z.strictObject({
@@ -188,4 +197,7 @@ export const preparedStudyContextSchema = z.strictObject({
   contextRevision: revisionSchema,
   policy: assistancePolicySchema,
 });
+export type PreparedStudyContextSchema = z.infer<
+  typeof preparedStudyContextSchema
+>;
 export type PreparedStudyContext = z.infer<typeof preparedStudyContextSchema>;

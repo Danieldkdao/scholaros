@@ -27,6 +27,7 @@ export const attentionItemSchema = z.strictObject({
   label: z.string().max(160),
   route: safeRouteSchema,
 });
+export type AttentionItemSchema = z.infer<typeof attentionItemSchema>;
 export type AttentionItem = z.infer<typeof attentionItemSchema>;
 export const freshnessItemSchema = z.strictObject({
   courseId: idSchema,
@@ -34,6 +35,7 @@ export const freshnessItemSchema = z.strictObject({
   lastSuccessfulAt: instantSchema.nullable(),
   pendingCount: z.number().int().nonnegative(),
 });
+export type FreshnessItemSchema = z.infer<typeof freshnessItemSchema>;
 export type FreshnessItem = z.infer<typeof freshnessItemSchema>;
 export const upcomingItemSchema = z.strictObject({
   resourceId: idSchema,
@@ -42,6 +44,7 @@ export const upcomingItemSchema = z.strictObject({
   date: academicDateSchema.nullable(),
   sourceReference: sourceReferenceSchema,
 });
+export type UpcomingItemSchema = z.infer<typeof upcomingItemSchema>;
 export type UpcomingItem = z.infer<typeof upcomingItemSchema>;
 export const announcementSummarySchema = z.strictObject({
   id: idSchema,
@@ -50,6 +53,9 @@ export const announcementSummarySchema = z.strictObject({
   publishedAt: instantSchema.nullable(),
   sourceReference: sourceReferenceSchema,
 });
+export type AnnouncementSummarySchema = z.infer<
+  typeof announcementSummarySchema
+>;
 export type AnnouncementSummary = z.infer<typeof announcementSummarySchema>;
 export const todayCourseSummarySchema = z.strictObject({
   id: idSchema,
@@ -64,6 +70,7 @@ export const todayCourseSummarySchema = z.strictObject({
   assignmentCount: z.number().int().nonnegative(),
   announcementCount: z.number().int().nonnegative(),
 });
+export type TodayCourseSummarySchema = z.infer<typeof todayCourseSummarySchema>;
 export type TodayCourseSummary = z.infer<typeof todayCourseSummarySchema>;
 export const recommendationSchema = z.strictObject({
   id: idSchema,
@@ -75,6 +82,7 @@ export const recommendationSchema = z.strictObject({
   sourceReferences: z.array(sourceReferenceSchema).max(20),
   inputsRevision: revisionSchema,
 });
+export type RecommendationSchema = z.infer<typeof recommendationSchema>;
 export type Recommendation = z.infer<typeof recommendationSchema>;
 export const todayOverviewSchema = z.strictObject({
   attention: z.array(attentionItemSchema).max(10),
@@ -88,4 +96,5 @@ export const todayOverviewSchema = z.strictObject({
   recommendations: z.array(recommendationSchema).max(5),
   revision: revisionSchema,
 });
+export type TodayOverviewSchema = z.infer<typeof todayOverviewSchema>;
 export type TodayOverview = z.infer<typeof todayOverviewSchema>;

@@ -53,6 +53,7 @@ export const safeRouteSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('context'), itemId: idSchema.nullable() }),
   z.strictObject({ kind: z.literal('study'), sessionId: idSchema }),
 ]);
+export type SafeRouteSchema = z.infer<typeof safeRouteSchema>;
 export type SafeRoute = z.infer<typeof safeRouteSchema>;
 const ianaTimeZoneSchema = z
   .string()
@@ -65,6 +66,7 @@ const ianaTimeZoneSchema = z
       return false;
     }
   }, 'Expected an IANA time zone.');
+export type IanaTimeZoneSchema = z.infer<typeof ianaTimeZoneSchema>;
 export const notificationSettingsSchema = z.strictObject({
   enabled: z.boolean(),
   categories: z.record(z.enum(notificationCategories), z.boolean()),
@@ -76,4 +78,7 @@ export const notificationSettingsSchema = z.strictObject({
   }),
   revision: revisionSchema,
 });
+export type NotificationSettingsSchema = z.infer<
+  typeof notificationSettingsSchema
+>;
 export type NotificationSettings = z.infer<typeof notificationSettingsSchema>;

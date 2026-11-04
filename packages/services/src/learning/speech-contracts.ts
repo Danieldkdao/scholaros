@@ -59,16 +59,23 @@ export const dictationEventSchema = z.discriminatedUnion('kind', [
     kind: z.literal('ended'),
   }),
 ]);
+export type DictationEventSchema = z.infer<typeof dictationEventSchema>;
 export type DictationEvent = z.infer<typeof dictationEventSchema>;
 export const dictationStartInputSchema = z.strictObject({
   sessionId: idSchema,
   requestId: requestIdSchema,
   composerRevision: revisionSchema,
 });
+export type DictationStartInputSchema = z.infer<
+  typeof dictationStartInputSchema
+>;
 export type DictationStartInput = z.infer<typeof dictationStartInputSchema>;
 export const dictationAudioChunkSchema = z.strictObject({
   operationId: idSchema,
   sequence: revisionSchema,
   bytes: z.instanceof(Uint8Array).refine((bytes) => bytes.byteLength <= 16_384),
 });
+export type DictationAudioChunkSchema = z.infer<
+  typeof dictationAudioChunkSchema
+>;
 export type DictationAudioChunk = z.infer<typeof dictationAudioChunkSchema>;

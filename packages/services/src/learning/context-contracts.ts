@@ -73,6 +73,7 @@ export const locatorSchema = z.discriminatedUnion('kind', [
     ordinal: z.number().int().positive(),
   }),
 ]);
+export type LocatorSchema = z.infer<typeof locatorSchema>;
 export type Locator = z.infer<typeof locatorSchema>;
 
 export const sourceReferenceSchema = z.strictObject({
@@ -86,6 +87,7 @@ export const sourceReferenceSchema = z.strictObject({
   observedAt: instantSchema.nullable(),
   state: z.enum(sourceStates),
 });
+export type SourceReferenceSchema = z.infer<typeof sourceReferenceSchema>;
 export type SourceReference = z.infer<typeof sourceReferenceSchema>;
 
 export const contextItemSchema = z.strictObject({
@@ -109,6 +111,7 @@ export const contextItemSchema = z.strictObject({
     })
     .nullable(),
 });
+export type ContextItemSchema = z.infer<typeof contextItemSchema>;
 export type ContextItemDTO = z.infer<typeof contextItemSchema>;
 
 export const contextVersionSchema = z.strictObject({
@@ -125,6 +128,7 @@ export const contextVersionSchema = z.strictObject({
   originalAvailable: z.boolean(),
   locators: z.array(locatorSchema).max(2000),
 });
+export type ContextVersionSchema = z.infer<typeof contextVersionSchema>;
 export type ContextVersionDTO = z.infer<typeof contextVersionSchema>;
 
 export const contextPreviewSchema = z.discriminatedUnion('kind', [
@@ -149,6 +153,7 @@ export const contextPreviewSchema = z.discriminatedUnion('kind', [
     reason: z.enum(contextPreviewUnavailableReasons),
   }),
 ]);
+export type ContextPreviewSchema = z.infer<typeof contextPreviewSchema>;
 export type ContextPreview = z.infer<typeof contextPreviewSchema>;
 
 export const sourcePassageSchema = z.strictObject({
@@ -156,4 +161,20 @@ export const sourcePassageSchema = z.strictObject({
   text: z.string().max(2000),
   score: z.number().finite().nullable(),
 });
+export type SourcePassageSchema = z.infer<typeof sourcePassageSchema>;
 export type SourcePassage = z.infer<typeof sourcePassageSchema>;
+
+export const documentPageStatuses = [
+  'readable',
+  'partial',
+  'uncertain',
+  'unreadable',
+] as const;
+export type DocumentPageStatus = (typeof documentPageStatuses)[number];
+export const documentInterpretationStatuses = [
+  'complete',
+  'partial',
+  'unreadable',
+] as const;
+export type DocumentInterpretationStatus =
+  (typeof documentInterpretationStatuses)[number];
