@@ -43,11 +43,18 @@ const safeGraphCandidateFixture = {
   runtimeVersion: 1 as const,
 };
 
-const createAuthorizedContext = (isCurrent = () => true) => ({
-  userId: accountId,
-  epoch: 1,
+const createAuthorizedContext = (
+  isCurrent = () => true,
+  overrides: {
+    userId?: string;
+    epoch?: number;
+    signal?: AbortSignal;
+  } = {},
+) => ({
+  userId: overrides.userId ?? accountId,
+  epoch: overrides.epoch ?? 1,
   isCurrent,
-  signal: new AbortController().signal,
+  signal: overrides.signal ?? new AbortController().signal,
 });
 
 let directory: string;
@@ -121,6 +128,13 @@ const createVersion = (overrides: Record<string, unknown> = {}) =>
     requestId: randomUUID(),
     ...overrides,
   });
+
+const createAuthorizationInput = (
+  artifactId: string,
+  versionId: string,
+  attemptId: string,
+  requestId = randomUUID(),
+) => ({ sessionId, artifactId, versionId, attemptId, requestId });
 
 beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), 'scholaros-artifact-store-'));
@@ -220,16 +234,20 @@ it('preserves the previous accepted version when regeneration is rejected', asyn
 
 it('reopens an older immutable version offline with its exact bundle and state', async () => {
   const firstArtifact = await createVersion();
-  const run = await store.authorizeActivityRun(createAuthorizedContext(), {
-    sessionId,
-    artifactId: firstArtifact.version.artifactId,
-    versionId: firstArtifact.version.versionId,
-    attemptId: firstArtifact.attemptId,
-  });
+  const firstRequest = createAuthorizationInput(
+    firstArtifact.version.artifactId,
+    firstArtifact.version.versionId,
+    firstArtifact.attemptId,
+  );
+  const run = await store.authorizeActivityRun(
+    createAuthorizedContext(),
+    firstRequest,
+  );
   const savedState = await store.checkpointArtifactState(
     createAuthorizedContext(),
     {
       runId: run.runId,
+      sequence: 1,
       expectedRevision: 0,
       state: { controls: { frequency: 6 }, feedback: 'Shorter wavelength' },
     },
@@ -244,12 +262,11 @@ it('reopens an older immutable version offline with its exact bundle and state',
   });
   const reopenedRun = await store.authorizeActivityRun(
     createAuthorizedContext(),
-    {
-      sessionId,
-      artifactId: firstArtifact.version.artifactId,
-      versionId: firstArtifact.version.versionId,
-      attemptId: firstArtifact.attemptId,
-    },
+    createAuthorizationInput(
+      firstArtifact.version.artifactId,
+      firstArtifact.version.versionId,
+      firstArtifact.attemptId,
+    ),
   );
 
   expect(nextArtifact.version.versionId).not.toBe(
@@ -265,18 +282,230 @@ it('reopens an older immutable version offline with its exact bundle and state',
   expect(reopenedRun.state).toEqual(savedState);
 });
 
+it('returns the exact active authorization DTO for a repeated request', async () => {
+  const createdArtifact = await createVersion();
+  const input = createAuthorizationInput(
+    createdArtifact.version.artifactId,
+    createdArtifact.version.versionId,
+    createdArtifact.attemptId,
+  );
+  const firstRun = await store.authorizeActivityRun(
+    createAuthorizedContext(),
+    input,
+  );
+  const replayedRun = await store.authorizeActivityRun(
+    createAuthorizedContext(),
+    input,
+  );
+
+  expect(replayedRun).toEqual(firstRun);
+  expect(replayedRun.runId).toBe(firstRun.runId);
+});
+
+it('does not replay an authorization across account epochs', async () => {
+  const createdArtifact = await createVersion();
+  const input = createAuthorizationInput(
+    createdArtifact.version.artifactId,
+    createdArtifact.version.versionId,
+    createdArtifact.attemptId,
+  );
+  const firstRun = await store.authorizeActivityRun(
+    createAuthorizedContext(),
+    input,
+  );
+  const nextEpochRun = await store.authorizeActivityRun(
+    createAuthorizedContext(() => true, { epoch: 2 }),
+    input,
+  );
+
+  expect(nextEpochRun.runId).not.toBe(firstRun.runId);
+  await expect(
+    store.checkpointArtifactState(createAuthorizedContext(), {
+      runId: firstRun.runId,
+      sequence: 1,
+      expectedRevision: 0,
+      state: { answer: 'stale account epoch' },
+    }),
+  ).rejects.toMatchObject({ code: 'scope-denied' });
+});
+
+it('rejects authorization replay when its requested IDs change', async () => {
+  const createdArtifact = await createVersion();
+  const input = createAuthorizationInput(
+    createdArtifact.version.artifactId,
+    createdArtifact.version.versionId,
+    createdArtifact.attemptId,
+  );
+  await store.authorizeActivityRun(createAuthorizedContext(), input);
+
+  await expect(
+    store.authorizeActivityRun(createAuthorizedContext(), {
+      ...input,
+      artifactId: 'artifact-other',
+    }),
+  ).rejects.toMatchObject({ code: 'revision-conflict' });
+});
+
+it('replays a committed state checkpoint with the same sequence and payload', async () => {
+  const createdArtifact = await createVersion();
+  const run = await store.authorizeActivityRun(
+    createAuthorizedContext(),
+    createAuthorizationInput(
+      createdArtifact.version.artifactId,
+      createdArtifact.version.versionId,
+      createdArtifact.attemptId,
+    ),
+  );
+  const input = {
+    runId: run.runId,
+    sequence: 1,
+    expectedRevision: 0,
+    state: { controls: { frequency: 6 }, feedback: 'Shorter wavelength' },
+  };
+  const committedState = await store.checkpointArtifactState(
+    createAuthorizedContext(),
+    input,
+  );
+  const replayedState = await store.checkpointArtifactState(
+    createAuthorizedContext(),
+    input,
+  );
+
+  expect(replayedState).toEqual(committedState);
+  expect(committedState.stateRevision).toBe(1);
+  expect(
+    db
+      .select()
+      .from(ArtifactStateTable)
+      .where(
+        eq(ArtifactStateTable.artifactId, createdArtifact.version.artifactId),
+      )
+      .get()?.stateRevision,
+  ).toBe(1);
+});
+
+it('rejects a conflicting checkpoint payload or base revision for the same sequence', async () => {
+  const createdArtifact = await createVersion();
+  const run = await store.authorizeActivityRun(
+    createAuthorizedContext(),
+    createAuthorizationInput(
+      createdArtifact.version.artifactId,
+      createdArtifact.version.versionId,
+      createdArtifact.attemptId,
+    ),
+  );
+  const input = {
+    runId: run.runId,
+    sequence: 1,
+    expectedRevision: 0,
+    state: { answer: 'frequency increases' },
+  };
+  const committedState = await store.checkpointArtifactState(
+    createAuthorizedContext(),
+    input,
+  );
+
+  await expect(
+    store.checkpointArtifactState(createAuthorizedContext(), {
+      ...input,
+      state: { answer: 'different payload' },
+    }),
+  ).rejects.toMatchObject({ code: 'revision-conflict' });
+  await expect(
+    store.checkpointArtifactState(createAuthorizedContext(), {
+      ...input,
+      expectedRevision: 1,
+    }),
+  ).rejects.toMatchObject({ code: 'revision-conflict' });
+  expect(
+    await store.getArtifactState(createAuthorizedContext(), {
+      artifactId: createdArtifact.version.artifactId,
+      versionId: createdArtifact.version.versionId,
+      attemptId: createdArtifact.attemptId,
+    }),
+  ).toEqual(committedState);
+});
+
+it('requires positive checkpoint sequences', async () => {
+  const createdArtifact = await createVersion();
+  const run = await store.authorizeActivityRun(
+    createAuthorizedContext(),
+    createAuthorizationInput(
+      createdArtifact.version.artifactId,
+      createdArtifact.version.versionId,
+      createdArtifact.attemptId,
+    ),
+  );
+
+  await expect(
+    store.checkpointArtifactState(createAuthorizedContext(), {
+      runId: run.runId,
+      sequence: 0,
+      expectedRevision: 0,
+      state: { answer: 'invalid sequence' },
+    }),
+  ).rejects.toMatchObject({ code: 'invalid-input' });
+});
+
+it('fences checkpoint replays by account epoch and session generation', async () => {
+  const createdArtifact = await createVersion();
+  const run = await store.authorizeActivityRun(
+    createAuthorizedContext(),
+    createAuthorizationInput(
+      createdArtifact.version.artifactId,
+      createdArtifact.version.versionId,
+      createdArtifact.attemptId,
+    ),
+  );
+  const input = {
+    runId: run.runId,
+    sequence: 1,
+    expectedRevision: 0,
+    state: { answer: 'same active account' },
+  };
+  const committedState = await store.checkpointArtifactState(
+    createAuthorizedContext(),
+    input,
+  );
+
+  await expect(
+    store.checkpointArtifactState(
+      createAuthorizedContext(() => true, { userId: 'user-2' }),
+      input,
+    ),
+  ).rejects.toMatchObject({ code: 'scope-denied' });
+  await expect(
+    store.checkpointArtifactState(
+      createAuthorizedContext(() => true, { epoch: 2 }),
+      input,
+    ),
+  ).rejects.toMatchObject({ code: 'scope-denied' });
+
+  db.update(StudySessionTable)
+    .set({ generationEpoch: 1 })
+    .where(eq(StudySessionTable.id, sessionId))
+    .run();
+  await expect(
+    store.checkpointArtifactState(createAuthorizedContext(), input),
+  ).rejects.toMatchObject({ code: 'session-changed' });
+  expect(committedState.stateRevision).toBe(1);
+});
+
 it('compare-and-swaps full JSON state and rejects stale revisions', async () => {
   const createdArtifact = await createVersion();
-  const run = await store.authorizeActivityRun(createAuthorizedContext(), {
-    sessionId,
-    artifactId: createdArtifact.version.artifactId,
-    versionId: createdArtifact.version.versionId,
-    attemptId: createdArtifact.attemptId,
-  });
+  const run = await store.authorizeActivityRun(
+    createAuthorizedContext(),
+    createAuthorizationInput(
+      createdArtifact.version.artifactId,
+      createdArtifact.version.versionId,
+      createdArtifact.attemptId,
+    ),
+  );
   const savedState = await store.checkpointArtifactState(
     createAuthorizedContext(),
     {
       runId: run.runId,
+      sequence: 1,
       expectedRevision: 0,
       state: { sliders: [2, 4], answer: 'wavelength decreases' },
     },
@@ -286,6 +515,7 @@ it('compare-and-swaps full JSON state and rejects stale revisions', async () => 
   await expect(
     store.checkpointArtifactState(createAuthorizedContext(), {
       runId: run.runId,
+      sequence: 2,
       expectedRevision: 0,
       state: { sliders: [9, 9], answer: 'stale write' },
     }),
@@ -293,6 +523,7 @@ it('compare-and-swaps full JSON state and rejects stale revisions', async () => 
   await expect(
     store.checkpointArtifactState(createAuthorizedContext(), {
       runId: run.runId,
+      sequence: 2,
       expectedRevision: 1,
       state: { constructor: { polluted: true } },
     }),
@@ -308,16 +539,19 @@ it('compare-and-swaps full JSON state and rejects stale revisions', async () => 
 
 it('rejects full-state replacements above 64 KiB without advancing the revision', async () => {
   const createdArtifact = await createVersion();
-  const run = await store.authorizeActivityRun(createAuthorizedContext(), {
-    sessionId,
-    artifactId: createdArtifact.version.artifactId,
-    versionId: createdArtifact.version.versionId,
-    attemptId: createdArtifact.attemptId,
-  });
+  const run = await store.authorizeActivityRun(
+    createAuthorizedContext(),
+    createAuthorizationInput(
+      createdArtifact.version.artifactId,
+      createdArtifact.version.versionId,
+      createdArtifact.attemptId,
+    ),
+  );
 
   await expect(
     store.checkpointArtifactState(createAuthorizedContext(), {
       runId: run.runId,
+      sequence: 1,
       expectedRevision: 0,
       state: { answer: 'x'.repeat(64 * 1024) },
     }),
@@ -354,17 +588,22 @@ it('discards a candidate if its authorized account epoch changes during validati
 
 it('releases a closed executor so late checkpoints are fenced', async () => {
   const createdArtifact = await createVersion();
-  const run = await store.authorizeActivityRun(createAuthorizedContext(), {
-    sessionId,
-    artifactId: createdArtifact.version.artifactId,
-    versionId: createdArtifact.version.versionId,
-    attemptId: createdArtifact.attemptId,
-  });
-  store.releaseActivityRun(run.runId);
+  const requestId = randomUUID();
+  const run = await store.authorizeActivityRun(
+    createAuthorizedContext(),
+    createAuthorizationInput(
+      createdArtifact.version.artifactId,
+      createdArtifact.version.versionId,
+      createdArtifact.attemptId,
+      requestId,
+    ),
+  );
+  store.releaseActivityRun({ runId: run.runId, requestId });
 
   await expect(
     store.checkpointArtifactState(createAuthorizedContext(), {
       runId: run.runId,
+      sequence: 1,
       expectedRevision: 0,
       state: { frequency: 4 },
     }),
@@ -378,18 +617,108 @@ it('releases a closed executor so late checkpoints are fenced', async () => {
   ).toMatchObject({ stateRevision: 0, state: {} });
 });
 
+it('releases only the matching P20 run by run ID or authorization request ID', async () => {
+  const firstArtifact = await createVersion();
+  const secondArtifact = await createVersion();
+  const fallbackArtifact = await createVersion();
+  const firstRequestId = randomUUID();
+  const secondRequestId = randomUUID();
+  const fallbackRequestId = randomUUID();
+  const firstRun = await store.authorizeActivityRun(
+    createAuthorizedContext(),
+    createAuthorizationInput(
+      firstArtifact.version.artifactId,
+      firstArtifact.version.versionId,
+      firstArtifact.attemptId,
+      firstRequestId,
+    ),
+  );
+  const secondRun = await store.authorizeActivityRun(
+    createAuthorizedContext(),
+    createAuthorizationInput(
+      secondArtifact.version.artifactId,
+      secondArtifact.version.versionId,
+      secondArtifact.attemptId,
+      secondRequestId,
+    ),
+  );
+  const fallbackRun = await store.authorizeActivityRun(
+    createAuthorizedContext(),
+    createAuthorizationInput(
+      fallbackArtifact.version.artifactId,
+      fallbackArtifact.version.versionId,
+      fallbackArtifact.attemptId,
+      fallbackRequestId,
+    ),
+  );
+
+  store.releaseActivityRun({
+    runId: firstRun.runId,
+    requestId: secondRequestId,
+  });
+  const firstState = await store.checkpointArtifactState(
+    createAuthorizedContext(),
+    {
+      runId: firstRun.runId,
+      sequence: 1,
+      expectedRevision: 0,
+      state: { answer: 'still active after mismatched release' },
+    },
+  );
+  expect(firstState.stateRevision).toBe(1);
+
+  store.releaseActivityRun({
+    runId: firstRun.runId,
+    requestId: firstRequestId,
+  });
+  store.releaseActivityRun({
+    runId: firstRun.runId,
+    requestId: firstRequestId,
+  });
+  await expect(
+    store.checkpointArtifactState(createAuthorizedContext(), {
+      runId: firstRun.runId,
+      sequence: 2,
+      expectedRevision: 1,
+      state: { answer: 'closed run' },
+    }),
+  ).rejects.toMatchObject({ code: 'scope-denied' });
+
+  expect(
+    await store.checkpointArtifactState(createAuthorizedContext(), {
+      runId: secondRun.runId,
+      sequence: 1,
+      expectedRevision: 0,
+      state: { answer: 'other run remains active' },
+    }),
+  ).toMatchObject({ stateRevision: 1 });
+
+  store.releaseActivityRun({ requestId: fallbackRequestId });
+  await expect(
+    store.checkpointArtifactState(createAuthorizedContext(), {
+      runId: fallbackRun.runId,
+      sequence: 1,
+      expectedRevision: 0,
+      state: { answer: 'authorization response was lost' },
+    }),
+  ).rejects.toMatchObject({ code: 'scope-denied' });
+});
+
 it('keeps unsupported runtime versions and prior state available for recovery', async () => {
   const createdArtifact = await createVersion();
-  const run = await store.authorizeActivityRun(createAuthorizedContext(), {
-    sessionId,
-    artifactId: createdArtifact.version.artifactId,
-    versionId: createdArtifact.version.versionId,
-    attemptId: createdArtifact.attemptId,
-  });
+  const run = await store.authorizeActivityRun(
+    createAuthorizedContext(),
+    createAuthorizationInput(
+      createdArtifact.version.artifactId,
+      createdArtifact.version.versionId,
+      createdArtifact.attemptId,
+    ),
+  );
   const savedState = await store.checkpointArtifactState(
     createAuthorizedContext(),
     {
       runId: run.runId,
+      sequence: 1,
       expectedRevision: 0,
       state: { frequency: 5 },
     },
@@ -411,6 +740,7 @@ it('keeps unsupported runtime versions and prior state available for recovery', 
       artifactId: createdArtifact.version.artifactId,
       versionId: createdArtifact.version.versionId,
       attemptId: createdArtifact.attemptId,
+      requestId: randomUUID(),
     }),
   ).rejects.toMatchObject({ code: 'unsupported' });
   await expect(
@@ -432,16 +762,19 @@ it('keeps unsupported runtime versions and prior state available for recovery', 
 
 it('resets into a new attempt while retaining the previous attempt history', async () => {
   const createdArtifact = await createVersion();
-  const run = await store.authorizeActivityRun(createAuthorizedContext(), {
-    sessionId,
-    artifactId: createdArtifact.version.artifactId,
-    versionId: createdArtifact.version.versionId,
-    attemptId: createdArtifact.attemptId,
-  });
+  const run = await store.authorizeActivityRun(
+    createAuthorizedContext(),
+    createAuthorizationInput(
+      createdArtifact.version.artifactId,
+      createdArtifact.version.versionId,
+      createdArtifact.attemptId,
+    ),
+  );
   const previousAttempt = await store.checkpointArtifactState(
     createAuthorizedContext(),
     {
       runId: run.runId,
+      sequence: 1,
       expectedRevision: 0,
       state: { frequency: 7, response: 'shorter wavelength' },
     },
@@ -541,6 +874,7 @@ it('retains an independently saved Context activity after session and source rem
       artifactId: createdArtifact.version.artifactId,
       versionId: createdArtifact.version.versionId,
       attemptId: createdArtifact.attemptId,
+      requestId: randomUUID(),
     },
   );
   expect(authorizedRun.sourceReferences[0]).toMatchObject({

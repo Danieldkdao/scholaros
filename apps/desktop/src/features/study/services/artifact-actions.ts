@@ -9,12 +9,25 @@ import {
   type ArtifactStore,
 } from './artifact-store';
 
+export { createArtifactStore };
+
+export type {
+  AuthorizeActivityRunInput,
+  AuthorizedActivityRun,
+  CheckpointArtifactStateInput,
+  ArtifactStore,
+  ReleaseActivityRunInput,
+} from './artifact-store';
+
 const artifactStore = createArtifactStore({ db });
 
 export const createArtifactVersion = artifactStore.createArtifactVersion;
-export const checkpointArtifactState = artifactStore.checkpointArtifactState;
-export const authorizeActivityRun = artifactStore.authorizeActivityRun;
-export const releaseActivityRun = artifactStore.releaseActivityRun;
+export const checkpointArtifactState: ArtifactStore['checkpointArtifactState'] =
+  artifactStore.checkpointArtifactState;
+export const authorizeActivityRun: ArtifactStore['authorizeActivityRun'] =
+  artifactStore.authorizeActivityRun;
+export const releaseActivityRun: ArtifactStore['releaseActivityRun'] =
+  artifactStore.releaseActivityRun;
 
 export const registerArtifactActions = (
   registrar: AuthorizedRegistrar,

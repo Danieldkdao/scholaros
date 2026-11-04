@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { Buffer } from 'node:buffer';
+import { isDeepStrictEqual } from 'node:util';
 import { and, eq, isNull } from 'drizzle-orm';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import {
@@ -92,6 +93,25 @@ export type AuthorizedActivityRun = {
   state: ArtifactStateDTO;
 };
 
+export type AuthorizeActivityRunInput = {
+  sessionId: string;
+  artifactId: string;
+  versionId: string;
+  attemptId: string;
+  requestId: string;
+};
+
+export type CheckpointArtifactStateInput = {
+  runId: string;
+  sequence: number;
+  expectedRevision: number;
+  state: JsonValue;
+};
+
+export type ReleaseActivityRunInput =
+  | { runId: string; requestId?: string }
+  | { runId?: never; requestId: string };
+
 type ArtifactDatabase = BetterSQLite3Database<typeof schema>;
 
 type ArtifactStoreDependencies = {
@@ -125,6 +145,14 @@ type ActivityRunBinding = {
   artifactId: string;
   versionId: string;
   attemptId: string;
+  requestId: string;
+  authorization: AuthorizedActivityRun;
+  latestCheckpointReceipt?: {
+    sequence: number;
+    expectedRevision: number;
+    state: JsonValue;
+    dto: ArtifactStateDTO;
+  };
 };
 
 const createVersionInputKeys = new Set([
@@ -683,12 +711,28 @@ export const createArtifactStore = ({
 
   const checkpointArtifactState = async (
     context: AuthorizedContext,
-    input: { runId: string; expectedRevision: number; state: JsonValue },
+    input: CheckpointArtifactStateInput,
   ): Promise<ArtifactStateDTO> => {
+    if (!input || typeof input !== 'object' || Array.isArray(input))
+      throw new ArtifactStoreError('invalid-input');
+    if (
+      Object.keys(input).some(
+        (key) =>
+          !['runId', 'sequence', 'expectedRevision', 'state'].includes(key),
+      )
+    )
+      throw new ArtifactStoreError('invalid-input');
     const runId = idSchema.safeParse(input?.runId);
+    const sequence = input?.sequence;
     const expectedRevision = revisionSchema.safeParse(input?.expectedRevision);
     const parsedState = jsonValueSchema.safeParse(input?.state);
-    if (!runId.success || !expectedRevision.success || !parsedState.success)
+    if (
+      !runId.success ||
+      !Number.isSafeInteger(sequence) ||
+      sequence < 1 ||
+      !expectedRevision.success ||
+      !parsedState.success
+    )
       throw new ArtifactStoreError('invalid-input');
     let serializedState: string;
     try {
@@ -708,7 +752,7 @@ export const createArtifactStore = ({
       throw new ArtifactStoreError('scope-denied');
 
     try {
-      const updatedState = db.transaction((tx) => {
+      const checkpointResult = db.transaction((tx) => {
         if (!isCurrentContext(context))
           throw new ArtifactStoreError('session-changed');
         const session = tx
@@ -754,6 +798,21 @@ export const createArtifactStore = ({
           )
           .get();
         if (!stateRow) throw new ArtifactStoreError('not-found');
+        const receipt = binding.latestCheckpointReceipt;
+        if (receipt && sequence === receipt.sequence) {
+          if (
+            expectedRevision.data !== receipt.expectedRevision ||
+            !isDeepStrictEqual(parsedState.data, receipt.state) ||
+            stateRow.stateRevision !== receipt.dto.stateRevision ||
+            !isDeepStrictEqual(stateRow.state, receipt.state)
+          )
+            throw new ArtifactStoreError('revision-conflict');
+          if (!isCurrentContext(context))
+            throw new ArtifactStoreError('session-changed');
+          return { dto: structuredClone(receipt.dto), replayed: true };
+        }
+        if (receipt && sequence < receipt.sequence)
+          throw new ArtifactStoreError('revision-conflict');
         if (stateRow.stateRevision !== expectedRevision.data)
           throw new ArtifactStoreError('revision-conflict');
         if (!isCurrentContext(context))
@@ -783,10 +842,17 @@ export const createArtifactStore = ({
           .get();
         const dto = persisted ? artifactStateDto(persisted) : null;
         if (!dto) throw new ArtifactStoreError('storage-failed');
-        return dto;
+        return { dto, replayed: false };
       });
       assertCurrentContext(context);
-      return updatedState;
+      if (!checkpointResult.replayed)
+        binding.latestCheckpointReceipt = {
+          sequence,
+          expectedRevision: expectedRevision.data,
+          state: structuredClone(parsedState.data),
+          dto: structuredClone(checkpointResult.dto),
+        };
+      return checkpointResult.dto;
     } catch (error) {
       if (error instanceof ArtifactStoreError) throw error;
       throw new ArtifactStoreError('storage-failed');
@@ -1137,25 +1203,124 @@ export const createArtifactStore = ({
 
   const authorizeActivityRun = async (
     context: AuthorizedContext,
-    input: {
-      sessionId: string;
-      artifactId: string;
-      versionId: string;
-      attemptId: string;
-    },
+    input: AuthorizeActivityRunInput,
   ): Promise<AuthorizedActivityRun> => {
+    if (!input || typeof input !== 'object' || Array.isArray(input))
+      throw new ArtifactStoreError('invalid-input');
+    if (
+      Object.keys(input).some(
+        (key) =>
+          ![
+            'sessionId',
+            'artifactId',
+            'versionId',
+            'attemptId',
+            'requestId',
+          ].includes(key),
+      )
+    )
+      throw new ArtifactStoreError('invalid-input');
     const sessionId = idSchema.safeParse(input?.sessionId);
     const artifactId = idSchema.safeParse(input?.artifactId);
     const versionId = idSchema.safeParse(input?.versionId);
     const attemptId = idSchema.safeParse(input?.attemptId);
+    const requestId = requestIdSchema.safeParse(input?.requestId);
     if (
       !sessionId.success ||
       !artifactId.success ||
       !versionId.success ||
-      !attemptId.success
+      !attemptId.success ||
+      !requestId.success
     )
       throw new ArtifactStoreError('invalid-input');
     assertCurrentContext(context);
+
+    const authorizationReplay = [...activeRuns.entries()].find(
+      ([, binding]) =>
+        binding.userId === context.userId &&
+        binding.accountEpoch === context.epoch &&
+        binding.requestId === requestId.data,
+    );
+    if (authorizationReplay) {
+      const [runId, binding] = authorizationReplay;
+      if (
+        binding.sessionId !== sessionId.data ||
+        binding.artifactId !== artifactId.data ||
+        binding.versionId !== versionId.data ||
+        binding.attemptId !== attemptId.data
+      )
+        throw new ArtifactStoreError('revision-conflict');
+
+      try {
+        const replayStatus = db.transaction((tx) => {
+          const session = tx
+            .select()
+            .from(StudySessionTable)
+            .where(
+              and(
+                eq(StudySessionTable.userId, context.userId),
+                eq(StudySessionTable.id, binding.sessionId),
+                eq(StudySessionTable.courseId, binding.courseId),
+                eq(
+                  StudySessionTable.generationEpoch,
+                  binding.sessionGenerationEpoch,
+                ),
+                isNull(StudySessionTable.deletedAt),
+              ),
+            )
+            .get();
+          const artifact = tx
+            .select()
+            .from(ArtifactTable)
+            .where(
+              and(
+                eq(ArtifactTable.userId, context.userId),
+                eq(ArtifactTable.id, binding.artifactId),
+                eq(ArtifactTable.courseId, binding.courseId),
+                isNull(ArtifactTable.removedAt),
+              ),
+            )
+            .get();
+          const version = tx
+            .select()
+            .from(ArtifactVersionTable)
+            .where(
+              and(
+                eq(ArtifactVersionTable.userId, context.userId),
+                eq(ArtifactVersionTable.artifactId, binding.artifactId),
+                eq(ArtifactVersionTable.id, binding.versionId),
+              ),
+            )
+            .get();
+          const state = tx
+            .select()
+            .from(ArtifactStateTable)
+            .where(
+              and(
+                eq(ArtifactStateTable.userId, context.userId),
+                eq(ArtifactStateTable.artifactId, binding.artifactId),
+                eq(ArtifactStateTable.versionId, binding.versionId),
+                eq(ArtifactStateTable.attemptId, binding.attemptId),
+              ),
+            )
+            .get();
+          if (!session || !artifact || !version || !state) return 'stale';
+          return version.runtimeVersion === 1 ? 'current' : 'unsupported';
+        });
+        if (replayStatus === 'stale') {
+          activeRuns.delete(runId);
+          throw new ArtifactStoreError('session-changed');
+        }
+        if (replayStatus === 'unsupported')
+          throw new ArtifactStoreError('unsupported');
+        assertCurrentContext(context);
+        return structuredClone(binding.authorization);
+      } catch (error) {
+        if (error instanceof ArtifactStoreError) throw error;
+        throw new ArtifactStoreError('storage-failed');
+      }
+    }
+
     for (const [runId, binding] of activeRuns) {
       if (
         binding.userId === context.userId &&
@@ -1267,6 +1432,11 @@ export const createArtifactStore = ({
         };
       });
       assertCurrentContext(context);
+      const {
+        courseId: _courseId,
+        sessionGenerationEpoch: _generationEpoch,
+        ...result
+      } = authorizedRun;
       activeRuns.set(authorizedRun.runId, {
         userId: context.userId,
         accountEpoch: context.epoch,
@@ -1276,28 +1446,59 @@ export const createArtifactStore = ({
         artifactId: authorizedRun.artifactId,
         versionId: authorizedRun.versionId,
         attemptId: authorizedRun.attemptId,
+        requestId: requestId.data,
+        authorization: result,
       });
       context.signal.addEventListener(
         'abort',
         () => activeRuns.delete(authorizedRun.runId),
         { once: true },
       );
-      const {
-        courseId: _courseId,
-        sessionGenerationEpoch: _generationEpoch,
-        ...result
-      } = authorizedRun;
-      return result;
+      return structuredClone(result);
     } catch (error) {
       if (error instanceof ArtifactStoreError) throw error;
       throw new ArtifactStoreError('storage-failed');
     }
   };
 
-  const releaseActivityRun = (runId: string) => {
-    const parsedRunId = idSchema.safeParse(runId);
-    if (!parsedRunId.success) return;
-    activeRuns.delete(parsedRunId.data);
+  const releaseActivityRun = (input: ReleaseActivityRunInput) => {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) return;
+    if (Object.keys(input).some((key) => !['runId', 'requestId'].includes(key)))
+      return;
+
+    const parsedRunId =
+      input.runId === undefined ? undefined : idSchema.safeParse(input.runId);
+    const parsedRequestId =
+      input.requestId === undefined
+        ? undefined
+        : requestIdSchema.safeParse(input.requestId);
+    if (
+      (parsedRunId !== undefined && !parsedRunId.success) ||
+      (parsedRequestId !== undefined && !parsedRequestId.success) ||
+      (parsedRunId === undefined && parsedRequestId === undefined)
+    )
+      return;
+
+    if (parsedRunId?.success) {
+      const binding = activeRuns.get(parsedRunId.data);
+      if (
+        binding &&
+        (parsedRequestId === undefined ||
+          (parsedRequestId.success &&
+            binding.requestId === parsedRequestId.data))
+      )
+        activeRuns.delete(parsedRunId.data);
+      return;
+    }
+
+    if (!parsedRequestId?.success) return;
+    let matchingRunId: string | undefined;
+    for (const [runId, binding] of activeRuns) {
+      if (binding.requestId !== parsedRequestId.data) continue;
+      if (matchingRunId !== undefined) return;
+      matchingRunId = runId;
+    }
+    if (matchingRunId !== undefined) activeRuns.delete(matchingRunId);
   };
 
   const dispose = () => activeRuns.clear();
