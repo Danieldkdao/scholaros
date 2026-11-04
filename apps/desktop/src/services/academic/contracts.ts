@@ -245,13 +245,21 @@ export type ActivityInternalMethodContracts = {
   releaseActivityRun: { input: ActivityRunRelease; result: void };
 };
 export type ActivityInternalMethod = keyof ActivityInternalMethodContracts;
+export type LearningInternalMethodContracts =
+  ActivityInternalMethodContracts & {
+    registerSelectedContextFiles: {
+      input: RegisterSelectedContextFilesInput;
+      result: ContextFileSelectionResult;
+    };
+  };
+export type LearningInternalMethod = keyof LearningInternalMethodContracts;
 export type LearningActionRegistrar = AuthorizedRegistrar & {
-  handleInternal<Method extends ActivityInternalMethod>(
+  handleInternal<Method extends LearningInternalMethod>(
     method: Method,
     action: (
       context: AuthorizedContext,
-      input: ActivityInternalMethodContracts[Method]['input'],
-    ) => Promise<ActivityInternalMethodContracts[Method]['result']>,
+      input: LearningInternalMethodContracts[Method]['input'],
+    ) => Promise<LearningInternalMethodContracts[Method]['result']>,
   ): void;
 };
 const activityScopeShape = {
@@ -368,6 +376,14 @@ export const contextFileSelectionResultSchema = z.strictObject({
 export type ContextFileSelectionResult = z.infer<
   typeof contextFileSelectionResultSchema
 >;
+export const internalLearningInputSchemas: {
+  [Method in LearningInternalMethod]: z.ZodType<
+    LearningInternalMethodContracts[Method]['input']
+  >;
+} = {
+  ...activityInternalInputSchemas,
+  registerSelectedContextFiles: registerSelectedContextFilesInputSchema,
+};
 export const requestMicrophonePermissionSchema = z.strictObject({
   sessionId: z.string().min(1).max(300),
 });

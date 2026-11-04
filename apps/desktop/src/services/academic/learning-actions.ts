@@ -232,6 +232,7 @@ export const loadLearningActionModules = async (): Promise<
 > => {
   const [
     contextActions,
+    contextIngestion,
     gradeActions,
     sessionActions,
     artifactActions,
@@ -245,6 +246,7 @@ export const loadLearningActionModules = async (): Promise<
     database,
   ] = await Promise.all([
     import('../../features/context/services/library-actions'),
+    import('./context-ingestion-adapter'),
     import('../../features/grades/services/grade-actions'),
     import('../../features/study/services/session-actions'),
     import('../../features/study/services/artifact-actions'),
@@ -264,6 +266,21 @@ export const loadLearningActionModules = async (): Promise<
 
   return [
     contextActions.registerContextActions,
+    (registrar) => {
+      const host = contextIngestion.createContextIngestionHost();
+      const cleanupActions = host.registerContextIngestionActions(registrar);
+      registrar.handleInternal(
+        'registerSelectedContextFiles',
+        (context, input) => host.registerSelectedContextFiles(context, input),
+      );
+      return async () => {
+        try {
+          await cleanupActions();
+        } finally {
+          await host.dispose();
+        }
+      };
+    },
     (registrar) => {
       sessionStore = sessionStoreModule.createSessionStore({
         now: () => registrar.lifecycle.now(),

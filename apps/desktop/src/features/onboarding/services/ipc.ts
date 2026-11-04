@@ -14,7 +14,7 @@ import { createConnectionApprovalStore } from './connection-approval';
 import { resolveConnectionCandidates } from './connection-resolver';
 import { app, powerMonitor } from 'electron';
 import {
-  activityInternalInputSchemas,
+  internalLearningInputSchemas,
   internalOfflineReadMethods,
   offlineReadMethods,
   workspaceReplacementCancelInputSchema,
@@ -531,7 +531,7 @@ export const registerAcademicActions = async (service: {
       handle(method, (context, input) => action(context, input as never)),
     handleInternal: (method, action) =>
       handle(method, (context, input) => {
-        const parsed = activityInternalInputSchemas[method].safeParse(input);
+        const parsed = internalLearningInputSchemas[method].safeParse(input);
         if (!parsed.success) throw new ArtifactStoreError('invalid-input');
         return action(context, parsed.data);
       }),

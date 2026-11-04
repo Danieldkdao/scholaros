@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
@@ -12,6 +12,7 @@ import type {
   AuthorizedContext,
 } from '@scholaros/services/learning/product-contracts';
 import type { LearningActionRegistrar } from '../src/services/academic/contracts';
+import { contextFileSelectionResultSchema } from '../src/services/academic/contracts';
 import * as schema from '../src/db/schema';
 import * as artifactStores from '../src/features/study/services/artifact-store';
 import * as activityAdapters from '../src/services/academic/activity-adapter';
@@ -41,9 +42,19 @@ vi.mock('../src/db', () => ({
     return storage.db;
   },
 }));
+vi.mock('../src/lib/auth/client', () => ({
+  authClient: { getCookie: () => 'test-owned-service-session' },
+}));
+vi.mock('../src/lib/auth/main', () => ({
+  isAccountSessionCurrent: (cookie: string) =>
+    cookie === 'test-owned-service-session',
+}));
+vi.mock('../src/data/env/client', () => ({
+  clientEnv: { VITE_API_URL: 'https://api.test.invalid' },
+}));
 
 vi.mock('electron', () => ({
-  app: { getPath: () => storage.directory },
+  app: { getPath: () => storage.directory, getAppPath: () => process.cwd() },
   session: {},
   protocol: {},
   WebContentsView: vi.fn(),
@@ -849,6 +860,61 @@ describe('real learning module activity composition', () => {
       runId: nextRun.runId,
       requestId: nextRequest.requestId,
     });
+  });
+
+  it('routes native-selected text through the actual loader and ingestion stores without exposing file tickets', async () => {
+    const { handlers, invokeAction, lifecycle } = await registerRealModules();
+    for (const method of [
+      'registerSelectedContextFiles',
+      'retryContextIngestion',
+      'cancelContextIngestion',
+      'readContextPreview',
+    ])
+      expect(handlers.has(method), method).toBe(true);
+    const filePath = join(storage.directory, 'selected-note.txt');
+    writeFileSync(filePath, 'A test-owned explanation of wave frequency.');
+    const result = contextFileSelectionResultSchema.parse(
+      await invokeAction('registerSelectedContextFiles', {
+        filePaths: [filePath],
+        saveToLibrary: true,
+        courseId: 'course-a',
+      }),
+    );
+    expect(result.cancelled).toBe(false);
+    expect(result.items).toHaveLength(1);
+    expect(JSON.stringify(result)).not.toContain(filePath);
+    expect(JSON.stringify(result)).not.toContain('ticket');
+    await vi.waitFor(async () => {
+      await expect(
+        invokeAction('readContextPreview', { itemId: result.items[0].itemId }),
+      ).resolves.toMatchObject({
+        kind: 'text',
+        text: 'A test-owned explanation of wave frequency.',
+      });
+    });
+    await expect(
+      invokeAction(
+        'retryContextIngestion',
+        {
+          itemId: result.items[0].itemId,
+          requestId: randomUUID(),
+        },
+        {
+          userId: 'student-b',
+          epoch: lifecycle.epoch,
+          signal: lifecycle.signal,
+          isCurrent: () => true,
+        },
+      ),
+    ).rejects.toMatchObject({ code: 'not-found' });
+    await dispose!();
+    dispose = undefined;
+    const rebound = await registerRealModules();
+    await expect(
+      rebound.invokeAction('readContextPreview', {
+        itemId: result.items[0].itemId,
+      }),
+    ).resolves.toMatchObject({ kind: 'text' });
   });
 
   it('awaits adapter disposal before artifact-store cleanup and completes lifecycle invalidation only once', async () => {
