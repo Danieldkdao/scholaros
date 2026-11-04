@@ -4,6 +4,67 @@ import type {
 } from '@scholaros/services/learning/product-contracts';
 import type { LearningActionRegistrar } from './contracts';
 
+import {
+  learningRequestSchema,
+  learningResponseSchema,
+} from '../../../../../packages/services/src/ai/learning-dispatch';
+import type { TutorPracticeDependencies } from './tutor-practice-adapter';
+
+import { LearningClientError } from '../../features/study/services/learning-client';
+
+const requestLearning: TutorPracticeDependencies['requestLearning'] = async (
+  request,
+  operationSignal,
+) => {
+  const [{ net }, { clientEnv }, { authClient }, { isAccountSessionCurrent }] =
+    await Promise.all([
+      import('electron'),
+      import('../../data/env/client'),
+      import('../../lib/auth/client'),
+      import('../../lib/auth/main'),
+    ]);
+  const parsedRequest = learningRequestSchema.parse(request);
+  const cookie = authClient.getCookie();
+  const signal = AbortSignal.any([
+    operationSignal,
+    AbortSignal.timeout(65_000),
+  ]);
+  const assertCurrent = () => {
+    if (signal.aborted) throw new LearningClientError('cancelled');
+    if (!isAccountSessionCurrent(cookie))
+      throw new LearningClientError('session-changed');
+  };
+  assertCurrent();
+  try {
+    const response = await net.fetch(
+      new URL('/api/learning', clientEnv.VITE_API_URL).href,
+      {
+        method: 'POST',
+        headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+        credentials: 'omit',
+        redirect: 'error',
+        cache: 'no-store',
+        body: JSON.stringify(parsedRequest),
+        signal,
+      },
+    );
+    assertCurrent();
+    if (!response.ok || response.redirected) {
+      await response.body?.cancel();
+      throw new LearningClientError(
+        response.status === 401 ? 'session-changed' : 'provider-failed',
+      );
+    }
+    const result: unknown = await response.json();
+    assertCurrent();
+    return result;
+  } catch (error) {
+    assertCurrent();
+    if (error instanceof LearningClientError) throw error;
+    throw new LearningClientError('provider-failed');
+  }
+};
+
 export type LearningActionModule = (
   registrar: LearningActionRegistrar,
 ) => ActionCleanup | void;
@@ -198,14 +259,7 @@ const once = (cleanup: ActionCleanup): ActionCleanup => {
 };
 
 const runCleanups = async (cleanups: ActionCleanup[]) => {
-  const results = await Promise.allSettled(
-    [...cleanups].reverse().map((cleanup) => cleanup()),
-  );
-  const failures = results.flatMap((result) =>
-    result.status === 'rejected' ? [result.reason] : [],
-  );
-  if (failures.length > 0)
-    throw new AggregateError(failures, 'Learning action cleanup failed.');
+  for (const cleanup of [...cleanups].reverse()) await cleanup();
 };
 
 export const registerLearningActions = async (
@@ -218,13 +272,14 @@ export const registerLearningActions = async (
       const cleanup = module(registrar);
       if (cleanup) cleanups.push(once(cleanup));
     }
-    for (const cleanup of cleanups) registrar.lifecycle.onTeardown(cleanup);
   } catch (error) {
     await runCleanups(cleanups).catch(() => undefined);
     throw error;
   }
 
-  return () => runCleanups(cleanups);
+  const cleanup = once(() => runCleanups(cleanups));
+  registrar.lifecycle.onTeardown(cleanup);
+  return cleanup;
 };
 
 export const loadLearningActionModules = async (): Promise<
@@ -241,7 +296,10 @@ export const loadLearningActionModules = async (): Promise<
     memoryActions,
     todayActions,
     notificationActions,
-    sessionStoreModule,
+    tutorPractice,
+    libraryRetrieval,
+    sourcePreview,
+    policy,
     originalStore,
     database,
   ] = await Promise.all([
@@ -255,13 +313,19 @@ export const loadLearningActionModules = async (): Promise<
     import('../../features/memory/services/memory-actions'),
     import('../../features/today/services/today-actions'),
     import('../../features/notifications/services/notification-actions'),
-    import('../../features/study/services/session-store'),
+    import('./tutor-practice-adapter'),
+    import('../../features/context/services/library-retrieval'),
+    import('../../features/integrity/services/source-preview'),
+    import('../../features/integrity/services/policy'),
     import('../../features/context/services/original-store'),
     import('../../db'),
   ]);
 
   let sessionStore: ReturnType<
-    typeof sessionStoreModule.createSessionStore
+    typeof tutorPractice.createTutorPracticeSessionStore
+  > | null = null;
+  let artifactStore: ReturnType<
+    typeof artifactStoreModule.createArtifactStore
   > | null = null;
 
   return [
@@ -282,7 +346,7 @@ export const loadLearningActionModules = async (): Promise<
       };
     },
     (registrar) => {
-      sessionStore = sessionStoreModule.createSessionStore({
+      sessionStore = tutorPractice.createTutorPracticeSessionStore({
         now: () => registrar.lifecycle.now(),
         publish: (event) => registrar.publish(event),
         cleanupOriginals: async (context, userId, storageKeys) => {
@@ -316,6 +380,7 @@ export const loadLearningActionModules = async (): Promise<
       const store = artifactStoreModule.createArtifactStore({
         db: database.db,
       });
+      artifactStore = store;
       const adapter = activityAdapterModule.createAcademicActivityAdapter({
         store,
       });
@@ -336,6 +401,109 @@ export const loadLearningActionModules = async (): Promise<
         await adapter.dispose();
         await cleanupArtifacts();
       };
+    },
+    (registrar) => {
+      if (!sessionStore || !artifactStore)
+        throw new Error('The learning stores are unavailable.');
+      const activeSessionStore = sessionStore;
+      const activeArtifactStore = artifactStore;
+      return tutorPractice.registerTutorPracticeActions(registrar, {
+        sessionStore: activeSessionStore,
+        requestLearning,
+        createActivity: async (context, input) => {
+          const assertCurrent = () => {
+            if (context.signal.aborted)
+              throw new LearningClientError('cancelled');
+            if (!context.isCurrent())
+              throw new LearningClientError('session-changed');
+            const revisions = activeSessionStore.readStudySessionRevisions(
+              context,
+              { sessionId: input.sessionId },
+            );
+            if (
+              revisions.contextRevision !== input.contextRevision ||
+              revisions.policyRevision !== input.policyRevision ||
+              revisions.gradeConsentRevision !== input.gradeConsentRevision
+            )
+              throw new LearningClientError('permission-revoked');
+          };
+          assertCurrent();
+          const offered = new Set(
+            input.references.map((reference) => JSON.stringify(reference)),
+          );
+          const sources =
+            libraryRetrieval
+              .searchStudySources(context, {
+                sessionId: input.sessionId,
+                query: input.objective,
+                selectedIds: input.references.map(({ sourceId }) => sourceId),
+              })
+              ?.filter(({ reference }) =>
+                offered.has(JSON.stringify(reference)),
+              )
+              .flatMap((passage) => {
+                const text = sourcePreview.filterSourcePreview(context, {
+                  sessionId: input.sessionId,
+                  reference: passage.reference,
+                  text: passage.text,
+                });
+                return text === null ? [] : [{ ...passage, text }];
+              }) ?? [];
+          if (sources.length === 0 || sources.length !== offered.size)
+            throw new LearningClientError('scope-denied');
+          const response = learningResponseSchema.parse(
+            await requestLearning(
+              learningRequestSchema.parse({
+                version: 1,
+                requestId: input.requestId,
+                kind: 'activity-generate',
+                sessionId: input.sessionId,
+                courseId: input.courseId,
+                contextRevision: input.contextRevision,
+                input: { objective: input.objective, sources },
+              }),
+              context.signal,
+            ),
+          );
+          assertCurrent();
+          const [effect] = response.proposedEffects;
+          if (
+            response.requestId !== input.requestId ||
+            response.proposedEffects.length !== 1 ||
+            effect?.kind !== 'create-activity' ||
+            effect.candidate.sourceReferences.some(
+              (reference) => !offered.has(JSON.stringify(reference)),
+            )
+          )
+            throw new LearningClientError('provider-failed');
+          const decision = policy.assessCandidate(context, {
+            sessionId: input.sessionId,
+            turnId: input.turnId,
+            candidate: effect.candidate,
+            policy: input.policy,
+            sourceReferences: input.references,
+          });
+          const created = await activeArtifactStore.createArtifactVersion(
+            context,
+            {
+              sessionId: input.sessionId,
+              turnId: input.turnId,
+              requestId: input.requestId,
+              candidate: effect.candidate,
+              policyDecision: {
+                allowed: decision.allowed,
+                reasonCode: decision.reasonCode,
+                revision: decision.revision,
+              },
+            },
+          );
+          return {
+            artifactId: created.version.artifactId,
+            versionId: created.version.versionId,
+            attemptId: created.attemptId,
+          };
+        },
+      });
     },
     memoryActions.registerMemoryActions,
     todayActions.registerTodayActions,

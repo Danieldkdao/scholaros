@@ -34,6 +34,8 @@ import {
 const storage = vi.hoisted(() => ({
   directory: '',
   db: null as ReturnType<typeof drizzle<typeof schema>> | null,
+  cookie: 'test-owned-service-session',
+  fetch: vi.fn<typeof fetch>(),
 }));
 
 vi.mock('../src/db', () => ({
@@ -43,17 +45,18 @@ vi.mock('../src/db', () => ({
   },
 }));
 vi.mock('../src/lib/auth/client', () => ({
-  authClient: { getCookie: () => 'test-owned-service-session' },
+  authClient: { getCookie: () => storage.cookie },
 }));
 vi.mock('../src/lib/auth/main', () => ({
   isAccountSessionCurrent: (cookie: string) =>
-    cookie === 'test-owned-service-session',
+    cookie === storage.cookie && Boolean(cookie),
 }));
 vi.mock('../src/data/env/client', () => ({
   clientEnv: { VITE_API_URL: 'https://api.test.invalid' },
 }));
 
 vi.mock('electron', () => ({
+  net: { fetch: storage.fetch },
   app: { getPath: () => storage.directory, getAppPath: () => process.cwd() },
   session: {},
   protocol: {},
@@ -579,6 +582,10 @@ describe('real learning module activity composition', () => {
   let dispose: ActionCleanup | undefined;
 
   beforeEach(() => {
+    storage.cookie = 'test-owned-service-session';
+    storage.fetch
+      .mockReset()
+      .mockRejectedValue(new Error('Unexpected fixture network request.'));
     storage.directory = mkdtempSync(
       join(tmpdir(), 'scholaros-activity-composition-'),
     );
@@ -674,6 +681,12 @@ describe('real learning module activity composition', () => {
       publish: vi.fn(),
     };
     const storeFactory = vi.spyOn(artifactStores, 'createArtifactStore');
+    const tutorPracticeAdapters =
+      await import('../src/services/academic/tutor-practice-adapter');
+    const sessionFactory = vi.spyOn(
+      tutorPracticeAdapters,
+      'createTutorPracticeSessionStore',
+    );
     const adapterFactory = vi.spyOn(
       activityAdapters,
       'createAcademicActivityAdapter',
@@ -708,6 +721,7 @@ describe('real learning module activity composition', () => {
       store,
       adapter,
       adapterFactory,
+      sessionFactory,
       context,
       invokeAction,
     };
@@ -862,6 +876,143 @@ describe('real learning module activity composition', () => {
     });
   });
 
+  it('runs a real tutor activity through the canonical loader store and authenticated exact learning transport', async () => {
+    storage.fetch.mockImplementation(async (_url, options) => {
+      const request = JSON.parse(String(options?.body));
+      const reference = request.input.sources[0]?.reference;
+      expect(reference).toBeDefined();
+      expect(['tutor-turn', 'activity-generate']).toContain(request.kind);
+      return Response.json({
+        version: 1,
+        requestId: request.requestId,
+        generationId: randomUUID(),
+        parts:
+          request.kind === 'tutor-turn'
+            ? [
+                {
+                  kind: 'text',
+                  text: 'A test-owned conceptual wave explanation.',
+                },
+              ]
+            : [],
+        citations: [],
+        proposedEffects: [
+          {
+            kind: 'create-activity',
+            candidate: {
+              title: 'Fixture wave control',
+              objective: 'Explore wave frequency.',
+              html: '<label for="frequency">Frequency</label><input id="frequency" type="range"><output aria-live="polite"></output>',
+              css: '',
+              javascript:
+                "const input = document.querySelector('#frequency'); const output = document.querySelector('output'); input.addEventListener('input', () => { output.textContent = input.value; });",
+              accessibleExplanation: 'A test-owned functional wave control.',
+              sourceReferences: [reference],
+              runtimeVersion: 1,
+            },
+          },
+        ],
+        usage: { inputTokens: 1, outputTokens: 1 },
+        configurationRevision: 'fixture-meta-only',
+      });
+    });
+    const { handlers, store, sessionFactory, context, invokeAction } =
+      await registerRealModules();
+    for (const method of [
+      'sendStudyTurn',
+      'retryStudyTurn',
+      'cancelStudyTurn',
+      'getPracticeAttempt',
+      'savePracticeAnswer',
+      'submitPracticeAttempt',
+    ])
+      expect(handlers.has(method), method).toBe(true);
+    expect(sessionFactory).toHaveBeenCalledOnce();
+    const note = (await invokeAction('createContextNote', {
+      requestId: randomUUID(),
+      title: 'Wave frequency',
+      text: 'Explain wave frequency conceptually. Frequency measures how many waves pass per second.',
+      kind: 'note',
+      courseId: 'course-a',
+    })) as { id: string };
+    const createVersion = vi.spyOn(store, 'createArtifactVersion');
+    const session = (await invokeAction('createStudySession', {
+      requestId: randomUUID(),
+      courseId: 'course-a',
+      activity: 'understand-topic',
+      targetAssignmentId: null,
+      contextItemIds: [note.id],
+      durationMinutes: null,
+      title: 'Fixture waves',
+    })) as { id: string };
+    const admitted = (await invokeAction('sendStudyTurn', {
+      sessionId: session.id,
+      requestId: randomUUID(),
+      expectedDraftRevision: 0,
+      text: 'Explain wave frequency conceptually.',
+      attachmentIds: [],
+    })) as { turnId: string };
+    await vi.waitFor(() =>
+      expect(
+        sqlite
+          .prepare('SELECT status FROM study_turns WHERE id = ?')
+          .get(admitted.turnId),
+      ).toMatchObject({ status: 'complete' }),
+    );
+    expect(storage.fetch).toHaveBeenCalledTimes(2);
+    for (const [url, options] of storage.fetch.mock.calls) {
+      expect(url).toBe('https://api.test.invalid/api/learning');
+      expect(options).toMatchObject({
+        method: 'POST',
+        credentials: 'omit',
+        redirect: 'error',
+        cache: 'no-store',
+        headers: {
+          Cookie: 'test-owned-service-session',
+          'Content-Type': 'application/json',
+        },
+        signal: expect.any(AbortSignal),
+      });
+    }
+    expect(JSON.parse(String(storage.fetch.mock.calls[1]![1]?.body)).kind).toBe(
+      'activity-generate',
+    );
+    expect(createVersion).toHaveBeenCalledOnce();
+    expect(
+      Object.keys(createVersion.mock.calls[0]![1].policyDecision).sort(),
+    ).toEqual(['allowed', 'reasonCode', 'revision']);
+    expect(
+      sqlite.prepare('SELECT COUNT(*) AS count FROM artifacts').get(),
+    ).toEqual({ count: 1 });
+    const snapshot = (await invokeAction('getStudySession', {
+      sessionId: session.id,
+      limit: 100,
+    })) as { messages: { parts: { kind: string }[] }[] };
+    expect(
+      snapshot.messages
+        .flatMap(({ parts }) => parts)
+        .filter(({ kind }) => kind === 'activity'),
+    ).toHaveLength(1);
+    const canonicalStore = sessionFactory.mock.results[0]!.value;
+    const { resolveAssistancePolicy } =
+      await import('../src/features/integrity/services/policy');
+    expect(
+      canonicalStore.readStudySessionRevisions(context, {
+        sessionId: session.id,
+      }).policyRevision,
+    ).toBe(
+      resolveAssistancePolicy(context, { sessionId: session.id, sourceIds: [] })
+        .policyRevision,
+    );
+    expect(
+      sqlite
+        .prepare(
+          'SELECT COUNT(*) AS count FROM study_messages WHERE turn_id = ? AND role = ?',
+        )
+        .get(admitted.turnId, 'tutor'),
+    ).toEqual({ count: 2 });
+  });
+
   it('routes native-selected text through the actual loader and ingestion stores without exposing file tickets', async () => {
     const { handlers, invokeAction, lifecycle } = await registerRealModules();
     for (const method of [
@@ -915,6 +1066,50 @@ describe('real learning module activity composition', () => {
         itemId: result.items[0].itemId,
       }),
     ).resolves.toMatchObject({ kind: 'text' });
+  });
+
+  it('awaits actual tutor transport settlement before disposing activity stores', async () => {
+    let finishFetch!: (response: Response) => void;
+    storage.fetch.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishFetch = resolve;
+        }),
+    );
+    const { store, lifecycle, invokeAction } = await registerRealModules();
+    const session = (await invokeAction('createStudySession', {
+      requestId: randomUUID(),
+      courseId: 'course-a',
+      activity: 'understand-topic',
+      targetAssignmentId: null,
+      contextItemIds: [],
+      durationMinutes: null,
+      title: 'Pending fixture',
+    })) as { id: string };
+    const admitted = (await invokeAction('sendStudyTurn', {
+      sessionId: session.id,
+      requestId: randomUUID(),
+      expectedDraftRevision: 0,
+      text: 'Explain waves conceptually.',
+      attachmentIds: [],
+    })) as { turnId: string };
+    await vi.waitFor(() => expect(storage.fetch).toHaveBeenCalledOnce());
+    const disposeStore = vi.spyOn(store, 'dispose');
+    const invalidation = lifecycle.invalidate();
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(storage.fetch.mock.calls[0]![1]?.signal?.aborted).toBe(true);
+      expect(disposeStore).not.toHaveBeenCalled();
+    } finally {
+      finishFetch(Response.json({ version: 1, requestId: admitted.turnId }));
+      await invalidation;
+    }
+    expect(disposeStore).toHaveBeenCalledOnce();
+    expect(
+      sqlite
+        .prepare('SELECT status FROM study_turns WHERE id = ?')
+        .get(admitted.turnId),
+    ).not.toMatchObject({ status: 'complete' });
   });
 
   it('awaits adapter disposal before artifact-store cleanup and completes lifecycle invalidation only once', async () => {
