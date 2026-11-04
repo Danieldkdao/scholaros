@@ -2,6 +2,7 @@ import { expect, it } from 'vitest';
 import {
   mergeResourceIdentityCandidate,
   reconcileResourceIdentities,
+  resourceIdentityKeys,
   type ResourceIdentityScope,
 } from '../resources/identity';
 
@@ -52,6 +53,47 @@ it('keeps required nullable fields when no observation supplies a value', () => 
   expect(mergeResourceIdentityCandidate([resource]).resource).toMatchObject({
     due: null,
   });
+});
+
+it('preserves a same-page detail URL when supporting targets are present', () => {
+  const detailUrl = 'https://school.example/assignments/123';
+  const detail = record('Worksheet 123', {
+    url: detailUrl,
+    evidence: {
+      sourceUrl: detailUrl,
+      excerpts: ['Worksheet 123'],
+      targetIds: ['supporting-link'],
+    },
+  });
+
+  const merged = mergeResourceIdentityCandidate([detail]);
+
+  expect(merged.resource?.url).toBe(detailUrl);
+  expect(
+    resourceIdentityKeys(biologyScope, merged.resource!).aliases,
+  ).toContain('id:123');
+});
+
+it('does not treat a conflicting URL-derived ID as an alias for an explicit ID', () => {
+  const conflicting = record('Worksheet', {
+    sourceId: 'source-a',
+    url: 'https://school.example/assignments/url-b',
+    evidence: {
+      sourceUrl: 'https://school.example/courses/biology/assignments',
+      excerpts: ['Worksheet source-a'],
+      targetIds: [],
+    },
+  });
+
+  const keys = resourceIdentityKeys(biologyScope, conflicting);
+  const result = reconcileResourceIdentities([observation(conflicting)]);
+
+  expect(keys.sourceId).toBe('source-a');
+  expect(keys.urlId).toBeNull();
+  expect(keys.aliases).not.toContain('id:url-b');
+  expect(result.ambiguities).toContainEqual(
+    expect.objectContaining({ reason: 'conflicting-source-ids' }),
+  );
 });
 
 it('reconciles all duplicate pairs in a batch independent of their order', () => {
