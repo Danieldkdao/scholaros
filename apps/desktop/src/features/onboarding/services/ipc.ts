@@ -14,6 +14,7 @@ import { createConnectionApprovalStore } from './connection-approval';
 import { resolveConnectionCandidates } from './connection-resolver';
 import { app, powerMonitor } from 'electron';
 import {
+  activityInternalInputSchemas,
   internalOfflineReadMethods,
   offlineReadMethods,
   workspaceReplacementCancelInputSchema,
@@ -32,6 +33,7 @@ import {
   registerLearningActions,
   type LearningActionModule,
 } from '../../../services/academic/learning-actions';
+import { ArtifactStoreError } from '../../study/services/artifact-store';
 import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
 import { authClient } from '../../../lib/auth/client';
@@ -452,11 +454,16 @@ export const registerAcademicActions = async (service: {
     });
     watchPowerEventsRegistered = true;
   }
+  const registeredActions = new Map<
+    string,
+    (context: IpcContext, input: unknown) => unknown
+  >();
   const handle = (
     method: string,
     action: (context: IpcContext, input: unknown) => unknown,
     options: { requiresUser?: boolean } = {},
   ) => {
+    registeredActions.set(method, action);
     const invoke = async (input: unknown) => {
       if (options.requiresUser === false)
         return action(
@@ -497,7 +504,11 @@ export const registerAcademicActions = async (service: {
           learningLifecycle.isCurrent(epoch) &&
           boundAccountId === user.id;
         return learningLifecycle.trackOperation(operationId, async () => {
-          const result = await action(
+          // Authentication may dispose and re-register a module during binding.
+          const currentAction = registeredActions.get(method);
+          if (!currentAction)
+            throw new Error('The academic action is unavailable.');
+          const result = await currentAction(
             {
               userId: user.id,
               operationId,
@@ -518,6 +529,12 @@ export const registerAcademicActions = async (service: {
   const learningRegistrar: LearningActionRegistrar = {
     handle: (method, action) =>
       handle(method, (context, input) => action(context, input as never)),
+    handleInternal: (method, action) =>
+      handle(method, (context, input) => {
+        const parsed = activityInternalInputSchemas[method].safeParse(input);
+        if (!parsed.success) throw new ArtifactStoreError('invalid-input');
+        return action(context, parsed.data);
+      }),
     publish: (event) => publish('scholar:productEvent', event),
     lifecycle: learningLifecycle,
   };

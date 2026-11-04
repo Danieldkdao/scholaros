@@ -1,11 +1,29 @@
-import type { ActivityPresentation } from '@scholaros/services/learning/activity-contracts';
+import {
+  activityStateByteLimit,
+  type ActivityPresentation,
+  type ArtifactStateDTO,
+} from '@scholaros/services/learning/activity-contracts';
 import { ingestionStatuses } from '@scholaros/services/learning/context-contracts';
 import type {
+  AuthorizedContext,
   AuthorizedRegistrar,
   Id,
   LearningPublicMethod,
 } from '@scholaros/services/learning/product-contracts';
+import {
+  idSchema,
+  jsonValueSchema,
+  requestIdSchema,
+  revisionSchema,
+  safeErrorCodeSchema,
+} from '@scholaros/services/learning/product-contracts';
 import { z } from 'zod';
+import type {
+  ActivityAuthorizationRequest,
+  ActivityRunRelease,
+  ActivityStateProposal,
+  AuthorizedActivityRun as RuntimeAuthorizedActivityRun,
+} from '../../features/study/services/activity-runtime';
 
 export const learningMethods = [
   'listContextItems',
@@ -70,6 +88,7 @@ export const internalAcademicMethods = [
   'registerSelectedContextFiles',
   'authorizeActivityRun',
   'checkpointArtifactState',
+  'releaseActivityRun',
   'claimDueNotifications',
   'purgeGradeDerivedStudyContent',
 ] as const;
@@ -137,6 +156,7 @@ export type InternalAcademicMethod = (typeof internalAcademicMethods)[number];
 export const internalOfflineReadMethods = [
   'getOfflineDeviceReadiness',
   'authorizeActivityRun',
+  'releaseActivityRun',
 ] as const satisfies readonly InternalAcademicMethod[];
 export const academicMethods = [
   ...serviceControlMethods,
@@ -213,7 +233,71 @@ export const academicMessageSchema = z.discriminatedUnion('kind', [
 ]);
 export type AcademicMessageSchema = z.infer<typeof academicMessageSchema>;
 export type AcademicAction = (input: unknown) => unknown;
-export type LearningActionRegistrar = AuthorizedRegistrar;
+export type ActivityInternalMethodContracts = {
+  authorizeActivityRun: {
+    input: ActivityAuthorizationRequest;
+    result: RuntimeAuthorizedActivityRun;
+  };
+  checkpointArtifactState: {
+    input: ActivityStateProposal;
+    result: ArtifactStateDTO;
+  };
+  releaseActivityRun: { input: ActivityRunRelease; result: void };
+};
+export type ActivityInternalMethod = keyof ActivityInternalMethodContracts;
+export type LearningActionRegistrar = AuthorizedRegistrar & {
+  handleInternal<Method extends ActivityInternalMethod>(
+    method: Method,
+    action: (
+      context: AuthorizedContext,
+      input: ActivityInternalMethodContracts[Method]['input'],
+    ) => Promise<ActivityInternalMethodContracts[Method]['result']>,
+  ): void;
+};
+const activityScopeShape = {
+  sessionId: idSchema,
+  artifactId: idSchema,
+  versionId: idSchema,
+  attemptId: idSchema,
+};
+export const authorizeActivityRunInputSchema = z.strictObject({
+  ...activityScopeShape,
+  requestId: requestIdSchema,
+});
+export type AuthorizeActivityRunInputSchema = z.infer<
+  typeof authorizeActivityRunInputSchema
+>;
+export const checkpointActivityStateInputSchema = z.strictObject({
+  ...activityScopeShape,
+  runId: idSchema,
+  sequence: revisionSchema.positive(),
+  baseStateRevision: revisionSchema,
+  state: jsonValueSchema.refine(
+    (value) =>
+      new TextEncoder().encode(JSON.stringify(value)).byteLength <=
+      activityStateByteLimit,
+    'Activity state exceeds the byte limit.',
+  ),
+});
+export type CheckpointActivityStateInputSchema = z.infer<
+  typeof checkpointActivityStateInputSchema
+>;
+export const releaseActivityRunInputSchema = z.strictObject({
+  runId: idSchema.optional(),
+  requestId: requestIdSchema,
+});
+export type ReleaseActivityRunInputSchema = z.infer<
+  typeof releaseActivityRunInputSchema
+>;
+export const activityInternalInputSchemas: {
+  [Method in ActivityInternalMethod]: z.ZodType<
+    ActivityInternalMethodContracts[Method]['input']
+  >;
+} = {
+  authorizeActivityRun: authorizeActivityRunInputSchema,
+  checkpointArtifactState: checkpointActivityStateInputSchema,
+  releaseActivityRun: releaseActivityRunInputSchema,
+};
 export const academicReconnectSchema = z.strictObject({
   accountId: z.string().min(1).max(300).nullable(),
 });
@@ -306,6 +390,7 @@ export type MountActivityInput = {
   versionId: Id;
   attemptId: Id;
   presentation: ActivityPresentation;
+  readOnly?: boolean;
   bounds: ActivityBounds;
 };
 export type UpdateActivityBoundsInput = {
@@ -314,3 +399,47 @@ export type UpdateActivityBoundsInput = {
   visible: boolean;
 };
 export type CloseActivityInput = { runId: Id };
+export const activityRuntimeTerminalKinds = [
+  'runtime-error',
+  'closed',
+] as const;
+export type ActivityRuntimeTerminalKind =
+  (typeof activityRuntimeTerminalKinds)[number];
+const activityRuntimeChangeShape = {
+  ...activityScopeShape,
+  runId: idSchema,
+};
+export const activityRuntimeChangeSchema = z.discriminatedUnion('kind', [
+  z.strictObject({
+    ...activityRuntimeChangeShape,
+    kind: z.literal('ready'),
+    stateRevision: revisionSchema,
+    runtimeVersion: z.string().min(1).max(100),
+    contentDigest: z.string().regex(/^[a-f0-9]{64}$/),
+  }),
+  z.strictObject({
+    ...activityRuntimeChangeShape,
+    kind: z.literal('checkpoint-pending'),
+    stateRevision: revisionSchema,
+  }),
+  z.strictObject({
+    ...activityRuntimeChangeShape,
+    kind: z.literal('checkpoint-acknowledged'),
+    stateRevision: revisionSchema,
+  }),
+  z.strictObject({
+    ...activityRuntimeChangeShape,
+    kind: z.literal('checkpoint-failed'),
+    stateRevision: revisionSchema,
+    errorCode: safeErrorCodeSchema,
+  }),
+  z.strictObject({
+    ...activityRuntimeChangeShape,
+    kind: z.enum(activityRuntimeTerminalKinds),
+    errorCode: safeErrorCodeSchema,
+  }),
+]);
+export type ActivityRuntimeChangeSchema = z.infer<
+  typeof activityRuntimeChangeSchema
+>;
+export type ActivityRuntimeChange = ActivityRuntimeChangeSchema;

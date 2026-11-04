@@ -1,11 +1,11 @@
 import type {
   ActionCleanup,
-  AuthorizedRegistrar,
   LearningLifecycle,
 } from '@scholaros/services/learning/product-contracts';
+import type { LearningActionRegistrar } from './contracts';
 
 export type LearningActionModule = (
-  registrar: AuthorizedRegistrar,
+  registrar: LearningActionRegistrar,
 ) => ActionCleanup | void;
 export type LearningLifecycleRuntime = LearningLifecycle & {
   cancelOperations: (key?: string) => void;
@@ -209,7 +209,7 @@ const runCleanups = async (cleanups: ActionCleanup[]) => {
 };
 
 export const registerLearningActions = async (
-  registrar: AuthorizedRegistrar,
+  registrar: LearningActionRegistrar,
   modules: readonly LearningActionModule[],
 ): Promise<ActionCleanup> => {
   const cleanups: ActionCleanup[] = [];
@@ -235,6 +235,8 @@ export const loadLearningActionModules = async (): Promise<
     gradeActions,
     sessionActions,
     artifactActions,
+    artifactStoreModule,
+    activityAdapterModule,
     memoryActions,
     todayActions,
     notificationActions,
@@ -246,6 +248,8 @@ export const loadLearningActionModules = async (): Promise<
     import('../../features/grades/services/grade-actions'),
     import('../../features/study/services/session-actions'),
     import('../../features/study/services/artifact-actions'),
+    import('../../features/study/services/artifact-store'),
+    import('./activity-adapter'),
     import('../../features/memory/services/memory-actions'),
     import('../../features/today/services/today-actions'),
     import('../../features/notifications/services/notification-actions'),
@@ -291,11 +295,31 @@ export const loadLearningActionModules = async (): Promise<
         },
       });
     },
-    (registrar) =>
-      artifactActions.registerArtifactActions(
+    (registrar) => {
+      const store = artifactStoreModule.createArtifactStore({
+        db: database.db,
+      });
+      const adapter = activityAdapterModule.createAcademicActivityAdapter({
+        store,
+      });
+      const cleanupArtifacts = artifactActions.registerArtifactActions(
         registrar,
-        artifactActions.createArtifactStore({ db: database.db }),
-      ),
+        store,
+      );
+      registrar.handleInternal('authorizeActivityRun', (context, request) =>
+        adapter.authorizeActivityRun(context, request),
+      );
+      registrar.handleInternal('checkpointArtifactState', (context, proposal) =>
+        adapter.checkpointArtifactState(context, proposal),
+      );
+      registrar.handleInternal('releaseActivityRun', (_context, request) =>
+        adapter.releaseActivityRun(request),
+      );
+      return async () => {
+        await adapter.dispose();
+        await cleanupArtifacts();
+      };
+    },
     memoryActions.registerMemoryActions,
     todayActions.registerTodayActions,
     notificationActions.registerNotificationActions,

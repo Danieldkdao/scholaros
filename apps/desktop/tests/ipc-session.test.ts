@@ -10,6 +10,35 @@ import {
   rendererAcademicMethods,
 } from '../src/services/academic/contracts';
 import type { OnboardingState } from '../src/features/onboarding/types';
+import type { AcademicActivityAdapter } from '../src/services/academic/activity-adapter';
+
+const activityRequest = () => ({
+  sessionId: 'session-a',
+  artifactId: 'artifact-a',
+  versionId: 'version-a',
+  attemptId: 'attempt-a',
+  requestId: '00000000-0000-4000-8000-000000000003',
+});
+
+const activityAuthorization = (
+  request = activityRequest(),
+): Awaited<ReturnType<AcademicActivityAdapter['authorizeActivityRun']>> => ({
+  runtimeVersion: 'activity-runtime-v1',
+  sessionId: request.sessionId,
+  artifactId: request.artifactId,
+  versionId: request.versionId,
+  attemptId: request.attemptId,
+  runId: 'run-a',
+  contentDigest: 'a'.repeat(64),
+  runtimeDigest: 'b'.repeat(64),
+  initialState: null,
+  stateRevision: 0,
+  html: '<p>Test activity</p>',
+  css: '',
+  javascript: '',
+  sdk: '',
+});
+
 const mocks = vi.hoisted(() => ({
   handlers: new Map<
     string,
@@ -537,30 +566,30 @@ describe('academic service session boundaries', () => {
     expect(mocks.state.settings.localSetupCompletedAt).toBeNull();
   });
 
-  it('allows only internal activity-run authorization from the activity store offline', async () => {
-    const authorize = vi.fn(
-      async (context: { userId: string }, input: unknown) => ({
-        accountId: context.userId,
-        input,
-      }),
+  it('authorizes cached activities and releases ephemeral runs offline without allowing checkpoints', async () => {
+    const authorize = vi.fn<AcademicActivityAdapter['authorizeActivityRun']>(
+      async (_context, input) => activityAuthorization(input),
     );
-    const checkpoint = vi.fn(async () => undefined);
-    const verifyGrade = vi.fn(async () => undefined);
-    const inferTurn = vi.fn(async () => undefined);
-    const openBrowser = vi.fn(async () => undefined);
+    const checkpoint =
+      vi.fn<AcademicActivityAdapter['checkpointArtifactState']>();
+    const release = vi.fn<AcademicActivityAdapter['releaseActivityRun']>(
+      async () => undefined,
+    );
     const module: LearningActionModule = (registrar) => {
-      const registerInternal = registrar.handle as unknown as (
-        method: string,
-        action: (context: { userId: string }, input: unknown) => unknown,
-      ) => void;
-      registerInternal('authorizeActivityRun', authorize);
-      registerInternal('checkpointArtifactState', checkpoint);
-      registerInternal('verifyCoursework', verifyGrade);
-      registerInternal('sendStudyTurn', inferTurn);
-      registerInternal('openSource', openBrowser);
+      registrar.handleInternal('authorizeActivityRun', authorize);
+      registrar.handleInternal('checkpointArtifactState', checkpoint);
+      registrar.handleInternal('releaseActivityRun', (_context, input) =>
+        release(input),
+      );
     };
+    for (const method of [
+      'authorizeActivityRun',
+      'checkpointArtifactState',
+      'releaseActivityRun',
+    ])
+      expect(rendererAcademicMethods).not.toContain(method);
     expect(internalOfflineReadMethods).toContain('authorizeActivityRun');
-    expect(rendererAcademicMethods).not.toContain('authorizeActivityRun');
+    expect(internalOfflineReadMethods).toContain('releaseActivityRun');
     await registerTestAcademicActions([module]);
     mocks.getCurrentUser.mockResolvedValue({
       id: 'student-a',
@@ -568,33 +597,180 @@ describe('academic service session boundaries', () => {
     });
     await invoke('getCurrentUser');
 
-    const input = {
-      sessionId: 'session-a',
-      artifactId: 'artifact-a',
-      versionId: 'version-a',
-      attemptId: 'attempt-a',
-    };
-    await expect(invoke('authorizeActivityRun', input)).resolves.toEqual({
-      accountId: 'student-a',
-      input,
-    });
-    await expect(invoke('checkpointArtifactState', input)).rejects.toThrow(
+    const input = activityRequest();
+    await expect(invoke('authorizeActivityRun', input)).resolves.toEqual(
+      activityAuthorization(input),
+    );
+    const releaseInput = { runId: 'run-a', requestId: input.requestId };
+    await expect(
+      invoke('releaseActivityRun', releaseInput),
+    ).resolves.toBeUndefined();
+    await expect(
+      invoke('checkpointArtifactState', {
+        sessionId: input.sessionId,
+        artifactId: input.artifactId,
+        versionId: input.versionId,
+        attemptId: input.attemptId,
+        runId: 'run-a',
+        sequence: 1,
+        baseStateRevision: 0,
+        state: { frequency: 2 },
+      }),
+    ).rejects.toThrow('Reconnect');
+    await expect(invoke('openSource', 'https://school.edu')).rejects.toThrow(
       'Reconnect',
     );
-    await expect(invoke('verifyCoursework', input)).rejects.toThrow(
-      'Reconnect',
-    );
-    await expect(invoke('sendStudyTurn', input)).rejects.toThrow('Reconnect');
-    await expect(invoke('openSource', input)).rejects.toThrow('Reconnect');
 
     expect(authorize).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: 'student-a' }),
+      expect.objectContaining({
+        userId: 'student-a',
+        isCurrent: expect.any(Function),
+      }),
       input,
     );
+    expect(release).toHaveBeenCalledWith(releaseInput);
     expect(checkpoint).not.toHaveBeenCalled();
-    expect(verifyGrade).not.toHaveBeenCalled();
-    expect(inferTurn).not.toHaveBeenCalled();
-    expect(openBrowser).not.toHaveBeenCalled();
+    await registerTestAcademicActions();
+  });
+
+  it('rejects malformed internal activity requests before calling their handlers', async () => {
+    const authorize = vi.fn<AcademicActivityAdapter['authorizeActivityRun']>(
+      async (_context, input) => activityAuthorization(input),
+    );
+    const checkpoint =
+      vi.fn<AcademicActivityAdapter['checkpointArtifactState']>();
+    const release = vi.fn<AcademicActivityAdapter['releaseActivityRun']>(
+      async () => undefined,
+    );
+    await registerTestAcademicActions([
+      (registrar) => {
+        registrar.handleInternal('authorizeActivityRun', authorize);
+        registrar.handleInternal('checkpointArtifactState', checkpoint);
+        registrar.handleInternal('releaseActivityRun', (_context, input) =>
+          release(input),
+        );
+      },
+    ]);
+    mocks.getCurrentUser.mockResolvedValue({ id: 'student-a' });
+    await invoke('getCurrentUser');
+    const input = activityRequest();
+    const proposal = {
+      sessionId: input.sessionId,
+      artifactId: input.artifactId,
+      versionId: input.versionId,
+      attemptId: input.attemptId,
+      runId: 'run-a',
+      sequence: 1,
+      baseStateRevision: 0,
+      state: { frequency: 2 },
+    };
+    const invalidRequests: [string, unknown][] = [
+      ['authorizeActivityRun', { ...input, userId: 'student-b' }],
+      ['authorizeActivityRun', { ...input, runId: 'renderer-chosen' }],
+      ['authorizeActivityRun', { ...input, requestId: 'not-a-uuid' }],
+      ['authorizeActivityRun', { ...input, sessionId: 'x'.repeat(301) }],
+      ['checkpointArtifactState', { ...proposal, expectedRevision: 0 }],
+      ['checkpointArtifactState', { ...proposal, sequence: 0 }],
+      ['checkpointArtifactState', { ...proposal, baseStateRevision: -1 }],
+      ['checkpointArtifactState', { ...proposal, state: undefined }],
+      ['checkpointArtifactState', { ...proposal, state: { value: Infinity } }],
+      ['checkpointArtifactState', { ...proposal, state: 'x'.repeat(65537) }],
+      ['releaseActivityRun', { runId: 'run-a' }],
+      [
+        'releaseActivityRun',
+        { requestId: input.requestId, userId: 'student-b' },
+      ],
+      ['releaseActivityRun', { runId: '', requestId: input.requestId }],
+    ];
+    for (const [method, invalidInput] of invalidRequests)
+      await expect(invoke(method, invalidInput)).rejects.toMatchObject({
+        code: 'invalid-input',
+      });
+    expect(authorize).not.toHaveBeenCalled();
+    expect(checkpoint).not.toHaveBeenCalled();
+    expect(release).not.toHaveBeenCalled();
+    await registerTestAcademicActions();
+  });
+
+  it('dispatches internal activity calls to the adapter registered by the authenticated account epoch', async () => {
+    const usedEpochs: number[] = [];
+    const module: LearningActionModule = (registrar) => {
+      let disposed = false;
+      const registeredEpoch = registrar.lifecycle.epoch;
+      registrar.handleInternal(
+        'authorizeActivityRun',
+        async (context, input) => {
+          if (disposed || context.epoch !== registeredEpoch)
+            throw new Error('The retired activity adapter was invoked.');
+          usedEpochs.push(context.epoch);
+          return activityAuthorization(input);
+        },
+      );
+      return async () => {
+        disposed = true;
+      };
+    };
+    await registerTestAcademicActions([module]);
+    try {
+      mocks.getCurrentUser.mockResolvedValue({ id: 'student-a' });
+      await expect(
+        invoke('authorizeActivityRun', activityRequest()),
+      ).resolves.toMatchObject({
+        runId: 'run-a',
+      });
+      mocks.getCookie.mockReturnValue('offline-cookie');
+      mocks.getCurrentUser.mockResolvedValue({
+        id: 'student-a',
+        authMode: 'offline-local',
+      });
+      await expect(
+        invoke('authorizeActivityRun', activityRequest()),
+      ).resolves.toMatchObject({
+        runId: 'run-a',
+      });
+      mocks.getCookie.mockReturnValue('account-b-cookie');
+      mocks.getCurrentUser.mockResolvedValue({ id: 'student-b' });
+      await expect(
+        invoke('authorizeActivityRun', activityRequest()),
+      ).resolves.toMatchObject({
+        runId: 'run-a',
+      });
+      expect(new Set(usedEpochs).size).toBe(3);
+    } finally {
+      await registerTestAcademicActions();
+    }
+  });
+
+  it('authenticates internal activity calls and fences responses when the cookie changes', async () => {
+    let finishAuthorization!: () => void;
+    const authorize = vi.fn<AcademicActivityAdapter['authorizeActivityRun']>(
+      async (_context, input) => {
+        await new Promise<void>((resolve) => {
+          finishAuthorization = resolve;
+        });
+        return activityAuthorization(input);
+      },
+    );
+    await registerTestAcademicActions([
+      (registrar) =>
+        registrar.handleInternal('authorizeActivityRun', authorize),
+    ]);
+    mocks.getCurrentUser.mockResolvedValue(null);
+    await expect(
+      invoke('authorizeActivityRun', activityRequest()),
+    ).rejects.toThrow('sign in');
+    expect(authorize).not.toHaveBeenCalled();
+    mocks.getCurrentUser.mockResolvedValue({ id: 'student-a' });
+    const pending = invoke('authorizeActivityRun', activityRequest());
+    await vi.waitFor(() => expect(authorize).toHaveBeenCalledOnce());
+    const context = authorize.mock.calls[0]![0];
+    expect(context.userId).toBe('student-a');
+    expect(context.isCurrent()).toBe(true);
+    mocks.getCookie.mockReturnValue('replacement-cookie');
+    expect(context.isCurrent()).toBe(false);
+    finishAuthorization();
+    await expect(pending).rejects.toThrow('Your session changed');
+    await registerTestAcademicActions();
   });
 });
 
@@ -1268,6 +1444,7 @@ it('awaits partial module cleanup before propagating registration failure', asyn
       registerLearningActions(
         {
           handle: () => undefined,
+          handleInternal: () => undefined,
           publish: () => undefined,
           lifecycle,
         },
@@ -1363,6 +1540,7 @@ it('runs learning module cleanup once when disposal overlaps lifecycle invalidat
   const dispose = await registerLearningActions(
     {
       handle: () => undefined,
+      handleInternal: () => undefined,
       publish: () => undefined,
       lifecycle,
     },
