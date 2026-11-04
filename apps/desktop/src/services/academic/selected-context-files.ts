@@ -38,6 +38,7 @@ type SelectedContextFileTicket = {
   binding: SelectedContextFileBinding;
   info: SelectedContextFileInfo;
   closePromise: Promise<void> | null;
+  expiryTimer: ReturnType<typeof setTimeout> | null;
 };
 
 type SelectedContextFileActiveRead = {
@@ -203,11 +204,15 @@ export const createSelectedContextFileRegistry = () => {
     ...[...activeReads.values()].map(({ ticket }) => ticket),
   ];
 
-  const closeTicket = (ticket: SelectedContextFileTicket) =>
-    (ticket.closePromise ??= ticket.fileHandle
+  const closeTicket = (ticket: SelectedContextFileTicket) => {
+    if (ticket.expiryTimer) clearTimeout(ticket.expiryTimer);
+    ticket.expiryTimer = null;
+    ticket.closePromise ??= ticket.fileHandle
       .close()
       .then(() => undefined)
-      .catch(() => undefined));
+      .catch(() => undefined);
+    return ticket.closePromise;
+  };
 
   const invalidateTicket = async (
     ticketId: string,
@@ -265,7 +270,7 @@ export const createSelectedContextFileRegistry = () => {
         byteLength,
       };
       const ticketId = randomUUID();
-      tickets.set(ticketId, {
+      const ticket: SelectedContextFileTicket = {
         fileHandle,
         filePath,
         expiresAt: Date.now() + ticketLifetimeMs,
@@ -279,7 +284,15 @@ export const createSelectedContextFileRegistry = () => {
         binding: { ...binding },
         info,
         closePromise: null,
-      });
+        expiryTimer: null,
+      };
+      tickets.set(ticketId, ticket);
+      ticket.expiryTimer = setTimeout(() => {
+        const activeRead = activeReads.get(ticketId);
+        if (activeRead) activeRead.controller.abort();
+        else void invalidateTicket(ticketId, ticket);
+      }, ticketLifetimeMs);
+      ticket.expiryTimer.unref?.();
       fileHandle = null;
       return { ticketId, info: { ...info } };
     } catch {

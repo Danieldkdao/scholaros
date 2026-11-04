@@ -244,6 +244,28 @@ it('expires pending tickets after five minutes', async () => {
   }
 });
 
+it('closes expired ticket handles without a later registry call', async () => {
+  vi.useFakeTimers();
+  try {
+    const filePath = path.join(directory, 'notes.txt');
+    await writeFile(filePath, 'bounded note');
+    const registered = await registry.register(context, filePath, binding);
+
+    expect(registered).not.toBeNull();
+    if (!registered) throw new Error('Expected a selected-file ticket.');
+    const fileHandle = observedOpenCalls.handles.at(-1) as
+      | { stat: () => Promise<unknown> }
+      | undefined;
+    expect(fileHandle).toBeDefined();
+
+    await vi.advanceTimersByTimeAsync(5 * 60 * 1000 + 1);
+
+    await expect(fileHandle!.stat()).rejects.toThrow();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it('rejects files larger than the shared document limit and closes the opened handle', async () => {
   const filePath = path.join(directory, 'large.txt');
   await writeFile(filePath, '');
