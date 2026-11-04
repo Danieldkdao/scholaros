@@ -54,6 +54,13 @@ type NotificationSettingsBridge = {
   ) => Promise<{ state: NotificationPermission }>;
 };
 
+type LocalDataDeletionBridge = {
+  deleteLocalAcademicData?: (input: {
+    requestId: string;
+    scope: 'account-local';
+  }) => Promise<void>;
+};
+
 type SettingsBridge = Omit<
   ScholarBridge,
   | 'getNotificationSettings'
@@ -66,7 +73,8 @@ type SettingsBridge = Omit<
 > &
   DeviceReplacementBridge &
   WatchHealthBridge &
-  NotificationSettingsBridge;
+  NotificationSettingsBridge &
+  LocalDataDeletionBridge;
 
 type AccountSnapshot<T> = { accountId: string; value: T };
 type NotificationSnapshot = {
@@ -147,6 +155,11 @@ const SettingsPage = () => {
       ? notificationSnapshot.permissionState
       : 'unknown';
   const bridge = window.scholar as unknown as SettingsBridge;
+  const deleteLocalAcademicData = bridge.deleteLocalAcademicData;
+  const deleteLocalData = deleteLocalAcademicData
+    ? ({ requestId }: { requestId: string }) =>
+        deleteLocalAcademicData({ requestId, scope: 'account-local' })
+    : undefined;
   const replacementActions = getReplacementActions(bridge);
 
   useEffect(() => {
@@ -444,6 +457,7 @@ const SettingsPage = () => {
           onSettingsSave={saveSettings}
           onWatchSave={saveWatchSettings}
           onStateChange={setState}
+          deleteLocalData={deleteLocalData}
           onLocalDataDeleted={() => clearSettingsSaveState(state.accountId)}
         />
       )}

@@ -10,6 +10,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Providers } from '../../../components/providers';
 import { getCurrentUser } from '../../../lib/auth/helpers';
 import { routeTree } from '../../../route-tree.gen';
+import {
+  clearSettingsSaveState,
+  getSettingsSaveState,
+  queueSettingsSave,
+} from '../settings-save-queue';
 import type { CurrentUser, OnboardingState } from '../../onboarding/types';
 import type { NotificationSettings as NotificationSettingsValue } from '@scholaros/services/learning/notification-contracts';
 import type { NotificationPermission } from '../../notifications/services/notification-policy';
@@ -308,8 +313,19 @@ describe('dashboard shell', () => {
     expect(document.querySelector('button[type="submit"]')).toBeNull();
   });
 
-  it('keeps local academic data removal disabled until the product adapter is available', async () => {
-    const deleteLocalAcademicData = vi.fn().mockResolvedValue(undefined);
+  it('deletes local data through the scoped bridge and clears pending settings saves', async () => {
+    clearSettingsSaveState(finishedUser.id);
+    void queueSettingsSave(
+      finishedUser.id,
+      { decisionTimeSeconds: 2 },
+      () => new Promise<void>(() => undefined),
+    );
+    await vi.waitFor(() =>
+      expect(getSettingsSaveState(finishedUser.id).draft).toEqual({
+        decisionTimeSeconds: 2,
+      }),
+    );
+    const deleteLocalAcademicData = vi.fn(async () => undefined);
     bridge.deleteLocalAcademicData = deleteLocalAcademicData;
     await openRoute('/dashboard/settings?section=local-data');
 
@@ -320,11 +336,34 @@ describe('dashboard shell', () => {
       expect(button).toBeTruthy();
       return button!;
     });
-    expect(reviewButton.disabled).toBe(true);
-    expect(document.body.textContent).toContain(
+    expect(reviewButton.disabled).toBe(false);
+    expect(document.body.textContent).not.toContain(
       'Local data removal is unavailable until the product adapter is connected.',
     );
-    expect(deleteLocalAcademicData).not.toHaveBeenCalled();
+    await dispatchPointerClick(reviewButton);
+
+    const confirmButton = await vi.waitFor(() => {
+      const button = [...document.querySelectorAll('button')].find((item) =>
+        item.textContent?.includes('Remove local data'),
+      );
+      expect(button).toBeTruthy();
+      return button!;
+    });
+    await dispatchPointerClick(confirmButton);
+    await vi.waitFor(() =>
+      expect(deleteLocalAcademicData).toHaveBeenCalledOnce(),
+    );
+    expect(deleteLocalAcademicData).toHaveBeenCalledWith({
+      requestId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+      scope: 'account-local',
+    });
+    await vi.waitFor(() =>
+      expect(getSettingsSaveState(finishedUser.id)).toMatchObject({
+        pending: 0,
+        draft: {},
+      }),
+    );
+    clearSettingsSaveState(finishedUser.id);
   });
 
   it.each([
