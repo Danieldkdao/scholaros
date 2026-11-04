@@ -1,27 +1,41 @@
 import { serverEnv, type InferenceProvider } from '@scholaros/env/server';
 import type { LanguageModel } from 'ai';
+import { getModelCapabilities } from '../model-capabilities';
 import { baseten } from './baseten';
 import { meta } from './meta';
 
+export {
+  getModelCapabilities,
+  isModelCapabilityAvailable,
+  ModelCapabilityUnavailableError,
+  requireModelCapability,
+} from '../model-capabilities';
+export type {
+  ModelCapabilities,
+  ModelCapabilityOperation,
+} from '../model-capabilities';
+
 const providers = {
   baseten: {
-    isConfigured: () => !!serverEnv.BASETEN_API_KEY,
     createModel: () => baseten(serverEnv.BASETEN_MODEL),
   },
   meta: {
-    isConfigured: () => !!serverEnv.META_API_KEY,
     createModel: () => meta.chat(serverEnv.META_MODEL),
   },
 } satisfies Record<
   InferenceProvider,
   {
-    isConfigured: () => boolean;
     createModel: () => LanguageModel;
   }
 >;
 
-export const isInferenceConfigured = () =>
-  providers[serverEnv.INFERENCE_PROVIDER].isConfigured();
+export const isInferenceConfigured = () => {
+  const capabilities = getModelCapabilities();
+  return (
+    capabilities.endpointCategory === 'meta-standard' &&
+    Object.values(capabilities.operations).some(Boolean)
+  );
+};
 
 export const getInferenceModel = () => {
   if (!isInferenceConfigured())

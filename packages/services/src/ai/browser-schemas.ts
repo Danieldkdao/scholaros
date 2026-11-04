@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { browserNavigationModeSchema } from '@scholaros/env/browser-navigation';
+import { configurationRevisionSchema } from './schemas';
 
 const textPartSchema = z
   .object({
@@ -21,6 +23,8 @@ const textPartSchema = z
 export const browserModelRequestSchema = z
   .object({
     kind: z.literal('browser-model'),
+    browserNavigationMode: browserNavigationModeSchema.optional(),
+    configurationRevision: configurationRevisionSchema.optional(),
     messages: z
       .array(
         z
