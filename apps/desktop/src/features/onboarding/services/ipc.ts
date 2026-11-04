@@ -612,6 +612,7 @@ export const registerAcademicActions = async (service: {
   });
   handle('getState', ({ userId, isCurrent }) => {
     const state = getOnboardingState(userId);
+    if (boundAuthMode === 'offline-local') return state;
     const launchAtLogin = applyLaunchAtLogin(state.settings.launchAtLogin);
     return prepareState(state, launchAtLogin, isCurrent);
   });

@@ -5,6 +5,10 @@ import {
   registerLearningActions,
   type LearningActionModule,
 } from '../src/services/academic/learning-actions';
+import {
+  internalOfflineReadMethods,
+  rendererAcademicMethods,
+} from '../src/services/academic/contracts';
 import type { OnboardingState } from '../src/features/onboarding/types';
 const mocks = vi.hoisted(() => ({
   handlers: new Map<
@@ -57,6 +61,9 @@ const mocks = vi.hoisted(() => ({
     stop: vi.fn(async () => undefined),
     getState: vi.fn(() => ({ enabled: false, status: 'off' })),
   },
+  backgroundSyncConfigure: vi.fn(),
+  applyLaunchAtLogin: vi.fn(),
+  settleLocalSetup: vi.fn(),
   watchSettings: { watchEnabled: false, watchUrls: [] as string[] },
   getWatchSettings: vi.fn(() => mocks.watchSettings),
   saveWatchSettings: vi.fn((_userId, settings) => {
@@ -142,6 +149,7 @@ vi.mock('../src/features/onboarding/services/store', () => ({
     state: typeof mocks.state,
     options: { accountCompleted: boolean },
   ) => {
+    mocks.settleLocalSetup(state, options);
     if (
       !options.accountCompleted ||
       state.settings.localSetupCompletedAt ||
@@ -201,9 +209,35 @@ vi.mock('../src/features/onboarding/services/preview', () => ({
   getPreview: mocks.getPreview,
 }));
 vi.mock('../src/features/onboarding/services/preferences', () => ({
-  applyLaunchAtLogin: vi.fn(),
+  applyLaunchAtLogin: mocks.applyLaunchAtLogin,
   getLaunchAtLoginState: vi.fn(),
 }));
+vi.mock(
+  '../src/features/onboarding/services/background-sync',
+  async (importOriginal) => {
+    const actual =
+      await importOriginal<
+        typeof import('../src/features/onboarding/services/background-sync')
+      >();
+    return {
+      ...actual,
+      createBackgroundSyncController: (
+        options: Parameters<typeof actual.createBackgroundSyncController>[0],
+      ) => {
+        const controller = actual.createBackgroundSyncController(options);
+        return {
+          ...controller,
+          configure: (
+            configuration: Parameters<typeof controller.configure>[0],
+          ) => {
+            mocks.backgroundSyncConfigure(configuration);
+            return controller.configure(configuration);
+          },
+        };
+      },
+    };
+  },
+);
 vi.mock('../src/features/onboarding/services/connect-workspace', () => ({
   createConnectWorkspace: mocks.connectWorkspace,
 }));
@@ -469,6 +503,92 @@ describe('academic service session boundaries', () => {
     await expect(invoke('getCourses')).resolves.toMatchObject({ courses: [] });
     await expect(invoke('refreshCourses')).rejects.toThrow('Reconnect');
     expect(mocks.startCourseRefresh).not.toHaveBeenCalled();
+  });
+
+  it('keeps offline state reads from applying device or runtime settings', async () => {
+    mocks.state = readyState();
+    mocks.getCurrentUser.mockResolvedValue({
+      id: 'student-a',
+      hasCompletedOnboarding: true,
+      authMode: 'offline-local',
+    });
+    await invoke('getCurrentUser');
+
+    mocks.applyLaunchAtLogin.mockClear();
+    mocks.backgroundSyncConfigure.mockClear();
+    mocks.settleLocalSetup.mockClear();
+    mocks.watchRuntime.configure.mockClear();
+    mocks.workspace.mockClear();
+
+    const state = await invoke('getState');
+
+    expect(mocks.applyLaunchAtLogin).not.toHaveBeenCalled();
+    expect(mocks.backgroundSyncConfigure).not.toHaveBeenCalled();
+    expect(mocks.settleLocalSetup).not.toHaveBeenCalled();
+    expect(mocks.watchRuntime.configure).not.toHaveBeenCalled();
+    expect(mocks.workspace).not.toHaveBeenCalled();
+    expect(state).toBe(mocks.state);
+    expect(mocks.state.settings.localSetupCompletedAt).toBeNull();
+  });
+
+  it('allows only internal activity-run authorization from the activity store offline', async () => {
+    const authorize = vi.fn(
+      async (context: { userId: string }, input: unknown) => ({
+        accountId: context.userId,
+        input,
+      }),
+    );
+    const checkpoint = vi.fn(async () => undefined);
+    const verifyGrade = vi.fn(async () => undefined);
+    const inferTurn = vi.fn(async () => undefined);
+    const openBrowser = vi.fn(async () => undefined);
+    const module: LearningActionModule = (registrar) => {
+      const registerInternal = registrar.handle as unknown as (
+        method: string,
+        action: (context: { userId: string }, input: unknown) => unknown,
+      ) => void;
+      registerInternal('authorizeActivityRun', authorize);
+      registerInternal('checkpointArtifactState', checkpoint);
+      registerInternal('verifyCoursework', verifyGrade);
+      registerInternal('sendStudyTurn', inferTurn);
+      registerInternal('openSource', openBrowser);
+    };
+    expect(internalOfflineReadMethods).toContain('authorizeActivityRun');
+    expect(rendererAcademicMethods).not.toContain('authorizeActivityRun');
+    await registerTestAcademicActions([module]);
+    mocks.getCurrentUser.mockResolvedValue({
+      id: 'student-a',
+      authMode: 'offline-local',
+    });
+    await invoke('getCurrentUser');
+
+    const input = {
+      sessionId: 'session-a',
+      artifactId: 'artifact-a',
+      versionId: 'version-a',
+      attemptId: 'attempt-a',
+    };
+    await expect(invoke('authorizeActivityRun', input)).resolves.toEqual({
+      accountId: 'student-a',
+      input,
+    });
+    await expect(invoke('checkpointArtifactState', input)).rejects.toThrow(
+      'Reconnect',
+    );
+    await expect(invoke('verifyCoursework', input)).rejects.toThrow(
+      'Reconnect',
+    );
+    await expect(invoke('sendStudyTurn', input)).rejects.toThrow('Reconnect');
+    await expect(invoke('openSource', input)).rejects.toThrow('Reconnect');
+
+    expect(authorize).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'student-a' }),
+      input,
+    );
+    expect(checkpoint).not.toHaveBeenCalled();
+    expect(verifyGrade).not.toHaveBeenCalled();
+    expect(inferTurn).not.toHaveBeenCalled();
+    expect(openBrowser).not.toHaveBeenCalled();
   });
 });
 

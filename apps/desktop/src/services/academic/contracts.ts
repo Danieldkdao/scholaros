@@ -136,6 +136,7 @@ export type RendererAcademicMethod = (typeof rendererAcademicMethods)[number];
 export type InternalAcademicMethod = (typeof internalAcademicMethods)[number];
 export const internalOfflineReadMethods = [
   'getOfflineDeviceReadiness',
+  'authorizeActivityRun',
 ] as const satisfies readonly InternalAcademicMethod[];
 export const academicMethods = [
   ...serviceControlMethods,
