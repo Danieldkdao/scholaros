@@ -41,32 +41,36 @@ type WithoutUserId<Command> = Command extends { userId: string }
   ? Omit<Command, 'userId'>
   : never;
 type NotificationServiceCommand = WithoutUserId<NotificationDeliveryCommand>;
-const notificationEventSchema = z.strictObject({
-  id: idSchema,
-  userId: idSchema,
-  category: z.enum(notificationCategories),
-  targetKind: z.enum(notificationTargetKinds),
-  targetId: idSchema.nullable(),
-  outcomeId: idSchema,
-  preferenceRevision: z.number().int().nonnegative().safe(),
-  status: z.enum(notificationStatuses),
-  deliverAfter: instantSchema.nullable(),
-  expiresAt: instantSchema,
-  claimedAt: instantSchema.nullable(),
-  deliveredAt: instantSchema.nullable(),
-  safeRoute: safeRouteSchema,
-  createdAt: instantSchema,
-});
-const notificationEventsSchema = z.array(notificationEventSchema);
+const notificationEventSchema: z.ZodType<NotificationEventSelectData> =
+  z.strictObject({
+    id: idSchema,
+    userId: idSchema,
+    category: z.enum(notificationCategories),
+    targetKind: z.enum(notificationTargetKinds),
+    targetId: idSchema.nullable(),
+    outcomeId: idSchema,
+    preferenceRevision: z.number().int().nonnegative().safe(),
+    status: z.enum(notificationStatuses),
+    deliverAfter: instantSchema.nullable(),
+    expiresAt: instantSchema,
+    claimedAt: instantSchema.nullable(),
+    deliveredAt: instantSchema.nullable(),
+    safeRoute: safeRouteSchema,
+    createdAt: instantSchema,
+  });
+const notificationEventsSchema: z.ZodType<NotificationEventSelectData[]> =
+  z.array(notificationEventSchema);
 const notificationPermissionSchema = z.enum(notificationPermissionStates);
 const booleanResultSchema = z.boolean();
 let activeDeliveryRun: Promise<void> | null = null;
+let activeDeliveryContext: AuthorizedContext | null = null;
 
 export const createNotificationHostAdapter = (
   dependencies: NotificationHostAdapterDependencies,
 ): NotificationHostAdapter => {
   let disposed = false;
   let focusedOverride: boolean | null = null;
+  let activeContext: AuthorizedContext | null = null;
   const visibleEventsByAccount = new Map<string, Set<string>>();
   const eventOwners = new Map<string, string>();
   const pendingOperations = new Set<Promise<void>>();
@@ -126,7 +130,7 @@ export const createNotificationHostAdapter = (
       )
         throw new Error('The notification service returned an invalid claim.');
       for (const event of events) eventOwners.set(event.id, event.userId);
-      return events as NotificationEventSelectData[];
+      return events;
     },
     authorizeShow: async (context, eventId, claimedAt, options) => {
       const authorized = booleanResultSchema.parse(
@@ -162,7 +166,7 @@ export const createNotificationHostAdapter = (
       });
       if (result === null) return null;
       const event = notificationEventSchema.parse(result);
-      return event as NotificationEventSelectData;
+      return event;
     },
     authorizeClick: async (userId, eventId, now) => {
       const result = await command(userId, {
@@ -223,7 +227,14 @@ export const createNotificationHostAdapter = (
 
   const deliverDueNotifications = async (context: AuthorizedContext) => {
     if (disposed || !context.isCurrent()) return;
-    if (activeDeliveryRun) return activeDeliveryRun;
+    if (activeDeliveryRun) {
+      if (activeDeliveryContext === context) return activeDeliveryRun;
+      await activeDeliveryRun.catch(() => undefined);
+      if (disposed || !context.isCurrent()) return;
+      return deliverDueNotifications(context);
+    }
+    activeDeliveryContext = context;
+    activeContext = context;
     const deliveryContext: AuthorizedContext = {
       ...context,
       isCurrent: () => !disposed && context.isCurrent(),
@@ -237,7 +248,10 @@ export const createNotificationHostAdapter = (
     try {
       await currentRun;
     } finally {
-      if (activeDeliveryRun === currentRun) activeDeliveryRun = null;
+      if (activeDeliveryRun === currentRun) {
+        activeDeliveryRun = null;
+        activeDeliveryContext = null;
+      }
     }
   };
 
@@ -264,15 +278,22 @@ export const createNotificationHostAdapter = (
 
   const clearAccount = (context: AuthorizedContext): Promise<void> => {
     if (disposed || !context.isCurrent()) return Promise.resolve();
+    if (activeContext?.userId === context.userId) activeContext = null;
     return scheduleOperation(Promise.resolve(delivery.clearAccount(context)));
   };
 
   const handleClick = (userId: string, eventId: string): Promise<boolean> =>
-    disposed ? Promise.resolve(false) : delivery.handleClick(userId, eventId);
+    disposed ||
+    !activeContext ||
+    activeContext.userId !== userId ||
+    !activeContext.isCurrent()
+      ? Promise.resolve(false)
+      : delivery.handleClick(userId, eventId);
 
   const dispose = async () => {
     if (disposed) return;
     disposed = true;
+    activeContext = null;
     await Promise.allSettled(pendingOperations);
     await activeDeliveryRun?.catch(() => undefined);
   };

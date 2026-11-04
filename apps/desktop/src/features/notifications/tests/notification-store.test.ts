@@ -365,6 +365,65 @@ it('deduplicates the same persisted outcome within its account and category', as
   expect(db.select().from(NotificationEventTable).all()).toHaveLength(1);
 });
 
+it('allows only one concurrent claim transaction to own a queued event', async () => {
+  const context = authorizedContext(accountA);
+  setNotificationPermissionState(context, 'granted');
+  await saveNotificationSettings(context, {
+    settings: enabledSettings(),
+    expectedRevision: 0,
+  });
+  await enqueueProductNotification(context, outcome());
+  const options = {
+    now: new Date('2026-11-03T12:03:00.000Z'),
+    isFocused: false,
+    permission: 'granted' as const,
+  };
+
+  const claims = await Promise.all([
+    Promise.resolve().then(() =>
+      claimNotificationEventsForUser(accountA, options),
+    ),
+    Promise.resolve().then(() =>
+      claimNotificationEventsForUser(accountA, options),
+    ),
+  ]);
+
+  expect(claims.flat()).toHaveLength(1);
+  expect(db.select().from(NotificationEventTable).all()[0]?.status).toBe(
+    'claimed',
+  );
+});
+
+it('cancels queued events when their category is disabled', async () => {
+  const context = authorizedContext(accountA);
+  setNotificationPermissionState(context, 'granted');
+  await saveNotificationSettings(context, {
+    settings: enabledSettings(),
+    expectedRevision: 0,
+  });
+  await enqueueProductNotification(context, outcome());
+  const defaults = createDefaultNotificationSettings();
+
+  await saveNotificationSettings(context, {
+    settings: {
+      ...enabledSettings(),
+      categories: { ...defaults.categories, 'sync-completed': false },
+    },
+    expectedRevision: 1,
+  });
+
+  expect(db.select().from(NotificationEventTable).all()[0]?.status).toBe(
+    'cancelled',
+  );
+  expect(
+    claimNotificationEventsForUser(accountA, {
+      now: new Date('2026-11-03T12:03:00.000Z'),
+      isFocused: false,
+      permission: 'granted',
+    }),
+  ).toEqual([]);
+});
+
 it('claims notifications in FIFO order with a stable tie-break for equal timestamps', async () => {
   const context = authorizedContext(accountA);
   setNotificationPermissionState(context, 'granted');
