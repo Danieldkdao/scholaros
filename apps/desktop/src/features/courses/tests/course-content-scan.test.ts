@@ -922,38 +922,41 @@ describe('deep course content scanning', () => {
     });
   });
 
-  it('resolves a partial home summary when its complete assignments collection is read', async () => {
-    const assignmentsUrl = `${root}/assignments`;
-    const request = vi.fn(async (body: AgentRequestSchema) => {
-      if (body.kind === 'choose') return { operation: 'DONE', target: null };
-      const record = {
-        ...card('Upcoming quiz', body.pages[0].url),
-        sourceId: 'quiz-1',
-      };
-      return body.pages[0].url === root
-        ? { coverage: 'partial', assignments: [record] }
-        : { coverage: 'complete', assignments: [record] };
-    });
-    const { result } = run(
-      request,
-      new Map([
-        [
-          root,
-          page(
+  it.each(['partial', 'unavailable'] as const)(
+    'resolves a %s home summary when its complete assignments collection is read',
+    async (coverage) => {
+      const assignmentsUrl = `${root}/assignments`;
+      const request = vi.fn(async (body: AgentRequestSchema) => {
+        if (body.kind === 'choose') return { operation: 'DONE', target: null };
+        const record = {
+          ...card('Upcoming quiz', body.pages[0].url),
+          sourceId: 'quiz-1',
+        };
+        return body.pages[0].url === root
+          ? { coverage, assignments: coverage === 'partial' ? [record] : [] }
+          : { coverage: 'complete', assignments: [record] };
+      });
+      const { result } = run(
+        request,
+        new Map([
+          [
             root,
-            [{ label: 'Assignments', url: assignmentsUrl }],
-            'Upcoming quiz',
-          ),
-        ],
-        [assignmentsUrl, page(assignmentsUrl, [], 'Upcoming quiz')],
-      ]),
-    );
+            page(
+              root,
+              [{ label: 'Assignments', url: assignmentsUrl }],
+              'Upcoming quiz',
+            ),
+          ],
+          [assignmentsUrl, page(assignmentsUrl, [], 'Upcoming quiz')],
+        ]),
+      );
 
-    expect(await result).toMatchObject({
-      status: 'complete',
-      items: [expect.objectContaining({ title: 'Upcoming quiz' })],
-    });
-  });
+      expect(await result).toMatchObject({
+        status: 'complete',
+        items: [expect.objectContaining({ title: 'Upcoming quiz' })],
+      });
+    },
+  );
 
   it('reconciles source-ID and individual-URL observations across collection pages', async () => {
     const assignmentsUrl = `${root}/assignments`;

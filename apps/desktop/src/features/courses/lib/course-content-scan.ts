@@ -405,7 +405,7 @@ export const scanCourseCollection = async ({
   let saving = false;
   let verified = false;
   let navigationRepairCount = 0;
-  let unreadableCoverage = false;
+  const unreadablePages = new Set<string>();
   let blockedRequiredData = false;
   let truncatedCoverage = false;
   let invalidRecordCoverage = false;
@@ -566,7 +566,8 @@ export const scanCourseCollection = async ({
             explicitEmptyEvidence,
             gaps: {
               pendingPagination: !!pendingPagination,
-              unreadable: unreadableCoverage || extractionFailures.size > 0,
+              unreadable:
+                unreadablePages.size > 0 || extractionFailures.size > 0,
               blockedRequiredData,
               truncated: truncatedCoverage,
               invalidRecords:
@@ -772,6 +773,7 @@ export const scanCourseCollection = async ({
               if (gap.summary && gap.collection === collectionIdentity) {
                 collectionGaps.delete(pageIdentity);
                 scopeUnverifiedPages.delete(pageIdentity);
+                unreadablePages.delete(pageIdentity);
               }
           } else {
             scopeUnverifiedPages.add(currentIdentity);
@@ -886,8 +888,10 @@ export const scanCourseCollection = async ({
                 gap.summary &&
                 gap.collection === directIdentity &&
                 (!gap.truncated || gap.collection === currentIdentity)
-              )
+              ) {
                 collectionGaps.delete(pageIdentity);
+                unreadablePages.delete(pageIdentity);
+              }
           }
         } else if (result.coverage === 'partial') {
           if (body.context?.truncated) truncatedCoverage = true;
@@ -898,7 +902,7 @@ export const scanCourseCollection = async ({
             truncated: !!body.context?.truncated,
           });
         } else if (result.coverage === 'unavailable') {
-          unreadableCoverage = true;
+          unreadablePages.add(currentIdentity);
           collectionGaps.set(currentIdentity, {
             collection:
               collectionByPage.get(currentIdentity) ?? currentIdentity,
