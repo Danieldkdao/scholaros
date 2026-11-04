@@ -19,6 +19,7 @@ const controlRequestSchema = z.strictObject({
   operationId: idSchema,
   action: z.enum(dictationControlActions),
 });
+export type ControlRequestSchema = z.infer<typeof controlRequestSchema>;
 type ControlRequest = z.infer<typeof controlRequestSchema>;
 
 const readBoundedText = async (request: Request, limit: number) => {

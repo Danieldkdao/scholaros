@@ -14,6 +14,7 @@ const noStoreHeaders = { 'Cache-Control': 'no-store' };
 const startRequestSchema = dictationStartInputSchema.extend({
   version: z.literal(1),
 });
+export type StartRequestSchema = z.infer<typeof startRequestSchema>;
 type StartRequest = z.infer<typeof startRequestSchema>;
 
 const readBoundedBody = async (request: Request, limit: number) => {

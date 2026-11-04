@@ -113,6 +113,9 @@ const syntheticMaterialAgentRequestSchema = z
         message: 'Synthetic material exceeds the content limit.',
       });
   });
+export type SyntheticMaterialAgentRequestSchema = z.infer<
+  typeof syntheticMaterialAgentRequestSchema
+>;
 
 // Internal host envelope; never parse renderer or model payloads as this type.
 export const internalAgentOperationSchema = z.discriminatedUnion('source', [

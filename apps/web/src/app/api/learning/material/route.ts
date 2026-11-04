@@ -38,6 +38,7 @@ const metadataSchema = z.strictObject({
     .max(maximumPdfPagesPerOperation)
     .optional(),
 });
+export type MetadataSchema = z.infer<typeof metadataSchema>;
 export type MaterialMetadataSchema = z.infer<typeof metadataSchema>;
 type MaterialInterpretationInput = {
   userId: string;
@@ -245,6 +246,7 @@ const responseSchema = z.strictObject({
     .max(maximumPdfPagesPerOperation),
   pages: documentInterpretationResultSchema.shape.pages,
 });
+export type ResponseSchema = z.infer<typeof responseSchema>;
 
 export const createLearningMaterialPostHandler = (
   dependencies: MaterialRouteDependencies,
