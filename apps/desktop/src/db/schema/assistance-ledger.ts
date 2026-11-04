@@ -1,4 +1,10 @@
-import { index, integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import {
+  index,
+  integer,
+  sqliteTable,
+  text,
+  uniqueIndex,
+} from 'drizzle-orm/sqlite-core';
 import type {
   JsonValue,
   Id,
@@ -33,6 +39,13 @@ export const AssistanceLedgerTable = sqliteTable(
       table.userId,
       table.courseId,
       table.questionFingerprint,
+    ),
+    uniqueIndex('assistance_ledger_turn_identity_idx').on(
+      table.userId,
+      table.courseId,
+      table.protectionId,
+      table.questionFingerprint,
+      table.turnId,
     ),
   ],
 );

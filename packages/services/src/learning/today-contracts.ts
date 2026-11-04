@@ -1,10 +1,17 @@
 import { z } from 'zod';
 import { academicDateSchema } from '../ai/resources/shared';
-import { studyActivities, studySessionSchema } from './study-contracts';
+import {
+  freshnessStatuses,
+  studyActivities,
+  studySessionSchema,
+} from './study-contracts';
 import { learningProgressSchema } from './memory-contracts';
 import { idSchema, instantSchema, revisionSchema } from './product-contracts';
 import { sourceReferenceSchema } from './context-contracts';
 import { safeRouteSchema } from './notification-contracts';
+
+export { freshnessStatuses };
+export type { FreshnessStatus } from './study-contracts';
 
 export const attentionKinds = [
   'device',
@@ -21,13 +28,6 @@ export const attentionItemSchema = z.strictObject({
   route: safeRouteSchema,
 });
 export type AttentionItem = z.infer<typeof attentionItemSchema>;
-export const freshnessStatuses = [
-  'current',
-  'stale',
-  'partial',
-  'unavailable',
-] as const;
-export type FreshnessStatus = (typeof freshnessStatuses)[number];
 export const freshnessItemSchema = z.strictObject({
   courseId: idSchema,
   status: z.enum(freshnessStatuses),

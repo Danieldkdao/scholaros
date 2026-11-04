@@ -44,6 +44,13 @@ export const studyTurnStatuses = [
   'cancelled',
 ] as const;
 export type StudyTurnStatus = (typeof studyTurnStatuses)[number];
+export const freshnessStatuses = [
+  'current',
+  'stale',
+  'partial',
+  'unavailable',
+] as const;
+export type FreshnessStatus = (typeof freshnessStatuses)[number];
 
 export const createStudySessionInputSchema = z.strictObject({
   requestId: requestIdSchema,
@@ -175,7 +182,7 @@ export const preparedStudyContextSchema = z.strictObject({
     )
     .max(12),
   freshness: z.strictObject({
-    status: z.enum(['current', 'stale', 'partial', 'unavailable']),
+    status: z.enum(freshnessStatuses),
     lastSuccessfulAt: instantSchema.nullable(),
   }),
   contextRevision: revisionSchema,

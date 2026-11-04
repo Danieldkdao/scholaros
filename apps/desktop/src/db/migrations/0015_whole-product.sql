@@ -38,6 +38,9 @@ CREATE TABLE `context_versions` (
 CREATE UNIQUE INDEX `context_versions_item_attempt_idx` ON `context_versions` (`item_id`,`attempt_id`);--> statement-breakpoint
 CREATE INDEX `context_versions_item_original_idx` ON `context_versions` (`user_id`,`item_id`,`original_hash`);--> statement-breakpoint
 CREATE INDEX `context_versions_content_hash_idx` ON `context_versions` (`user_id`,`content_hash`);--> statement-breakpoint
+CREATE TRIGGER `context_versions_immutable` BEFORE UPDATE ON `context_versions` BEGIN
+  SELECT RAISE(ABORT, 'context versions are immutable');
+END;--> statement-breakpoint
 CREATE TABLE `context_links` (
 	`id` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,
@@ -173,6 +176,9 @@ CREATE TABLE `artifact_versions` (
 --> statement-breakpoint
 CREATE INDEX `artifact_versions_artifact_created_idx` ON `artifact_versions` (`user_id`,`artifact_id`,`created_at`);--> statement-breakpoint
 CREATE INDEX `artifact_versions_digest_idx` ON `artifact_versions` (`user_id`,`content_digest`);--> statement-breakpoint
+CREATE TRIGGER `artifact_versions_immutable` BEFORE UPDATE ON `artifact_versions` BEGIN
+  SELECT RAISE(ABORT, 'artifact versions are immutable');
+END;--> statement-breakpoint
 CREATE TABLE `artifact_states` (
 	`id` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,
@@ -342,6 +348,7 @@ CREATE TABLE `assistance_ledger` (
 --> statement-breakpoint
 CREATE INDEX `assistance_ledger_protection_created_idx` ON `assistance_ledger` (`user_id`,`protection_id`,`created_at`);--> statement-breakpoint
 CREATE INDEX `assistance_ledger_question_idx` ON `assistance_ledger` (`user_id`,`course_id`,`question_fingerprint`);--> statement-breakpoint
+CREATE UNIQUE INDEX `assistance_ledger_turn_identity_idx` ON `assistance_ledger` (`user_id`,`course_id`,`protection_id`,`question_fingerprint`,`turn_id`);--> statement-breakpoint
 CREATE TABLE `notification_events` (
 	`id` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,

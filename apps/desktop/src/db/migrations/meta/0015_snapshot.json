@@ -4172,6 +4172,17 @@
             "question_fingerprint"
           ],
           "isUnique": false
+        },
+        "assistance_ledger_turn_identity_idx": {
+          "name": "assistance_ledger_turn_identity_idx",
+          "columns": [
+            "user_id",
+            "course_id",
+            "protection_id",
+            "question_fingerprint",
+            "turn_id"
+          ],
+          "isUnique": true
         }
       },
       "foreignKeys": {},
