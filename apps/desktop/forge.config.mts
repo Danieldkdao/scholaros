@@ -15,6 +15,7 @@ import { createRequire } from 'node:module';
 import { VitePlugin } from '@electron-forge/plugin-vite';
 import { FusesPlugin } from '@electron-forge/plugin-fuses';
 import { FuseV1Options, FuseVersion } from '@electron/fuses';
+import { stageRuntimePackage } from './stage-runtime-package.mts';
 import {
   stagehandExtensionArchive,
   stagehandExtensionDirectory,
@@ -112,6 +113,7 @@ const config: ForgeConfig = {
       );
       await mkdir(napiPackagesDirectory, { recursive: true });
       await Promise.all([
+        stageRuntimePackage('mammoth', buildPath),
         cp(sqlitePackage, path.join(buildPath, 'node_modules/better-sqlite3'), {
           recursive: true,
         }),
