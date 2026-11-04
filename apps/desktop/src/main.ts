@@ -13,7 +13,7 @@ import { pathToFileURL } from 'node:url';
 import started from 'electron-squirrel-startup';
 import { mkdirSync } from 'node:fs';
 import { authClient } from './lib/auth/client';
-import { setupAuthMain } from './lib/auth/main';
+import { isAccountSessionCurrent, setupAuthMain } from './lib/auth/main';
 import {
   getTrustedWindow,
   installTrustedFocusedWebContentsGuard,
@@ -62,10 +62,43 @@ const getOnlineServiceUser = async () => {
   return { id: candidate.id };
 };
 
-const requireActiveStudySession = async (sessionId: string) => {
-  const snapshot = sessionSnapshotSchema.parse(
-    await requestAcademicService('getStudySession', { sessionId }),
-  );
+type TrustedOnlineServiceUser = { id: string; cookie: string };
+
+const requireTrustedOnlineServiceUser = async (
+  event: Electron.IpcMainInvokeEvent,
+): Promise<TrustedOnlineServiceUser> => {
+  requireTrustedSender(event);
+  const cookie = authClient.getCookie();
+  const user = await getOnlineServiceUser();
+  requireTrustedSender(event);
+  if (!isAccountSessionCurrent(cookie))
+    throw new Error('Your session changed; sign in again.');
+  return { ...user, cookie };
+};
+
+const requireSameTrustedOnlineServiceUser = async (
+  event: Electron.IpcMainInvokeEvent,
+  expectedUser: TrustedOnlineServiceUser,
+) => {
+  const currentUser = await requireTrustedOnlineServiceUser(event);
+  if (
+    currentUser.id !== expectedUser.id ||
+    currentUser.cookie !== expectedUser.cookie
+  )
+    throw new Error('Your session changed; sign in again.');
+  return currentUser;
+};
+
+const requireActiveStudySession = async (
+  event: Electron.IpcMainInvokeEvent,
+  user: TrustedOnlineServiceUser,
+  sessionId: string,
+) => {
+  await requireSameTrustedOnlineServiceUser(event, user);
+  const result = await requestAcademicService('getStudySession', { sessionId });
+  requireTrustedSender(event);
+  await requireSameTrustedOnlineServiceUser(event, user);
+  const snapshot = sessionSnapshotSchema.parse(result);
   if (
     snapshot.session.id !== sessionId ||
     snapshot.session.status !== 'in-progress'
@@ -77,18 +110,21 @@ const registerTrustedNativeIpc = () => {
   ipcMain.handle('scholar:native:chooseContextFiles', async (event, input) => {
     const hostWindow = requireTrustedSender(event);
     const selection = contextFileSelectionSchema.parse(input);
-    const user = await getOnlineServiceUser();
+    const user = await requireTrustedOnlineServiceUser(event);
+    if (selection.sessionId)
+      await requireActiveStudySession(event, user, selection.sessionId);
     const selected = await dialog.showOpenDialog(hostWindow, {
       properties: ['openFile', 'multiSelections'],
       title: 'Choose study materials',
     });
+    requireTrustedSender(event);
+    await requireSameTrustedOnlineServiceUser(event, user);
+    if (selection.sessionId)
+      await requireActiveStudySession(event, user, selection.sessionId);
     if (selected.canceled || selected.filePaths.length === 0)
       return { items: [], cancelled: true };
     if (selected.filePaths.length > 8)
       throw new Error('Choose no more than eight files.');
-    const currentUser = await getOnlineServiceUser();
-    if (currentUser.id !== user.id)
-      throw new Error('Your session changed; sign in again.');
     const result = await requestAcademicService(
       'registerSelectedContextFiles',
       {
@@ -96,6 +132,10 @@ const registerTrustedNativeIpc = () => {
         filePaths: selected.filePaths,
       },
     );
+    requireTrustedSender(event);
+    await requireSameTrustedOnlineServiceUser(event, user);
+    if (selection.sessionId)
+      await requireActiveStudySession(event, user, selection.sessionId);
     return contextFileSelectionResultSchema.parse(result);
   });
   ipcMain.handle(
@@ -103,14 +143,13 @@ const registerTrustedNativeIpc = () => {
     async (event, input) => {
       requireTrustedSender(event);
       const { sessionId } = requestMicrophonePermissionSchema.parse(input);
-      const user = await getOnlineServiceUser();
-      await requireActiveStudySession(sessionId);
+      const user = await requireTrustedOnlineServiceUser(event);
+      await requireActiveStudySession(event, user, sessionId);
       if (process.platform !== 'darwin') return { state: 'unsupported' };
+      requireTrustedSender(event);
       const granted = await systemPreferences.askForMediaAccess('microphone');
-      const currentUser = await getOnlineServiceUser();
-      if (currentUser.id !== user.id)
-        throw new Error('Your session changed; sign in again.');
-      await requireActiveStudySession(sessionId);
+      requireTrustedSender(event);
+      await requireActiveStudySession(event, user, sessionId);
       return { state: granted ? 'granted' : 'denied' };
     },
   );
@@ -119,7 +158,7 @@ const registerTrustedNativeIpc = () => {
     async (event, input) => {
       requireTrustedSender(event);
       requestNotificationPermissionSchema.parse(input);
-      await getOnlineServiceUser();
+      await requireTrustedOnlineServiceUser(event);
       return {
         state: Notification.isSupported() ? 'unknown' : 'unsupported',
       };
@@ -139,9 +178,11 @@ if (!started && !serviceMode && !app.commandLine.hasSwitch('migrate-db')) {
     getWindow: getTrustedWindow,
     registerActivityScheme: registerActivitySchemeBeforeReady,
   });
-  ipcMain.handle('better-auth:requestAuth', (event) => {
+  ipcMain.handle('better-auth:requestAuth', async (event) => {
     requireTrustedSender(event);
-    return authClient.requestAuth();
+    const result = await authClient.requestAuth();
+    requireTrustedSender(event);
+    return result;
   });
   registerTrustedNativeIpc();
 }

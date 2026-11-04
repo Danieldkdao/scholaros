@@ -1,6 +1,7 @@
 import { beforeEach, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   serviceMode: false,
+  authCookie: 'test-session-a',
   windows: 0,
   listeners: new Map<string, ((event?: unknown) => void)[]>(),
   ipcHandlers: new Map<string, (event: unknown, input?: unknown) => unknown>(),
@@ -76,10 +77,15 @@ vi.mock('electron', () => ({
 }));
 vi.mock('electron-squirrel-startup', () => ({ default: false }));
 vi.mock('../src/lib/auth/client', () => ({
-  authClient: { setupMain: mocks.setupAuth, requestAuth: mocks.requestAuth },
+  authClient: {
+    setupMain: mocks.setupAuth,
+    requestAuth: mocks.requestAuth,
+    getCookie: () => mocks.authCookie,
+  },
 }));
 vi.mock('../src/lib/auth/main', () => ({
   setupAuthMain: mocks.setupAuthMain,
+  isAccountSessionCurrent: (cookie: string) => cookie === mocks.authCookie,
 }));
 vi.mock('../src/features/study/services/activity-protocol', () => ({
   registerActivitySchemeBeforeReady: (register: (schemes: unknown[]) => void) =>
@@ -118,6 +124,7 @@ beforeEach(() => {
   mocks.ipcHandlers.clear();
   mocks.windows = 0;
   mocks.serviceMode = false;
+  mocks.authCookie = 'test-session-a';
   mocks.ready.mockResolvedValue(undefined);
   mocks.register.mockResolvedValue(undefined);
   mocks.stop.mockResolvedValue(undefined);
@@ -229,6 +236,11 @@ it('uses only trusted authentication windows and guards the user-initiated auth 
   };
   expect(authConfig.bridges).toBe(false);
   expect(authConfig.getWindow?.()).toEqual({ id: 'trusted-window' });
+  expect(mocks.setupAuthMain).toHaveBeenCalledOnce();
+  expect(mocks.registerActivityScheme).toHaveBeenCalledOnce();
+  expect(mocks.setupAuthMain.mock.invocationCallOrder[0]).toBeLessThan(
+    mocks.ready.mock.invocationCallOrder[0]!,
+  );
   expect(mocks.installTrustedFocusedWebContentsGuard).toHaveBeenCalledOnce();
 
   const requestAuth = mocks.ipcHandlers.get('better-auth:requestAuth');
@@ -239,6 +251,26 @@ it('uses only trusted authentication windows and guards the user-initiated auth 
   expect(mocks.requestAuth).not.toHaveBeenCalled();
   await expect(requestAuth?.({ trusted: true })).resolves.toBeUndefined();
   expect(mocks.requestAuth).toHaveBeenCalledOnce();
+});
+
+it('does not settle authentication IPC after the trusted frame changes', async () => {
+  let resolveAuth: ((value: undefined) => void) | undefined;
+  mocks.requestAuth.mockImplementationOnce(
+    () =>
+      new Promise<undefined>((resolve) => {
+        resolveAuth = resolve;
+      }),
+  );
+  await import('../src/main');
+  await vi.waitFor(() => expect(mocks.windows).toBe(1));
+  const requestAuth = mocks.ipcHandlers.get('better-auth:requestAuth');
+  const event = { trusted: true };
+  const pendingAuth = requestAuth?.(event);
+  await vi.waitFor(() => expect(mocks.requestAuth).toHaveBeenCalledOnce());
+  event.trusted = false;
+  resolveAuth?.(undefined);
+
+  await expect(pendingAuth).rejects.toThrow('Untrusted');
 });
 
 it('keeps native file selection behind the trusted host and service boundary', async () => {
@@ -278,6 +310,117 @@ it('keeps native file selection behind the trusted host and service boundary', a
   });
 });
 
+it('rejects file selection when the trusted frame changes during the native dialog', async () => {
+  let resolveSelection:
+    | ((selection: { canceled: boolean; filePaths: string[] }) => void)
+    | undefined;
+  mocks.chooseFiles.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        resolveSelection = resolve;
+      }),
+  );
+  mocks.request.mockImplementation(async (method) =>
+    method === 'getCurrentUser'
+      ? { id: 'student-a', authMode: 'online' }
+      : { items: [], cancelled: false },
+  );
+  await import('../src/main');
+  await vi.waitFor(() => expect(mocks.windows).toBe(1));
+
+  const chooseContextFiles = mocks.ipcHandlers.get(
+    'scholar:native:chooseContextFiles',
+  );
+  const event = { trusted: true };
+  const pendingSelection = chooseContextFiles?.(event, { saveToLibrary: true });
+  await vi.waitFor(() => expect(mocks.chooseFiles).toHaveBeenCalledOnce());
+  event.trusted = false;
+  resolveSelection?.({ canceled: false, filePaths: ['/tmp/a.pdf'] });
+
+  await expect(pendingSelection).rejects.toThrow('Untrusted');
+  expect(mocks.request).not.toHaveBeenCalledWith(
+    'registerSelectedContextFiles',
+    expect.anything(),
+  );
+});
+
+it('does not return file tickets after the trusted frame changes during registration', async () => {
+  let resolveRegistration:
+    | ((result: {
+        items: { itemId: string; operationId: string; status: string }[];
+        cancelled: boolean;
+      }) => void)
+    | undefined;
+  mocks.request.mockImplementation(async (method) => {
+    if (method === 'getCurrentUser')
+      return { id: 'student-a', authMode: 'online' };
+    return new Promise((resolve) => {
+      resolveRegistration = resolve;
+    });
+  });
+  await import('../src/main');
+  await vi.waitFor(() => expect(mocks.windows).toBe(1));
+
+  const chooseContextFiles = mocks.ipcHandlers.get(
+    'scholar:native:chooseContextFiles',
+  );
+  const event = { trusted: true };
+  const pendingSelection = chooseContextFiles?.(event, { saveToLibrary: true });
+  await vi.waitFor(() =>
+    expect(mocks.request).toHaveBeenCalledWith(
+      'registerSelectedContextFiles',
+      expect.anything(),
+    ),
+  );
+  event.trusted = false;
+  resolveRegistration?.({
+    items: [{ itemId: 'item-a', operationId: 'operation-a', status: 'queued' }],
+    cancelled: false,
+  });
+
+  await expect(pendingSelection).rejects.toThrow('Untrusted');
+});
+
+it('does not return file tickets after the account changes during registration', async () => {
+  let currentAccountId = 'student-a';
+  let resolveRegistration:
+    | ((result: {
+        items: { itemId: string; operationId: string; status: string }[];
+        cancelled: boolean;
+      }) => void)
+    | undefined;
+  mocks.request.mockImplementation(async (method) => {
+    if (method === 'getCurrentUser')
+      return { id: currentAccountId, authMode: 'online' };
+    return new Promise((resolve) => {
+      resolveRegistration = resolve;
+    });
+  });
+  await import('../src/main');
+  await vi.waitFor(() => expect(mocks.windows).toBe(1));
+
+  const chooseContextFiles = mocks.ipcHandlers.get(
+    'scholar:native:chooseContextFiles',
+  );
+  const pendingSelection = chooseContextFiles?.(
+    { trusted: true },
+    { saveToLibrary: true },
+  );
+  await vi.waitFor(() =>
+    expect(mocks.request).toHaveBeenCalledWith(
+      'registerSelectedContextFiles',
+      expect.anything(),
+    ),
+  );
+  currentAccountId = 'student-b';
+  resolveRegistration?.({
+    items: [{ itemId: 'item-a', operationId: 'operation-a', status: 'queued' }],
+    cancelled: false,
+  });
+
+  await expect(pendingSelection).rejects.toThrow('Your session changed');
+});
+
 it('requests microphone access only for a trusted active study session', async () => {
   mocks.request.mockImplementation(async (method) =>
     method === 'getCurrentUser'
@@ -298,6 +441,88 @@ it('requests microphone access only for a trusted active study session', async (
   if (process.platform === 'darwin')
     expect(mocks.askForMicrophone).toHaveBeenCalledWith('microphone');
   else expect(mocks.askForMicrophone).not.toHaveBeenCalled();
+});
+
+it('does not request microphone access when the account changes during session verification', async () => {
+  let currentAccountId = 'student-a';
+  mocks.request.mockImplementation(async (method) => {
+    if (method === 'getCurrentUser')
+      return { id: currentAccountId, authMode: 'online' };
+    currentAccountId = 'student-b';
+    return activeStudySnapshot();
+  });
+  await import('../src/main');
+  await vi.waitFor(() => expect(mocks.windows).toBe(1));
+  const requestPermission = mocks.ipcHandlers.get(
+    'scholar:native:requestMicrophonePermission',
+  );
+
+  await expect(
+    requestPermission?.({ trusted: true }, { sessionId: 'session-a' }),
+  ).rejects.toThrow('Your session changed');
+  expect(mocks.askForMicrophone).not.toHaveBeenCalled();
+});
+
+it('does not return microphone permission after the trusted frame changes during the OS prompt', async () => {
+  let resolvePermission: ((granted: boolean) => void) | undefined;
+  mocks.askForMicrophone.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        resolvePermission = resolve;
+      }),
+  );
+  mocks.request.mockImplementation(async (method) =>
+    method === 'getCurrentUser'
+      ? { id: 'student-a', authMode: 'online' }
+      : activeStudySnapshot(),
+  );
+  await import('../src/main');
+  await vi.waitFor(() => expect(mocks.windows).toBe(1));
+  const requestPermission = mocks.ipcHandlers.get(
+    'scholar:native:requestMicrophonePermission',
+  );
+  const event = { trusted: true };
+  const pendingPermission = requestPermission?.(event, {
+    sessionId: 'session-a',
+  });
+  await vi.waitFor(() => expect(mocks.askForMicrophone).toHaveBeenCalledOnce());
+  event.trusted = false;
+  resolvePermission?.(true);
+
+  await expect(pendingPermission).rejects.toThrow('Untrusted');
+});
+
+it('does not return microphone permission after the study session ends during the OS prompt', async () => {
+  let resolvePermission: ((granted: boolean) => void) | undefined;
+  mocks.askForMicrophone.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        resolvePermission = resolve;
+      }),
+  );
+  mocks.request.mockImplementation(async (method) => {
+    if (method === 'getCurrentUser')
+      return { id: 'student-a', authMode: 'online' };
+    const snapshot = activeStudySnapshot();
+    if (mocks.askForMicrophone.mock.calls.length > 0)
+      snapshot.session.status = 'finished';
+    return snapshot;
+  });
+  await import('../src/main');
+  await vi.waitFor(() => expect(mocks.windows).toBe(1));
+  const requestPermission = mocks.ipcHandlers.get(
+    'scholar:native:requestMicrophonePermission',
+  );
+  const pendingPermission = requestPermission?.(
+    { trusted: true },
+    { sessionId: 'session-a' },
+  );
+  await vi.waitFor(() => expect(mocks.askForMicrophone).toHaveBeenCalledOnce());
+  resolvePermission?.(true);
+
+  await expect(pendingPermission).rejects.toThrow(
+    'Open an active study session',
+  );
 });
 
 it('does not request microphone permission for an offline account', async () => {
@@ -329,6 +554,39 @@ it('reports notification permission as unknown rather than treating support as a
     state: 'unknown',
   });
   expect(mocks.notificationIsSupported).toHaveBeenCalledOnce();
+});
+
+it('rejects notification permission lookup when the trusted frame changes during account verification', async () => {
+  let event: { trusted: boolean } = { trusted: true };
+  mocks.request.mockImplementation(async (_method) => {
+    event.trusted = false;
+    return { id: 'student-a', authMode: 'online' };
+  });
+  await import('../src/main');
+  await vi.waitFor(() => expect(mocks.windows).toBe(1));
+  const requestPermission = mocks.ipcHandlers.get(
+    'scholar:native:requestNotificationPermission',
+  );
+
+  await expect(requestPermission?.(event, {})).rejects.toThrow('Untrusted');
+  expect(mocks.notificationIsSupported).not.toHaveBeenCalled();
+});
+
+it('rejects native IPC when the same account session changes during verification', async () => {
+  mocks.request.mockImplementation(async (_method) => {
+    mocks.authCookie = 'test-session-b';
+    return { id: 'student-a', authMode: 'online' };
+  });
+  await import('../src/main');
+  await vi.waitFor(() => expect(mocks.windows).toBe(1));
+  const requestPermission = mocks.ipcHandlers.get(
+    'scholar:native:requestNotificationPermission',
+  );
+
+  await expect(requestPermission?.({ trusted: true }, {})).rejects.toThrow(
+    'Your session changed',
+  );
+  expect(mocks.notificationIsSupported).not.toHaveBeenCalled();
 });
 
 it('shows a useful startup failure before exiting when storage ownership cannot be acquired', async () => {
