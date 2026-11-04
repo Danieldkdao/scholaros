@@ -15,7 +15,7 @@ export function LoadingSwap({
     <div className="grid grid-cols-1 items-center justify-items-center">
       <div
         className={cn(
-          'col-start-1 col-end-2 row-start-1 row-end-2 w-full',
+          'col-start-1 col-end-2 row-start-1 row-end-2 flex w-full items-center justify-center gap-2',
           isLoading ? 'invisible' : 'visible',
           className,
         )}
