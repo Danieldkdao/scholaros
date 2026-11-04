@@ -453,7 +453,7 @@ export const NotificationSettings = ({
                   className="w-full"
                   aria-label="Quiet hours time zone"
                 >
-                  <SelectValue />
+                  <SelectValue>{settings.quietHours.timeZone}</SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   <SelectGroup>

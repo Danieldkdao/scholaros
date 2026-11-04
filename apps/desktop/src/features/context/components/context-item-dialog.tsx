@@ -96,7 +96,9 @@ const CourseSelect = ({
       }
     >
       <SelectTrigger aria-label={label} className="w-full">
-        <SelectValue placeholder="No course" />
+        <SelectValue>
+          {courses.find((course) => course.id === value)?.name ?? 'No course'}
+        </SelectValue>
       </SelectTrigger>
       <SelectContent>
         <SelectItem value={null}>No course</SelectItem>
@@ -367,7 +369,7 @@ const PreferenceDialog = (props: PreferenceDialogProps) => {
                 aria-labelledby={`${id}-field-label`}
                 className="w-full"
               >
-                <SelectValue />
+                <SelectValue>{formatPreferenceField(field)}</SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {preferenceFields.map((option) => (

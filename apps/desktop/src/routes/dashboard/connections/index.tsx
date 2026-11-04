@@ -138,17 +138,19 @@ const ConnectionsPage = () => {
               className="w-full min-w-0 flex-1"
             />
             <Popover>
-              <PopoverTrigger
-                render={
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    aria-label="Connection filters"
-                  />
-                }
-              >
-                <FilterIcon />
-              </PopoverTrigger>
+              <TooltipWrapper content="Connection filters">
+                <PopoverTrigger
+                  render={
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      aria-label="Connection filters"
+                    />
+                  }
+                >
+                  <FilterIcon />
+                </PopoverTrigger>
+              </TooltipWrapper>
               <PopoverContent className="flex flex-col gap-4" align="end">
                 <label className="flex flex-1 flex-col gap-1">
                   Status

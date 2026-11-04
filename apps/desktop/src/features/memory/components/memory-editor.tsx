@@ -165,7 +165,7 @@ export const MemoryEditor = ({
                 aria-labelledby="memory-editor-field-label"
                 className="w-full"
               >
-                <SelectValue placeholder="Choose a preference type" />
+                <SelectValue>{formatPreferenceField(field).label}</SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {preferenceFields.map((preferenceField) => (

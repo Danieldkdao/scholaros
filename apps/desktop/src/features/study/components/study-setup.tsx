@@ -601,7 +601,11 @@ export const StudySetup = ({
                   }
                   disabled={offline || submitting}
                 >
-                  <SelectValue placeholder="Choose one activity" />
+                  <SelectValue>
+                    {activity
+                      ? formatStudyActivity(activity).label
+                      : 'Choose one activity'}
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   {studyActivities.map((item) => {
@@ -748,7 +752,13 @@ export const StudySetup = ({
                       }
                       disabled={offline || submitting || courseDetailLoading}
                     >
-                      <SelectValue placeholder="No specific assignment" />
+                      <SelectValue>
+                        {targetAssignmentId
+                          ? (assignments.find(
+                              (item) => item.id === targetAssignmentId,
+                            )?.title ?? 'Assignment unavailable')
+                          : 'No specific assignment'}
+                      </SelectValue>
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="__none__">
@@ -937,7 +947,9 @@ export const StudySetup = ({
                   aria-describedby="study-duration-description"
                   disabled={offline || submitting}
                 >
-                  <SelectValue />
+                  <SelectValue>
+                    {formatDurationChoice(durationChoice)}
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   {durationChoices.map((choice) => (

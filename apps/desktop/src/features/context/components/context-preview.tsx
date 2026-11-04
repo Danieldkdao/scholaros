@@ -151,7 +151,13 @@ export const ContextPreview = ({
                 aria-labelledby="context-preview-version-label"
                 className="w-full"
               >
-                <SelectValue />
+                <SelectValue>
+                  {selectedVersion?.id === details.item.currentVersionId
+                    ? 'Current version'
+                    : selectedVersion
+                      ? `Earlier version: ${formatObservedAt(selectedVersion.createdAt)}`
+                      : 'Choose a version'}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {details.versions.map((version) => (
