@@ -1,4 +1,7 @@
-import { isReadNavigation } from '../../onboarding/lib/browser-policy';
+import {
+  academicPageIdentity,
+  isReadNavigation,
+} from '../../onboarding/lib/browser-policy';
 import type { ObservedPage } from '../../onboarding/lib/academic-discovery';
 
 export const courseChildKinds = ['announcements', 'assignments'] as const;
@@ -37,6 +40,13 @@ const emptyListPatterns: Record<CourseChildKind, RegExp> = {
   assignments: /\b(?:no assignments|no classwork|no homework|nothing due)\b/i,
 };
 
+const zeroCountPatterns: Record<CourseChildKind, RegExp> = {
+  announcements:
+    /\b0\s+(?:announcements|updates)\b|\b(?:announcements|updates)\s*(?:\(\s*0\s*\)|:\s*0\b)/i,
+  assignments:
+    /\b0\s+(?:assignments|classwork|homework)\b|\b(?:assignments|classwork|homework)\s*(?:\(\s*0\s*\)|:\s*0\b)/i,
+};
+
 const paginationLabelPattern =
   /^(?:next|older|newer|previous|more|load more|show more|page\s+\d+|[›»>])/i;
 const paginationQueryPattern = /[?&](?:page|p|start|offset)=/i;
@@ -47,10 +57,18 @@ export const childPageTarget = (
   page: ObservedPage,
   kind: CourseChildKind,
   host: string,
+  excludedUrls: string[] = [],
 ) => {
   const pattern = childLabelPatterns[kind];
+  const excludedIdentities = new Set(
+    excludedUrls
+      .map((url) => academicPageIdentity(url))
+      .filter((url): url is string => !!url),
+  );
   for (const link of page.links) {
     if (!pattern.test(normalize(link.label))) continue;
+    const identity = academicPageIdentity(link.url);
+    if (identity && excludedIdentities.has(identity)) continue;
     if (!isReadNavigation(link.url, [host])) continue;
     return link.url;
   }
@@ -61,6 +79,11 @@ export const childPageTarget = (
 // asked for sign-in, or showed nothing readable is not evidence of empty.
 export const pageListsNothing = (page: ObservedPage, kind: CourseChildKind) =>
   emptyListPatterns[kind].test(page.text ?? '');
+
+export const pageReportsZeroCount = (
+  page: ObservedPage,
+  kind: CourseChildKind,
+) => zeroCountPatterns[kind].test(page.text ?? '');
 
 // Pagination means more items may exist, so the scan cannot be called complete.
 export const pageHasMorePages = (page: ObservedPage) =>
