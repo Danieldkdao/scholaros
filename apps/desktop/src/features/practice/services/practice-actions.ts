@@ -82,6 +82,11 @@ export type PracticeEvaluationRequest = {
 
 export type PracticeActionDependencies = {
   store: PracticeStore;
+  regenerateRetry?: (
+    context: AuthorizedContext,
+    input: { priorAttemptId: string; requestId: string },
+    signal: AbortSignal,
+  ) => Promise<PracticeAttemptCreationInput>;
   assessCandidate: (
     context: AuthorizedContext,
     candidate: PracticeCandidateForAssessment,
@@ -288,7 +293,7 @@ const evaluateAnswer = async (
   answerRow: NonNullable<ReturnType<typeof workQuestions>[number]['answer']>,
   dependencies: Pick<
     PracticeActionDependencies,
-    'canPublishFeedback' | 'evaluateAnswer'
+    'canPublishFeedback' | 'evaluateAnswer' | 'store' | 'publish'
   >,
 ): Promise<PracticeEvaluationDTO> => {
   await requireCurrentFeedbackPermission(context, work, dependencies);
@@ -317,6 +322,16 @@ const evaluateAnswer = async (
     );
   } catch {
     if (context.signal.aborted) throw new PracticeActionError('cancelled');
+    assertCurrent(context);
+    const interrupted = dependencies.store.interruptPracticeEvaluation(
+      context.userId,
+      work.attempt.id,
+    );
+    if (interrupted)
+      publishAfterCommit(
+        dependencies.publish,
+        practiceEvent(context, interrupted),
+      );
     throw new PracticeActionError('provider-failed');
   }
   await requireCurrentFeedbackPermission(context, work, dependencies);
@@ -329,7 +344,19 @@ const evaluateAnswer = async (
     },
     providerResult,
   );
-  if (!evaluation) throw new PracticeActionError('provider-failed');
+  if (!evaluation) {
+    assertCurrent(context);
+    const interrupted = dependencies.store.interruptPracticeEvaluation(
+      context.userId,
+      work.attempt.id,
+    );
+    if (interrupted)
+      publishAfterCommit(
+        dependencies.publish,
+        practiceEvent(context, interrupted),
+      );
+    throw new PracticeActionError('provider-failed');
+  }
   return evaluation;
 };
 
@@ -552,7 +579,8 @@ export const createPracticeActions = (
     }
   };
 
-  const retryPracticeAttempt = async (
+  const pendingRetries = new Map<string, Promise<PracticeSnapshot>>();
+  const retryPracticeAttemptWork = async (
     context: AuthorizedContext,
     input: { attemptId: string; requestId: string },
   ) => {
@@ -567,6 +595,50 @@ export const createPracticeActions = (
       candidateForWork(work),
       dependencies,
     );
+    const existing = dependencies.store.getPracticeAttempt(context.userId, {
+      attemptId: input.requestId,
+    });
+    if (existing) {
+      if (
+        existing.priorAttemptId !== input.attemptId ||
+        existing.courseId !== work.attempt.courseId ||
+        existing.sessionId !== work.attempt.sessionId
+      )
+        throw new PracticeActionError('revision-conflict');
+      return existing;
+    }
+    await requireCurrentFeedbackPermission(context, work, dependencies);
+    if (!dependencies.regenerateRetry)
+      throw new PracticeActionError('provider-failed');
+    const fresh = parseAttemptInput(
+      await dependencies.regenerateRetry(
+        context,
+        { priorAttemptId: input.attemptId, requestId: input.requestId },
+        context.signal,
+      ),
+    );
+    if (
+      fresh.requestId !== input.requestId ||
+      fresh.courseId !== work.attempt.courseId ||
+      fresh.sessionId !== work.attempt.sessionId ||
+      fresh.artifactId !== null ||
+      !Array.isArray(fresh.hostAnswerKey) ||
+      !fresh.hostAnswerKey.every(
+        (key) =>
+          key &&
+          typeof key === 'object' &&
+          !Array.isArray(key) &&
+          typeof key.generationProof === 'string' &&
+          key.generationProof.length > 0,
+      )
+    )
+      throw new PracticeActionError('scope-denied');
+    await assessPracticeCandidate(
+      context,
+      candidateForAssessment(fresh),
+      dependencies,
+    );
+    await requireCurrentFeedbackPermission(context, work, dependencies);
     try {
       return dependencies.store.retryPracticeAttempt(
         context.userId,
@@ -582,10 +654,33 @@ export const createPracticeActions = (
             }),
           );
         },
+        fresh,
       );
     } catch (error) {
       return storeError(error);
     }
+  };
+  const retryPracticeAttempt = (
+    context: AuthorizedContext,
+    input: { attemptId: string; requestId: string },
+  ) => {
+    assertCurrent(context);
+    const key = JSON.stringify([
+      context.userId,
+      input.attemptId,
+      input.requestId,
+    ]);
+    const existing = pendingRetries.get(key);
+    if (existing)
+      return existing.then((snapshot) => {
+        assertCurrent(context);
+        return snapshot;
+      });
+    const operation = retryPracticeAttemptWork(context, input).finally(() =>
+      pendingRetries.delete(key),
+    );
+    pendingRetries.set(key, operation);
+    return operation;
   };
 
   return {

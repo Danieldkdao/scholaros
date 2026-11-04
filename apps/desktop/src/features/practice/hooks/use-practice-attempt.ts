@@ -697,6 +697,19 @@ export const usePracticeAttempt = ({
       if (mountedRef.current) setActionError(null);
       submitCommandRef.current = null;
     } catch {
+      try {
+        const recovered = await practiceBridge().getPracticeAttempt({
+          attemptId: commandAttemptId,
+        });
+        if (
+          mountedRef.current &&
+          isCurrentScope(commandScope, generation) &&
+          recovered.id === commandAttemptId
+        )
+          setCurrentSnapshot(recovered);
+      } catch {
+        /* Saved answers remain available; later polling can recover. */
+      }
       if (mountedRef.current && isCurrentScope(commandScope, generation))
         setActionError(
           'Could not submit your answers. Your saved responses are still here; check your connection and try again.',
@@ -781,7 +794,10 @@ export const usePracticeAttempt = ({
     if (
       readOnlyRef.current ||
       !current ||
-      (current.status !== 'evaluated' && current.status !== 'interrupted') ||
+      (current.status !== 'evaluated' &&
+        current.status !== 'interrupted' &&
+        current.status !== 'submitted') ||
+      isSubmitting ||
       isRetrying
     )
       return;
@@ -823,7 +839,7 @@ export const usePracticeAttempt = ({
     } catch {
       if (mountedRef.current && isCurrentScope(commandScope, generation))
         setActionError(
-          'Could not start another attempt. Your previous answers and feedback are still available.',
+          'Could not create fresh practice. Your previous answers are preserved. Reconnect or reopen the source material in its study session, then try again.',
         );
     } finally {
       if (mountedRef.current && isCurrentScope(commandScope, generation))

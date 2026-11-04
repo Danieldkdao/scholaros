@@ -1039,14 +1039,52 @@ export const createPracticeStore = ({
     }
   };
 
+  const interruptPracticeEvaluation = (userId: string, attemptId: string) => {
+    if (
+      !idSchema.safeParse(userId).success ||
+      !idSchema.safeParse(attemptId).success
+    )
+      throw new PracticeStoreError('invalid-input');
+    db.transaction((tx) => {
+      const attempt = tx
+        .select()
+        .from(PracticeAttemptTable)
+        .where(
+          and(
+            eq(PracticeAttemptTable.userId, userId),
+            eq(PracticeAttemptTable.id, attemptId),
+          ),
+        )
+        .get();
+      if (!attempt || !['submitted', 'in-progress'].includes(attempt.status))
+        return;
+      tx.update(PracticeAttemptTable)
+        .set({ status: 'interrupted', revision: attempt.revision + 1 })
+        .where(
+          and(
+            eq(PracticeAttemptTable.userId, userId),
+            eq(PracticeAttemptTable.id, attemptId),
+            eq(PracticeAttemptTable.revision, attempt.revision),
+          ),
+        )
+        .run();
+    });
+    return readAttempt(userId, attemptId);
+  };
+
   const retryPracticeAttempt = (
     userId: string,
     input: unknown,
     onSessionChange?: (change: { sessionId: string; revision: number }) => void,
+    replacement?: Omit<
+      z.infer<typeof createPracticeAttemptInputSchema>,
+      'priorAttemptId' | 'initialAssisted'
+    >,
   ) => {
     const parsed = retryPracticeAttemptInputSchema.safeParse(input);
     if (!parsed.success || !idSchema.safeParse(userId).success)
       throw new PracticeStoreError('invalid-input');
+    const fresh = replacement ? parseAttemptInput(replacement) : null;
     const updatedAt = now();
     if (!instantSchema.safeParse(updatedAt).success)
       throw new PracticeStoreError('storage-failed');
@@ -1105,9 +1143,10 @@ export const createPracticeStore = ({
             existingRetry.priorAttemptId !== priorAttempt.id ||
             existingRetry.courseId !== priorAttempt.courseId ||
             existingRetry.sessionId !== priorAttempt.sessionId ||
-            existingRetry.artifactId !== priorAttempt.artifactId ||
-            existingRetry.versionId !== priorAttempt.versionId ||
-            existingRetry.rubricVersion !== priorAttempt.rubricVersion
+            (!fresh &&
+              (existingRetry.artifactId !== priorAttempt.artifactId ||
+                existingRetry.versionId !== priorAttempt.versionId ||
+                existingRetry.rubricVersion !== priorAttempt.rubricVersion))
           )
             throw new PracticeStoreError('revision-conflict');
           const snapshot = readAttempt(userId, existingRetry.id);
@@ -1124,6 +1163,14 @@ export const createPracticeStore = ({
         if (!questions.success || !answerKeys.success)
           throw new PracticeStoreError('storage-failed');
 
+        if (
+          fresh &&
+          (fresh.requestId !== parsed.data.requestId ||
+            fresh.courseId !== priorAttempt.courseId ||
+            fresh.sessionId !== priorAttempt.sessionId ||
+            fresh.artifactId !== null)
+        )
+          throw new PracticeStoreError('scope-denied');
         // The nested creation savepoint and transcript updates share this transaction.
         const retry = createPracticeAttempt(userId, {
           requestId: parsed.data.requestId,
@@ -1138,6 +1185,7 @@ export const createPracticeStore = ({
           rubricVersion: priorAttempt.rubricVersion,
           questions: questions.data,
           hostAnswerKey: answerKeys.data,
+          ...fresh,
           priorAttemptId: priorAttempt.id,
           initialAssisted: priorAttempt.assisted,
         });
@@ -1283,6 +1331,7 @@ export const createPracticeStore = ({
     deletePracticeAttemptsForSession,
     getEvaluationWork,
     getPracticeAttempt,
+    interruptPracticeEvaluation,
     retryPracticeAttempt,
     savePracticeAnswer,
     savePracticeEvaluations,

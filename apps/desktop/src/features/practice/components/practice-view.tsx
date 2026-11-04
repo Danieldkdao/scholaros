@@ -105,7 +105,7 @@ export const PracticeView = ({
             </h2>
             {objectiveCount > 0 && (
               <p className="text-muted-foreground">
-                Objectives: {objectiveCount}
+                <span>Objectives</span> <span>{objectiveCount}</span>
               </p>
             )}
           </div>
@@ -286,7 +286,8 @@ export const PracticeView = ({
           </div>
         )}
         {(snapshot.status === 'evaluated' ||
-          snapshot.status === 'interrupted') && (
+          snapshot.status === 'interrupted' ||
+          snapshot.status === 'submitted') && (
           <div className="flex flex-col gap-2">
             {snapshot.status === 'interrupted' && (
               <p className="text-muted-foreground">
@@ -296,7 +297,9 @@ export const PracticeView = ({
             <Button
               type="button"
               variant="outline"
-              disabled={readOnly || practice.isRetrying}
+              disabled={
+                readOnly || practice.isRetrying || practice.isSubmitting
+              }
               onClick={() => void practice.retry()}
               aria-busy={practice.isRetrying}
               aria-label={

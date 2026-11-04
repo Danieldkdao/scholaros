@@ -635,7 +635,7 @@ describe('real tutor and practice academic registration', () => {
             configurationRevision: 'meta-fixture',
             usage: { inputTokens: 1, outputTokens: 1 },
             candidate: {
-              rubricVersion: 'fixture-rubric',
+              rubricVersion: `fixture-rubric-${request.requestId}`,
               questions: Array.from({ length: 3 }, (_, index) => ({
                 id: `question-${index}`,
                 kind: 'numeric',
@@ -648,6 +648,7 @@ describe('real tutor and practice academic registration', () => {
               hostAnswerKey: Array.from({ length: 3 }, (_, index) => ({
                 questionId: `question-${index}`,
                 kind: 'numeric',
+                generationProof: `server-approved-${request.requestId}`,
                 acceptedValues: [{ value: 3, tolerance: 0, unit: null }],
                 explanation: 'The increase is three cells.',
                 acceptedAlternatives: [],
@@ -753,6 +754,47 @@ describe('real tutor and practice academic registration', () => {
       expect(attempt.status).toBe('evaluated');
       expect(attempt.feedback).toHaveLength(3);
       expect(attempt.feedback.every(({ assisted }) => !assisted)).toBe(true);
+      const priorPrivate = db
+        .select()
+        .from(PracticeAttemptTable)
+        .where(eq(PracticeAttemptTable.id, attemptId))
+        .get()!;
+      const retryId = randomUUID();
+      const fresh = await call('retryPracticeAttempt', {
+        attemptId,
+        requestId: retryId,
+      });
+      expect(fresh.priorAttemptId).toBe(attemptId);
+      expect(fresh.feedback).toEqual([]);
+      expect(JSON.stringify(fresh)).not.toContain('generationProof');
+      const afterPrivate = db
+        .select()
+        .from(PracticeAttemptTable)
+        .where(eq(PracticeAttemptTable.id, fresh.id))
+        .get()!;
+      expect(afterPrivate.artifactId).toBeNull();
+      expect(afterPrivate.rubricVersion).not.toBe(priorPrivate.rubricVersion);
+      expect(JSON.stringify(afterPrivate.hostAnswerKey)).toContain(
+        `server-approved-${retryId}`,
+      );
+      expect(
+        db
+          .select()
+          .from(PracticeAttemptTable)
+          .where(eq(PracticeAttemptTable.id, attemptId))
+          .get(),
+      ).toEqual(priorPrivate);
+      const generationCalls = requestLearning.mock.calls.filter(
+        ([req]) => req.kind === 'practice-generate',
+      ).length;
+      expect(
+        await call('retryPracticeAttempt', { attemptId, requestId: retryId }),
+      ).toEqual(fresh);
+      expect(
+        requestLearning.mock.calls.filter(
+          ([req]) => req.kind === 'practice-generate',
+        ),
+      ).toHaveLength(generationCalls);
       db.update(AssistanceLedgerTable)
         .set({ answerRiskTags: ['cumulative-fragment'] })
         .run();

@@ -40,6 +40,7 @@ import {
   createPracticeAttempt,
   registerPracticeActions,
   type PracticeActionDependencies,
+  type PracticeAttemptCreationInput,
 } from '../../features/practice/services/practice-actions';
 import { createPracticeStore } from '../../features/practice/services/practice-store';
 import {
@@ -340,8 +341,170 @@ export const registerTutorPracticeActions = (
       return readSources(context, { ...input, selectedIds });
     },
   };
+  const generateFreshPractice = async (
+    context: AuthorizedContext,
+    input: Pick<
+      Parameters<LearningEffectHandlers['offerPractice']>[1],
+      | 'sessionId'
+      | 'courseId'
+      | 'requestId'
+      | 'objective'
+      | 'references'
+      | 'policy'
+    >,
+  ) => {
+    const snapshot = await requireSession(
+      context,
+      input.sessionId,
+      input.courseId,
+    );
+    const revisions = sessionStore.readStudySessionRevisions(context, {
+      sessionId: input.sessionId,
+    });
+    const currentPolicy = await policyForSession(context, {
+      sessionId: input.sessionId,
+      targetAssignmentId: snapshot.session.targetAssignmentId,
+      sourceIds: input.references.map((r) => r.sourceId),
+    });
+    if (
+      !currentPolicy?.allowedOperations.includes('distinct-practice') ||
+      currentPolicy.policyRevision !== input.policy.policyRevision ||
+      currentPolicy.consentRevision !== input.policy.consentRevision
+    )
+      throw new TutorServiceError('permission-revoked');
+    const libraryReferences = input.references.filter(
+      ({ sourceKind }) => sourceKind !== 'assignment',
+    );
+    const selected =
+      libraryReferences.length > 0
+        ? readSources(context, {
+            sessionId: input.sessionId,
+            query: input.objective,
+            selectedIds: libraryReferences.map(({ sourceId }) => sourceId),
+          })
+        : null;
+    const gradeSettings = await getGradeSettings(context);
+    if (!gradeSettings) throw new TutorServiceError('permission-revoked');
+    const assignmentSources = input.references.some(
+      ({ sourceKind }) => sourceKind === 'assignment',
+    )
+      ? await studyContext.readCourseSources(context, {
+          sessionId: input.sessionId,
+          courseId: input.courseId,
+          targetAssignmentId: snapshot.session.targetAssignmentId,
+          gradeAccessEnabled: gradeSettings.enabled,
+          gradeConsentRevision: gradeSettings.revision,
+          query: input.objective,
+        })
+      : null;
+    const offered = new Set(
+      input.references.map((reference) => JSON.stringify(reference)),
+    );
+    const sources = [
+      ...(selected?.passages ?? []),
+      ...(assignmentSources?.passages.filter(
+        ({ reference }) => reference.sourceKind === 'assignment',
+      ) ?? []),
+    ]
+      .filter(({ reference }) => offered.has(JSON.stringify(reference)))
+      .map(({ reference, text }) => ({ reference, excerpt: text }));
+    if (sources.length === 0 || sources.length !== offered.size)
+      throw new TutorServiceError('scope-denied');
+    const request: LearningRequest = learningRequestSchema.parse({
+      version: 1,
+      kind: 'practice-generate',
+      requestId: input.requestId,
+      sessionId: input.sessionId,
+      courseId: input.courseId,
+      contextRevision: revisions.contextRevision,
+      input: {
+        topic: input.objective,
+        difficulty: 'developing',
+        questionCount: 3,
+        objectives: [{ id: input.requestId, description: input.objective }],
+        sources,
+        priorAssistanceSummary: input.policy.priorAssistanceSummary,
+      },
+    });
+    const response = practiceGenerateResponseSchema.parse(
+      await dependencies.requestLearning(request, context.signal),
+    );
+    const current = await requireSession(
+      context,
+      input.sessionId,
+      input.courseId,
+    );
+    const currentRevisions = sessionStore.readStudySessionRevisions(context, {
+      sessionId: input.sessionId,
+    });
+    if (
+      response.requestId !== request.requestId ||
+      current.session.generationEpoch !== snapshot.session.generationEpoch ||
+      JSON.stringify(revisions) !== JSON.stringify(currentRevisions)
+    )
+      throw new TutorServiceError('permission-revoked');
+    return { candidate: response.candidate, snapshot };
+  };
   const practiceDependencies: Omit<PracticeActionDependencies, 'publish'> = {
     store: practiceStore,
+    regenerateRetry: async (
+      context,
+      { priorAttemptId, requestId },
+      signal,
+    ): Promise<PracticeAttemptCreationInput> => {
+      assertCurrent(context);
+      signal.throwIfAborted();
+      const work = practiceStore.getEvaluationWork(
+        context.userId,
+        priorAttemptId,
+      );
+      if (!work) throw new TutorServiceError('not-found');
+      if (work.attempt.sessionId === null)
+        throw new TutorServiceError('scope-denied');
+      const snapshot = await requireSession(
+        context,
+        work.attempt.sessionId,
+        work.attempt.courseId,
+      );
+      const references = uniqueReferences(
+        work.questions.flatMap((q) => q.sourceReferences),
+      );
+      const policy = await policyForSession(context, {
+        sessionId: snapshot.session.id,
+        targetAssignmentId: snapshot.session.targetAssignmentId,
+        sourceIds: references.map((r) => r.sourceId),
+      });
+      if (
+        !policy?.allowedOperations.includes('distinct-practice') ||
+        references.length === 0
+      )
+        throw new TutorServiceError('permission-revoked');
+      const { candidate } = await generateFreshPractice(context, {
+        sessionId: snapshot.session.id,
+        courseId: work.attempt.courseId,
+        requestId,
+        objective: snapshot.session.topic ?? snapshot.session.title,
+        references,
+        policy,
+      });
+      signal.throwIfAborted();
+      assertCurrent(context);
+      return {
+        requestId,
+        courseId: work.attempt.courseId,
+        sessionId: work.attempt.sessionId,
+        artifactId: null,
+        versionId: candidate.rubricVersion,
+        objectiveIds: [
+          ...new Set(candidate.questions.flatMap((q) => q.objectiveIds)),
+        ],
+        mode: work.attempt.mode,
+        feedbackMode:
+          work.attempt.mode === 'guided' ? 'end' : work.attempt.feedbackMode,
+        ...candidate,
+        hostAnswerKey: jsonValueSchema.parse(candidate.hostAnswerKey),
+      };
+    },
     assessCandidate: async (context, candidate) => {
       if (candidate.sessionId === null) return { allowed: false };
       await requireSession(context, candidate.sessionId, candidate.courseId);
@@ -467,85 +630,10 @@ export const registerTutorPracticeActions = (
       }),
     createActivity: dependencies.createActivity,
     offerPractice: async (context, input) => {
-      const snapshot = await requireSession(
+      const { candidate, snapshot } = await generateFreshPractice(
         context,
-        input.sessionId,
-        input.courseId,
+        input,
       );
-      const revisions = sessionStore.readStudySessionRevisions(context, {
-        sessionId: input.sessionId,
-      });
-      const libraryReferences = input.references.filter(
-        ({ sourceKind }) => sourceKind !== 'assignment',
-      );
-      const selected =
-        libraryReferences.length > 0
-          ? readSources(context, {
-              sessionId: input.sessionId,
-              query: input.objective,
-              selectedIds: libraryReferences.map(({ sourceId }) => sourceId),
-            })
-          : null;
-      const gradeSettings = await getGradeSettings(context);
-      if (!gradeSettings) throw new TutorServiceError('permission-revoked');
-      const assignmentSources = input.references.some(
-        ({ sourceKind }) => sourceKind === 'assignment',
-      )
-        ? await studyContext.readCourseSources(context, {
-            sessionId: input.sessionId,
-            courseId: input.courseId,
-            targetAssignmentId: snapshot.session.targetAssignmentId,
-            gradeAccessEnabled: gradeSettings.enabled,
-            gradeConsentRevision: gradeSettings.revision,
-            query: input.objective,
-          })
-        : null;
-      const offered = new Set(
-        input.references.map((reference) => JSON.stringify(reference)),
-      );
-      const sources = [
-        ...(selected?.passages ?? []),
-        ...(assignmentSources?.passages.filter(
-          ({ reference }) => reference.sourceKind === 'assignment',
-        ) ?? []),
-      ]
-        .filter(({ reference }) => offered.has(JSON.stringify(reference)))
-        .map(({ reference, text }) => ({ reference, excerpt: text }));
-      if (sources.length === 0 || sources.length !== offered.size)
-        throw new TutorServiceError('scope-denied');
-      const request: LearningRequest = learningRequestSchema.parse({
-        version: 1,
-        kind: 'practice-generate',
-        requestId: input.requestId,
-        sessionId: input.sessionId,
-        courseId: input.courseId,
-        contextRevision: revisions.contextRevision,
-        input: {
-          topic: input.objective,
-          difficulty: 'developing',
-          questionCount: 3,
-          objectives: [{ id: input.requestId, description: input.objective }],
-          sources,
-          priorAssistanceSummary: input.policy.priorAssistanceSummary,
-        },
-      });
-      const response = practiceGenerateResponseSchema.parse(
-        await dependencies.requestLearning(request, context.signal),
-      );
-      const current = await requireSession(
-        context,
-        input.sessionId,
-        input.courseId,
-      );
-      const currentRevisions = sessionStore.readStudySessionRevisions(context, {
-        sessionId: input.sessionId,
-      });
-      if (
-        response.requestId !== request.requestId ||
-        current.session.generationEpoch !== snapshot.session.generationEpoch ||
-        JSON.stringify(revisions) !== JSON.stringify(currentRevisions)
-      )
-        throw new TutorServiceError('permission-revoked');
       const attempt = await createPracticeAttempt(
         context,
         {
@@ -553,14 +641,12 @@ export const registerTutorPracticeActions = (
           courseId: input.courseId,
           sessionId: input.sessionId,
           artifactId: null,
-          versionId: response.candidate.rubricVersion,
+          versionId: candidate.rubricVersion,
           objectiveIds: [input.requestId],
           mode: snapshot.session.activity === 'prepare-exam' ? 'exam' : 'quiz',
           feedbackMode: 'end',
-          ...response.candidate,
-          hostAnswerKey: jsonValueSchema.parse(
-            response.candidate.hostAnswerKey,
-          ),
+          ...candidate,
+          hostAnswerKey: jsonValueSchema.parse(candidate.hostAnswerKey),
         },
         practiceDependencies,
       );

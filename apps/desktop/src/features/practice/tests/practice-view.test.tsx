@@ -986,3 +986,29 @@ it('defers practice attempt-link changes until the host is writable again', asyn
   expect(onAttemptChange).toHaveBeenCalledOnce();
   expect(onAttemptChange).toHaveBeenCalledWith('attempt-2');
 });
+
+it('refreshes durable interrupted state after grading fails so fresh retry is available', async () => {
+  const view = await renderPractice(
+    attempt({ answers: [answer], revision: 1 }),
+  );
+  bridge.submitPracticeAttempt.mockRejectedValueOnce(
+    new Error('expired generation proof'),
+  );
+  bridge.getPracticeAttempt.mockResolvedValue(
+    attempt({ status: 'interrupted', answers: [answer], revision: 3 }),
+  );
+  await clickButton('Submit answers');
+  expect(view.textContent).toContain('Try again');
+  expect(view.textContent).toContain('saved answers are still here');
+  expect(view.textContent).not.toContain('Objectives:');
+  expect(bridge.retryPracticeAttempt).not.toHaveBeenCalled();
+});
+
+it('offers fresh retry for a persisted submitted attempt after restart without claiming feedback completed', async () => {
+  const view = await renderPractice(
+    attempt({ status: 'submitted', answers: [answer], revision: 3 }),
+  );
+  expect(view.textContent).toContain('Try again');
+  expect(view.textContent).toContain('evaluated');
+  expect(bridge.retryPracticeAttempt).not.toHaveBeenCalled();
+});

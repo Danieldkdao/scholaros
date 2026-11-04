@@ -1,3 +1,8 @@
+import { eq } from 'drizzle-orm';
+import {
+  issuePracticeProof,
+  verifyPracticeProof,
+} from '../../../../../../packages/services/src/ai/practice-provenance';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -184,6 +189,20 @@ const createInternalAttemptInput = (
   hostAnswerKey,
   ...overrides,
 });
+
+const regenerateFixture: NonNullable<
+  PracticeActionDependencies['regenerateRetry']
+> = async (_context, { requestId }) =>
+  createInternalAttemptInput({
+    requestId,
+    sessionId: 'session-a',
+    hostAnswerKey: [
+      {
+        ...(hostAnswerKey[0] as Record<string, JsonValue>),
+        generationProof: 'approved-fixture-proof',
+      },
+    ],
+  });
 
 describe('practice store', () => {
   beforeAll(() => {
@@ -973,6 +992,7 @@ describe('practice store', () => {
     const publish = vi.fn();
     const actions = createPracticeActions({
       store,
+      regenerateRetry: regenerateFixture,
       assessCandidate: async () => {
         sqlite
           .prepare(
@@ -1023,6 +1043,7 @@ describe('practice store', () => {
     });
     const actions = createPracticeActions({
       store,
+      regenerateRetry: regenerateFixture,
       assessCandidate: async () => ({ allowed: true }),
       canPublishFeedback: async () => true,
       evaluateAnswer: vi.fn(),
@@ -1067,6 +1088,7 @@ describe('practice store', () => {
     });
     const actions = createPracticeActions({
       store,
+      regenerateRetry: regenerateFixture,
       assessCandidate: async () => ({ allowed: true }),
       canPublishFeedback: async () => true,
       evaluateAnswer: vi.fn(),
@@ -1201,6 +1223,7 @@ describe('practice store', () => {
     }));
     const actions = createPracticeActions({
       store,
+      regenerateRetry: regenerateFixture,
       assessCandidate,
       canPublishFeedback: async () => true,
       evaluateAnswer,
@@ -1237,6 +1260,7 @@ describe('practice store', () => {
       .mockResolvedValueOnce({ allowed: false });
     const actions = createPracticeActions({
       store,
+      regenerateRetry: regenerateFixture,
       assessCandidate,
       canPublishFeedback: async () => true,
       evaluateAnswer: async () => ({
@@ -1319,6 +1343,7 @@ describe('practice store', () => {
     const publish = vi.fn();
     const actions = createPracticeActions({
       store,
+      regenerateRetry: regenerateFixture,
       assessCandidate: async () => ({ allowed: true }),
       canPublishFeedback: async () => true,
       evaluateAnswer: async () => ({
@@ -1360,6 +1385,7 @@ describe('practice store', () => {
     const events: Array<Record<string, unknown>> = [];
     const actions = createPracticeActions({
       store,
+      regenerateRetry: regenerateFixture,
       assessCandidate: async () => ({ allowed: true }),
       canPublishFeedback: async () => true,
       evaluateAnswer: async (_context, input) => {
@@ -1428,6 +1454,7 @@ describe('practice store', () => {
     const publish = vi.fn();
     const actions = createPracticeActions({
       store,
+      regenerateRetry: regenerateFixture,
       assessCandidate: async () => ({ allowed: true }),
       canPublishFeedback: async () => true,
       evaluateAnswer: async () => {
@@ -1450,10 +1477,11 @@ describe('practice store', () => {
     const preserved = store.getPracticeAttempt('user-a', {
       attemptId: attempt.id,
     });
-    expect(preserved?.status).toBe('submitted');
+    expect(preserved?.status).toBe('interrupted');
     expect(preserved?.answers[0]?.value).toBe('');
     expect(preserved?.feedback).toEqual([]);
-    expect(publish).not.toHaveBeenCalled();
+    expect(publish).toHaveBeenCalledOnce();
+    expect(publish.mock.calls[0]?.[0]).not.toHaveProperty('outcome');
   });
 
   it('keeps submitted answers when feedback permission is revoked during evaluation', async () => {
@@ -1469,6 +1497,7 @@ describe('practice store', () => {
     const publish = vi.fn();
     const actions = createPracticeActions({
       store,
+      regenerateRetry: regenerateFixture,
       assessCandidate: async () => ({ allowed: true }),
       canPublishFeedback,
       evaluateAnswer: async () => ({
@@ -1513,6 +1542,7 @@ describe('practice store', () => {
     const publish = vi.fn();
     const actions = createPracticeActions({
       store,
+      regenerateRetry: regenerateFixture,
       assessCandidate: async () => ({ allowed: true }),
       canPublishFeedback: async () => true,
       evaluateAnswer: async () => {
@@ -1544,5 +1574,181 @@ describe('practice store', () => {
       store.getPracticeAttempt('user-a', { attemptId: attempt.id })?.status,
     ).toBe('submitted');
     expect(publish).not.toHaveBeenCalled();
+  });
+  it('regenerates approved retry content instead of copying expired keys and replays without another generation', async () => {
+    const prior = createSubmittedSessionPractice();
+    const regenerated = createInternalAttemptInput({
+      requestId: ids.retry,
+      sessionId: 'session-a',
+      versionId: 'fresh-rubric',
+      rubricVersion: 'fresh-rubric',
+      hostAnswerKey: [
+        {
+          ...(hostAnswerKey[0] as Record<string, JsonValue>),
+          generationProof: 'fresh-server-proof',
+        },
+      ],
+    });
+    const regenerateRetry = vi.fn(async () => regenerated);
+    const actions = createPracticeActions({
+      store,
+      assessCandidate: async () => ({ allowed: true }),
+      canPublishFeedback: async () => true,
+      evaluateAnswer: vi.fn(),
+      publish: vi.fn(),
+      regenerateRetry,
+    });
+    const next = await actions.retryPracticeAttempt(authorizedContext(), {
+      attemptId: prior.id,
+      requestId: ids.retry,
+    });
+    expect(
+      store.getEvaluationWork('user-a', next.id)?.attempt.rubricVersion,
+    ).toBe('fresh-rubric');
+    expect(
+      store.getEvaluationWork('user-a', next.id)?.answerKeys[0]
+        ?.generationProof,
+    ).toBe('fresh-server-proof');
+    expect(
+      store.getEvaluationWork('user-a', prior.id)?.attempt.rubricVersion,
+    ).toBe('rubric-v1');
+    expect(
+      await actions.retryPracticeAttempt(authorizedContext(), {
+        attemptId: prior.id,
+        requestId: ids.retry,
+      }),
+    ).toEqual(next);
+    expect(regenerateRetry).toHaveBeenCalledOnce();
+  });
+  it('deduplicates concurrent fresh retries and preserves history on provider failure', async () => {
+    const prior = createSubmittedSessionPractice();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const regenerateRetry = vi.fn(async () => {
+      await gate;
+      return createInternalAttemptInput({
+        requestId: ids.retry,
+        sessionId: 'session-a',
+        hostAnswerKey: [
+          {
+            ...(hostAnswerKey[0] as Record<string, JsonValue>),
+            generationProof: 'fresh-proof',
+          },
+        ],
+      });
+    });
+    const actions = createPracticeActions({
+      store,
+      regenerateRetry,
+      assessCandidate: async () => ({ allowed: true }),
+      canPublishFeedback: async () => true,
+      evaluateAnswer: vi.fn(),
+      publish: vi.fn(),
+    });
+    const input = { attemptId: prior.id, requestId: ids.retry };
+    const a = actions.retryPracticeAttempt(authorizedContext(), input);
+    const b = actions.retryPracticeAttempt(authorizedContext(), input);
+    release();
+    expect((await a).id).toBe((await b).id);
+    expect(regenerateRetry).toHaveBeenCalledOnce();
+    expect(store.getPracticeAttempt('user-a', { attemptId: prior.id })).toEqual(
+      prior,
+    );
+  });
+  it('never copies old unsigned keys when fresh generation is unavailable', async () => {
+    const prior = createSubmittedSessionPractice();
+    const before = store.getEvaluationWork('user-a', prior.id);
+    const actions = createPracticeActions({
+      store,
+      regenerateRetry: async () => {
+        throw new Error('offline');
+      },
+      assessCandidate: async () => ({ allowed: true }),
+      canPublishFeedback: async () => true,
+      evaluateAnswer: vi.fn(),
+      publish: vi.fn(),
+    });
+    await expect(
+      actions.retryPracticeAttempt(authorizedContext(), {
+        attemptId: prior.id,
+        requestId: ids.retry,
+      }),
+    ).rejects.toThrow('offline');
+    expect(
+      store.getPracticeAttempt('user-a', { attemptId: ids.retry }),
+    ).toBeNull();
+    expect(store.getEvaluationWork('user-a', prior.id)).toEqual(before);
+  });
+  it('keeps seven-day proof expiry strict while fresh approved retry survives SQLite reopen', async () => {
+    const prior = createSubmittedSessionPractice();
+    const secret = 'synthetic-test-only-practice-secret';
+    const now = Date.parse(timestamp);
+    const key = hostAnswerKey[0] as Record<string, JsonValue>;
+    const oldScope = {
+      accountId: 'user-a',
+      courseId: 'course-a',
+      sessionId: 'session-a',
+      configurationRevision: 'fixture-config',
+      rubricVersion: 'rubric-v1',
+      question,
+      answerKey: key,
+    };
+    const expired = issuePracticeProof(oldScope, secret, now - 8 * 86400000);
+    expect(verifyPracticeProof(oldScope, expired, secret, now)).toBe(false);
+    db.update(schema.PracticeAttemptTable)
+      .set({ hostAnswerKey: [{ ...key, generationProof: expired }] })
+      .where(eq(schema.PracticeAttemptTable.id, prior.id))
+      .run();
+    const freshQuestion = { ...question, id: 'fresh-question' };
+    const freshKey = { ...key, questionId: freshQuestion.id };
+    const freshScope = {
+      ...oldScope,
+      rubricVersion: 'new-rubric',
+      question: freshQuestion,
+      answerKey: freshKey,
+    };
+    const proof = issuePracticeProof(freshScope, secret, now);
+    const actions = createPracticeActions({
+      store,
+      regenerateRetry: async () =>
+        createInternalAttemptInput({
+          requestId: ids.retry,
+          sessionId: 'session-a',
+          versionId: 'new-rubric',
+          rubricVersion: 'new-rubric',
+          questions: [freshQuestion],
+          hostAnswerKey: [{ ...freshKey, generationProof: proof }],
+        }),
+      assessCandidate: async () => ({ allowed: true }),
+      canPublishFeedback: async () => true,
+      evaluateAnswer: vi.fn(),
+      publish: vi.fn(),
+    });
+    const fresh = await actions.retryPracticeAttempt(authorizedContext(), {
+      attemptId: prior.id,
+      requestId: ids.retry,
+    });
+    expect(JSON.stringify(fresh)).not.toContain('generationProof');
+    sqlite.close();
+    sqlite = new Database(join(directory, 'fixture.sqlite'));
+    sqlite.pragma('foreign_keys = ON');
+    db = drizzle({ client: sqlite, schema });
+    store = createPracticeStore({ db, now: () => timestamp });
+    const stored = store.getEvaluationWork('user-a', fresh.id)!;
+    expect(
+      verifyPracticeProof(
+        freshScope,
+        stored.answerKeys[0]!.generationProof,
+        secret,
+        now,
+      ),
+    ).toBe(true);
+    expect(
+      store.getEvaluationWork('user-a', prior.id)?.answerKeys[0]
+        ?.generationProof,
+    ).toBe(expired);
+    expect(verifyPracticeProof(oldScope, expired, secret, now)).toBe(false);
   });
 });
