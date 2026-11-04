@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createLearningPostHandler } from '../src/app/api/learning/route';
+import {
+  POST as productionLearningPost,
+  createLearningPostHandler,
+} from '../src/app/api/learning/route';
 import { createLearningCapabilitiesHandler } from '../src/app/api/learning/capabilities/route';
 
 const { authUser, webEnv, serviceEnv } = vi.hoisted(() => ({
@@ -8,6 +11,7 @@ const { authUser, webEnv, serviceEnv } = vi.hoisted(() => ({
   serviceEnv: {
     BETTER_AUTH_URL: 'https://scholaros.example',
     BETTER_AUTH_SECRET: 'x',
+    INFERENCE_PROVIDER: 'meta',
     META_MODEL: 'muse-spark-1.3',
     META_API_KEY: 'x',
   },
@@ -67,6 +71,87 @@ const tutorRequest = {
     freshness: { status: 'current', lastSuccessfulAt: null },
   },
 } as const;
+const practiceQuestion = {
+  id: 'question-1',
+  kind: 'multiple-choice',
+  prompt: 'Which structure regulates cell transport?',
+  options: [{ id: 'option-1', text: 'Cell membrane' }],
+  unit: null,
+  objectiveIds: ['objective-1'],
+  sourceReferences: [sourceReference],
+};
+const practiceGenerationRequest = {
+  version: 1,
+  requestId: '3d6f6b84-ef17-4b64-9f5b-22af32083d84',
+  kind: 'practice-generate',
+  sessionId: 'session-1',
+  courseId: 'course-1',
+  contextRevision: 4,
+  input: {
+    topic: 'Cell transport',
+    difficulty: 'developing',
+    questionCount: 1,
+    objectives: [{ id: 'objective-1', description: 'Explain cell transport.' }],
+    sources: [
+      {
+        reference: sourceReference,
+        excerpt: 'The membrane regulates movement into and out of the cell.',
+      },
+    ],
+  },
+} as const;
+const practiceGenerateResponse = {
+  version: 1,
+  requestId: practiceGenerationRequest.requestId,
+  kind: 'practice-generate',
+  candidate: {
+    questions: [practiceQuestion],
+    hostAnswerKey: [
+      {
+        questionId: practiceQuestion.id,
+        kind: 'multiple-choice',
+        correctOptionId: 'option-1',
+        acceptedAlternatives: [],
+        explanation:
+          'The membrane regulates movement into and out of the cell.',
+      },
+    ],
+    rubricVersion: 'rubric-1',
+  },
+  configurationRevision: 'configuration-1',
+  usage: { inputTokens: null, outputTokens: null },
+};
+const practiceEvaluationRequest = {
+  version: 1,
+  requestId: '4d6f6b84-ef17-4b64-9f5b-22af32083d84',
+  kind: 'practice-evaluate',
+  sessionId: 'session-1',
+  courseId: 'course-1',
+  contextRevision: 4,
+  input: {
+    question: practiceQuestion,
+    answer: 'option-1',
+    answerKey: practiceGenerateResponse.candidate.hostAnswerKey[0],
+    rubricVersion: 'rubric-1',
+    assisted: false,
+  },
+} as const;
+const practiceEvaluateResponse = {
+  version: 1,
+  requestId: practiceEvaluationRequest.requestId,
+  kind: 'practice-evaluate',
+  evaluation: {
+    questionId: practiceQuestion.id,
+    outcome: 'correct',
+    explanation: 'The membrane regulates movement into and out of the cell.',
+    acceptedAlternatives: [],
+    sourceReferences: [sourceReference],
+    rubricVersion: 'rubric-1',
+    assisted: false,
+  },
+  configurationRevision: 'configuration-1',
+  usage: { inputTokens: null, outputTokens: null },
+};
 const approvedResponse = {
   version: 1,
   requestId: tutorRequest.requestId,
@@ -79,6 +164,47 @@ const approvedResponse = {
   usage: { inputTokens: 30, outputTokens: 16 },
   configurationRevision: 'configuration-1',
 };
+const practiceModelCandidate = {
+  questions: [
+    {
+      difficulty: 'developing',
+      answerability: 'answerable',
+      prompt: 'Which structure regulates cell transport?',
+      objectiveIndexes: [0],
+      sourceIndexes: [0],
+      kind: 'multiple-choice',
+      options: [{ text: 'Cell membrane' }, { text: 'Nucleus' }],
+      answer: {
+        correctOptionIndex: 0,
+        explanation:
+          'The membrane regulates movement into and out of the cell.',
+        acceptedAlternatives: [],
+      },
+    },
+  ],
+};
+const safeIntegrityAssessment = {
+  verdict: 'safe',
+  riskTags: [],
+  reconstructionRisk: 'none',
+  sameSolutionPractice: false,
+  containsHiddenAnswer: false,
+  memoryPolicyBypass: false,
+};
+const metaResponse = (output: unknown) =>
+  Response.json({
+    id: 'test-completion',
+    model: 'muse-spark-1.3',
+    created: 1,
+    choices: [
+      {
+        index: 0,
+        message: { role: 'assistant', content: JSON.stringify(output) },
+        finish_reason: 'stop',
+      },
+    ],
+    usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 },
+  });
 const createPostHandler = (overrides: Record<string, unknown> = {}) => {
   const dependencies = {
     getCurrentUser: vi.fn().mockResolvedValue({ userId: 'account-1' }),
@@ -117,6 +243,75 @@ const postRequest = (
 beforeEach(() => vi.restoreAllMocks());
 
 describe('POST /api/learning', () => {
+  it('runs real practice generation and P13 assessment through the production route', async () => {
+    authUser.mockResolvedValue({ userId: 'account-1' });
+    Object.assign(serviceEnv, {
+      INFERENCE_PROVIDER: 'meta',
+      META_MODEL: 'muse-spark-1.3',
+      META_API_KEY: 'x',
+    });
+    const outputs: unknown[] = [
+      practiceModelCandidate,
+      safeIntegrityAssessment,
+    ];
+    const fetchMock = vi.fn(async (_url: string, _init: RequestInit) =>
+      metaResponse(outputs.shift()),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const response = await productionLearningPost(
+      postRequest(practiceGenerationRequest),
+    );
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload).toMatchObject({
+      version: 1,
+      requestId: practiceGenerationRequest.requestId,
+      kind: 'practice-generate',
+      candidate: {
+        questions: [
+          {
+            kind: 'multiple-choice',
+            prompt: 'Which structure regulates cell transport?',
+          },
+        ],
+        hostAnswerKey: [
+          {
+            kind: 'multiple-choice',
+            explanation:
+              'The membrane regulates movement into and out of the cell.',
+          },
+        ],
+      },
+      usage: { inputTokens: null, outputTokens: null },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(
+      fetchMock.mock.calls.map(
+        ([, options]) => JSON.parse(String(options.body)).model,
+      ),
+    ).toEqual(['muse-spark-1.3', 'muse-spark-1.3']);
+  });
+
+  it('runs real P23 answer evaluation and keeps the tutor wire response unchanged', async () => {
+    authUser.mockResolvedValue({ userId: 'account-1' });
+    Object.assign(serviceEnv, {
+      INFERENCE_PROVIDER: 'meta',
+      META_MODEL: 'muse-spark-1.3',
+      META_API_KEY: 'x',
+    });
+    const response = await productionLearningPost(
+      postRequest(practiceEvaluationRequest),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      ...practiceEvaluateResponse,
+      configurationRevision: expect.any(String),
+    });
+  });
+
   it('authenticates before dispatch and returns private no-store responses', async () => {
     const { handler, dependencies } = createPostHandler();
     const response = await handler(postRequest());
@@ -262,6 +457,113 @@ describe('POST /api/learning', () => {
 
     expect(response.status).toBe(502);
     expect(dependencies.handleLearningRequest).toHaveBeenCalledOnce();
+  });
+
+  it('returns a strict practice-generation response bound to the request', async () => {
+    const { handler, dependencies } = createPostHandler({
+      handleLearningRequest: vi
+        .fn()
+        .mockResolvedValue(practiceGenerateResponse),
+    });
+
+    const response = await handler(postRequest(practiceGenerationRequest));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual(practiceGenerateResponse);
+    expect(dependencies.handleLearningRequest).toHaveBeenCalledWith(
+      'account-1',
+      practiceGenerationRequest,
+      expect.any(AbortSignal),
+    );
+  });
+
+  it('returns a strict practice-evaluation response bound to the request', async () => {
+    const { handler, dependencies } = createPostHandler({
+      handleLearningRequest: vi
+        .fn()
+        .mockResolvedValue(practiceEvaluateResponse),
+    });
+
+    const response = await handler(postRequest(practiceEvaluationRequest));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual(practiceEvaluateResponse);
+    expect(dependencies.handleLearningRequest).toHaveBeenCalledWith(
+      'account-1',
+      practiceEvaluationRequest,
+      expect.any(AbortSignal),
+    );
+  });
+
+  it.each([
+    {
+      ...practiceGenerationRequest,
+      input: { ...practiceGenerationRequest.input, model: 'client-model' },
+    },
+    {
+      ...practiceEvaluationRequest,
+      input: { ...practiceEvaluationRequest.input, grade: 'correct' },
+    },
+  ])('rejects malformed practice requests before dispatch', async (body) => {
+    const { handler, dependencies } = createPostHandler();
+
+    expect((await handler(postRequest(body))).status).toBe(400);
+    expect(dependencies.handleLearningRequest).not.toHaveBeenCalled();
+  });
+
+  it('rejects oversized and stale practice-generation evidence before dispatch', async () => {
+    const { handler, dependencies } = createPostHandler();
+    const oversized = {
+      ...practiceGenerationRequest,
+      input: {
+        ...practiceGenerationRequest.input,
+        sources: Array.from({ length: 13 }, () => ({
+          reference: sourceReference,
+          excerpt: 'x'.repeat(2000),
+        })),
+      },
+    };
+    const stale = {
+      ...practiceGenerationRequest,
+      input: {
+        ...practiceGenerationRequest.input,
+        sources: [
+          {
+            reference: { ...sourceReference, state: 'stale' },
+            excerpt: 'Old course material.',
+          },
+        ],
+      },
+    };
+
+    expect((await handler(postRequest(oversized))).status).toBe(400);
+    expect((await handler(postRequest(stale))).status).toBe(400);
+    expect(dependencies.handleLearningRequest).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { ...practiceGenerateResponse, requestId: tutorRequest.requestId },
+    { ...practiceGenerateResponse, kind: 'practice-evaluate' },
+    { ...practiceGenerateResponse, extra: 'unchecked' },
+  ])('rejects unbound or non-strict practice responses', async (body) => {
+    const { handler, dependencies } = createPostHandler({
+      handleLearningRequest: vi.fn().mockResolvedValue(body),
+    });
+
+    expect((await handler(postRequest(practiceGenerationRequest))).status).toBe(
+      502,
+    );
+    expect(dependencies.handleLearningRequest).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the tutor response envelope free of practice answer keys', async () => {
+    const { handler } = createPostHandler();
+    const response = await handler(postRequest());
+    const payload = await response.json();
+
+    expect(payload).toEqual(approvedResponse);
+    expect(JSON.stringify(payload)).not.toContain('hostAnswerKey');
+    expect(payload).not.toHaveProperty('kind');
   });
   it('fails closed when the tutor capability is unavailable', async () => {
     const { handler, dependencies } = createPostHandler({

@@ -11,6 +11,16 @@ import {
   preferenceContentSchema,
 } from '../learning/memory-contracts';
 import {
+  practiceEvaluationSchema,
+  practiceQuestionSchema,
+} from '../learning/practice-contracts';
+import {
+  practiceAnswerKeySchema,
+  practiceGenerationInputSchema,
+  type GeneratedPracticeCandidate as P23GeneratedPracticeCandidate,
+  type PracticeGenerationInput,
+} from './practice-generation';
+import {
   idSchema,
   instantSchema,
   jsonValueSchema,
@@ -18,10 +28,6 @@ import {
   revisionSchema,
   safeErrorCodeSchema,
 } from '../learning/product-contracts';
-import {
-  practiceEvaluationSchema,
-  practiceQuestionSchema,
-} from '../learning/practice-contracts';
 import {
   studyActivities,
   studyHistoryRoles,
@@ -69,6 +75,72 @@ const sourceInputSchema = z.strictObject({
   objective: z.string().min(1).max(1000),
   sources: z.array(sourcePassageSchema).max(20),
 });
+export const practiceAnswerEvaluationInputSchema = z
+  .strictObject({
+    question: practiceQuestionSchema,
+    answer: jsonValueSchema,
+    answerKey: practiceAnswerKeySchema.element,
+    rubricVersion: idSchema,
+    assisted: z.boolean(),
+  })
+  .superRefine((input, context) => {
+    if (input.question.id !== input.answerKey.questionId)
+      context.addIssue({
+        code: 'custom',
+        path: ['answerKey', 'questionId'],
+        message: 'Practice answer key must match the question.',
+      });
+    if (input.question.kind !== input.answerKey.kind)
+      context.addIssue({
+        code: 'custom',
+        path: ['answerKey', 'kind'],
+        message: 'Practice answer key kind must match the question.',
+      });
+    if (Buffer.byteLength(JSON.stringify(input.answer), 'utf8') > 8192)
+      context.addIssue({
+        code: 'custom',
+        path: ['answer'],
+        message: 'Practice answer exceeds the request limit.',
+      });
+    if (Buffer.byteLength(JSON.stringify(input), 'utf8') > 96 * 1024)
+      context.addIssue({
+        code: 'custom',
+        message: 'Practice evaluation input exceeds the request limit.',
+      });
+  });
+export type PracticeAnswerEvaluationInput = z.infer<
+  typeof practiceAnswerEvaluationInputSchema
+>;
+export type GeneratedPracticeCandidate = P23GeneratedPracticeCandidate;
+export { practiceGenerationInputSchema };
+export type { PracticeGenerationInput };
+
+export const practiceGenerateRequestSchema = z.strictObject({
+  version: z.literal(1),
+  requestId: requestIdSchema,
+  kind: z.literal('practice-generate'),
+  sessionId: idSchema,
+  courseId: idSchema,
+  contextRevision: revisionSchema,
+  input: practiceGenerationInputSchema,
+});
+export type PracticeGenerateRequest = z.infer<
+  typeof practiceGenerateRequestSchema
+>;
+
+export const practiceEvaluateRequestSchema = z.strictObject({
+  version: z.literal(1),
+  requestId: requestIdSchema,
+  kind: z.literal('practice-evaluate'),
+  sessionId: idSchema,
+  courseId: idSchema,
+  contextRevision: revisionSchema,
+  input: practiceAnswerEvaluationInputSchema,
+});
+export type PracticeEvaluateRequest = z.infer<
+  typeof practiceEvaluateRequestSchema
+>;
+
 const operationInputs = [
   z.strictObject({
     version: z.literal(1),
@@ -88,31 +160,8 @@ const operationInputs = [
     contextRevision: revisionSchema,
     input: sourceInputSchema,
   }),
-  z.strictObject({
-    version: z.literal(1),
-    requestId: requestIdSchema,
-    kind: z.literal('practice-generate'),
-    sessionId: idSchema,
-    courseId: idSchema,
-    contextRevision: revisionSchema,
-    input: sourceInputSchema.extend({
-      difficulty: z.enum(['introductory', 'developing', 'challenging']),
-    }),
-  }),
-  z.strictObject({
-    version: z.literal(1),
-    requestId: requestIdSchema,
-    kind: z.literal('practice-evaluate'),
-    sessionId: idSchema,
-    courseId: idSchema,
-    contextRevision: revisionSchema,
-    input: z.strictObject({
-      attemptId: idSchema,
-      questionId: idSchema,
-      answer: jsonValueSchema,
-      answerRevision: revisionSchema,
-    }),
-  }),
+  practiceGenerateRequestSchema,
+  practiceEvaluateRequestSchema,
   z.strictObject({
     version: z.literal(1),
     requestId: requestIdSchema,
@@ -136,7 +185,20 @@ export const learningRequestSchema = learningRequestBaseSchema.superRefine(
       });
       return;
     }
-    const sources = 'sources' in request.input ? request.input.sources : [];
+    const sources: { reference: SourceReference; text: string }[] =
+      request.kind === 'practice-generate'
+        ? request.input.sources.map(({ reference, excerpt }) => ({
+            reference,
+            text: excerpt,
+          }))
+        : request.kind === 'practice-evaluate'
+          ? request.input.question.sourceReferences.map((reference) => ({
+              reference,
+              text: '',
+            }))
+          : 'sources' in request.input
+            ? request.input.sources
+            : [];
     if (
       sources.reduce((total, source) => total + source.text.length, 0) > 24_000
     )
@@ -239,6 +301,103 @@ export const learningResponseSchema = z
   });
 export type LearningResponse = z.infer<typeof learningResponseSchema>;
 
+export const generatedPracticeCandidateSchema = z
+  .strictObject({
+    questions: z.array(practiceQuestionSchema).min(1).max(20),
+    hostAnswerKey: practiceAnswerKeySchema,
+    rubricVersion: idSchema,
+  })
+  .superRefine((candidate, context) => {
+    if (candidate.questions.length !== candidate.hostAnswerKey.length) {
+      context.addIssue({
+        code: 'custom',
+        path: ['hostAnswerKey'],
+        message: 'Every practice question must have one host answer key.',
+      });
+      return;
+    }
+    candidate.questions.forEach((question, index) => {
+      const answerKey = candidate.hostAnswerKey[index]!;
+      if (
+        question.id !== answerKey.questionId ||
+        question.kind !== answerKey.kind
+      )
+        context.addIssue({
+          code: 'custom',
+          path: ['hostAnswerKey', index],
+          message: 'Practice answer key must match its question.',
+        });
+    });
+    if (
+      new TextEncoder().encode(JSON.stringify(candidate)).byteLength >
+      64 * 1024
+    )
+      context.addIssue({
+        code: 'custom',
+        message: 'Practice candidate exceeds the operation byte limit.',
+      });
+  });
+export type GeneratedPracticeCandidateSchema = z.infer<
+  typeof generatedPracticeCandidateSchema
+>;
+
+const learningUsageSchema = z.strictObject({
+  inputTokens: z.number().int().nonnegative().nullable(),
+  outputTokens: z.number().int().nonnegative().nullable(),
+});
+const practiceResponseByteCheck = (response: unknown) =>
+  new TextEncoder().encode(JSON.stringify(response)).byteLength <=
+  2 * 1024 * 1024;
+
+export const practiceGenerateResponseSchema = z
+  .strictObject({
+    version: z.literal(1),
+    requestId: requestIdSchema,
+    kind: z.literal('practice-generate'),
+    candidate: generatedPracticeCandidateSchema,
+    configurationRevision: z.string().min(1).max(200),
+    usage: learningUsageSchema,
+  })
+  .superRefine((response, context) => {
+    if (!practiceResponseByteCheck(response))
+      context.addIssue({
+        code: 'custom',
+        message: 'Practice response exceeds the operation byte limit.',
+      });
+  });
+export type PracticeGenerateResponse = z.infer<
+  typeof practiceGenerateResponseSchema
+>;
+
+export const practiceEvaluateResponseSchema = z
+  .strictObject({
+    version: z.literal(1),
+    requestId: requestIdSchema,
+    kind: z.literal('practice-evaluate'),
+    evaluation: practiceEvaluationSchema,
+    configurationRevision: z.string().min(1).max(200),
+    usage: learningUsageSchema,
+  })
+  .superRefine((response, context) => {
+    if (!practiceResponseByteCheck(response))
+      context.addIssue({
+        code: 'custom',
+        message: 'Practice response exceeds the operation byte limit.',
+      });
+  });
+export type PracticeEvaluateResponse = z.infer<
+  typeof practiceEvaluateResponseSchema
+>;
+
+export const learningOperationResponseSchema = z.union([
+  learningResponseSchema,
+  practiceGenerateResponseSchema,
+  practiceEvaluateResponseSchema,
+]);
+export type LearningOperationResponse = z.infer<
+  typeof learningOperationResponseSchema
+>;
+
 export const learningDispatchErrorCodes = [
   'invalid-input',
   'scope-denied',
@@ -272,6 +431,18 @@ export type LearningOperationHandler = (
   request: LearningRequest,
   signal: AbortSignal,
 ) => Promise<LearningCandidateResult | unknown>;
+export type LearningOperationHandlers = {
+  'activity-generate'?: LearningOperationHandler;
+  'practice-generate'?: (
+    request: PracticeGenerateRequest,
+    signal: AbortSignal,
+  ) => Promise<unknown>;
+  'practice-evaluate'?: (
+    request: PracticeEvaluateRequest,
+    signal: AbortSignal,
+  ) => Promise<unknown>;
+  'memory-propose'?: LearningOperationHandler;
+};
 export type LearningAssessment = {
   allowed: boolean;
   reasonCode: z.infer<typeof safeErrorCodeSchema> | null;
@@ -279,7 +450,7 @@ export type LearningAssessment = {
 export type LearningDispatcherDependencies = {
   getCapabilities: () => Promise<LearningCapabilities>;
   generateCandidate: LearningOperationHandler;
-  operations?: Partial<Record<LearningKind, LearningOperationHandler>>;
+  operations?: LearningOperationHandlers;
   assessCandidate: (
     accountId: string,
     request: LearningRequest,
@@ -287,6 +458,11 @@ export type LearningDispatcherDependencies = {
     offeredSources: SourceReference[],
     signal: AbortSignal,
   ) => Promise<LearningAssessment>;
+  assessPracticeCandidate?: (
+    request: PracticeGenerateRequest,
+    candidate: GeneratedPracticeCandidate,
+    signal: AbortSignal,
+  ) => Promise<void>;
   now?: () => number;
   generationId?: () => string;
   idempotencyTtlMs?: number;
@@ -296,7 +472,7 @@ type IdempotencyEntry = {
   digest: string;
   expiresAt: number;
   createdAt: number;
-  result: Promise<LearningResponse>;
+  result: Promise<LearningOperationResponse>;
 };
 const canonicalJson = (value: unknown): string => {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
@@ -363,7 +539,12 @@ export const createLearningDispatcher = (
     );
     if (capabilities.tutor !== 'available')
       throw new LearningDispatchError('feature-unavailable');
-    const operation = dependencies.operations?.[request.kind];
+    const operation =
+      request.kind === 'activity-generate'
+        ? dependencies.operations?.['activity-generate']
+        : request.kind === 'memory-propose'
+          ? dependencies.operations?.['memory-propose']
+          : undefined;
     if (request.kind !== 'tutor-turn' && !operation)
       throw new LearningDispatchError('feature-unavailable');
     const generated = await (operation ?? dependencies.generateCandidate)(
@@ -450,11 +631,133 @@ export const createLearningDispatcher = (
     });
   };
 
+  const getAvailableCapabilities = async () => {
+    const capabilities = learningCapabilitiesSchema.parse(
+      await dependencies.getCapabilities(),
+    );
+    if (capabilities.tutor !== 'available')
+      throw new LearningDispatchError('feature-unavailable');
+    return capabilities;
+  };
+
+  const assertCapabilitiesUnchanged = async (startingRevision: string) => {
+    const currentCapabilities = await getAvailableCapabilities();
+    if (currentCapabilities.configurationRevision !== startingRevision)
+      throw new LearningDispatchError('capability-changed');
+  };
+
+  const parseOperationResult = (
+    result: unknown,
+    valueKey: 'candidate' | 'evaluation',
+  ) => {
+    if (result === null || typeof result !== 'object' || Array.isArray(result))
+      throw new LearningDispatchError('provider-failed');
+    const record = result as Record<string, unknown>;
+    if (Object.keys(record).some((key) => key !== valueKey && key !== 'usage'))
+      throw new LearningDispatchError('provider-failed');
+    const usage = learningUsageSchema.safeParse(
+      record.usage ?? { inputTokens: null, outputTokens: null },
+    );
+    if (!usage.success || !(valueKey in record))
+      throw new LearningDispatchError('provider-failed');
+    return { value: record[valueKey], usage: usage.data };
+  };
+
+  const dispatchPracticeGeneration = async (
+    request: PracticeGenerateRequest,
+    signal: AbortSignal,
+  ): Promise<PracticeGenerateResponse> => {
+    signal.throwIfAborted();
+    const capabilities = await getAvailableCapabilities();
+    const generate = dependencies.operations?.['practice-generate'];
+    const assess = dependencies.assessPracticeCandidate;
+    if (!generate || !assess)
+      throw new LearningDispatchError('feature-unavailable');
+
+    const generated = await generate(request, signal);
+    signal.throwIfAborted();
+    const { value, usage } = parseOperationResult(generated, 'candidate');
+    const candidate = generatedPracticeCandidateSchema.safeParse(value);
+    if (
+      !candidate.success ||
+      candidate.data.questions.length !== request.input.questionCount ||
+      candidate.data.questions.some(
+        (question) =>
+          question.objectiveIds.some(
+            (objectiveId) =>
+              !request.input.objectives.some(({ id }) => id === objectiveId),
+          ) ||
+          question.sourceReferences.length === 0 ||
+          question.sourceReferences.some(
+            (reference) =>
+              !request.input.sources.some((source) =>
+                sameReference(source.reference, reference),
+              ),
+          ),
+      )
+    )
+      throw new LearningDispatchError('provider-failed');
+
+    signal.throwIfAborted();
+    await assess(request, candidate.data, signal);
+    signal.throwIfAborted();
+    await assertCapabilitiesUnchanged(capabilities.configurationRevision);
+    return practiceGenerateResponseSchema.parse({
+      version: 1,
+      requestId: request.requestId,
+      kind: 'practice-generate',
+      candidate: candidate.data,
+      configurationRevision: capabilities.configurationRevision,
+      usage,
+    });
+  };
+
+  const dispatchPracticeEvaluation = async (
+    request: PracticeEvaluateRequest,
+    signal: AbortSignal,
+  ): Promise<PracticeEvaluateResponse> => {
+    signal.throwIfAborted();
+    const capabilities = await getAvailableCapabilities();
+    const evaluate = dependencies.operations?.['practice-evaluate'];
+    if (!evaluate) throw new LearningDispatchError('feature-unavailable');
+
+    const evaluated = await evaluate(request, signal);
+    signal.throwIfAborted();
+    const { value, usage } = parseOperationResult(evaluated, 'evaluation');
+    const evaluation = practiceEvaluationSchema.safeParse(value);
+    if (
+      !evaluation.success ||
+      evaluation.data.questionId !== request.input.question.id ||
+      evaluation.data.rubricVersion !== request.input.rubricVersion ||
+      evaluation.data.assisted !== request.input.assisted ||
+      evaluation.data.sourceReferences.length !==
+        request.input.question.sourceReferences.length ||
+      evaluation.data.sourceReferences.some(
+        (reference, index) =>
+          !sameReference(
+            reference,
+            request.input.question.sourceReferences[index]!,
+          ),
+      )
+    )
+      throw new LearningDispatchError('provider-failed');
+
+    await assertCapabilitiesUnchanged(capabilities.configurationRevision);
+    return practiceEvaluateResponseSchema.parse({
+      version: 1,
+      requestId: request.requestId,
+      kind: 'practice-evaluate',
+      evaluation: evaluation.data,
+      configurationRevision: capabilities.configurationRevision,
+      usage,
+    });
+  };
+
   const dispatch = async (
     accountId: string,
     rawRequest: unknown,
     signal: AbortSignal,
-  ): Promise<LearningResponse> => {
+  ): Promise<LearningOperationResponse> => {
     const parsedRequest = learningRequestSchema.safeParse(rawRequest);
     if (!parsedRequest.success)
       throw new LearningDispatchError('invalid-input');
@@ -478,7 +781,12 @@ export const createLearningDispatcher = (
       )[0];
       if (oldestEntry) idempotency.delete(oldestEntry[0]);
     }
-    const result = dispatchCandidate(accountId, request, signal);
+    const result =
+      request.kind === 'practice-generate'
+        ? dispatchPracticeGeneration(request, signal)
+        : request.kind === 'practice-evaluate'
+          ? dispatchPracticeEvaluation(request, signal)
+          : dispatchCandidate(accountId, request, signal);
     idempotency.set(idempotencyKey, {
       digest,
       expiresAt: currentTime + idempotencyTtlMs,

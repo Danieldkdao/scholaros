@@ -1,9 +1,25 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createLearningDispatcher,
+  learningCandidateSchema,
   learningRequestSchema,
+  LearningDispatchError,
+  type GeneratedPracticeCandidate,
+  type PracticeEvaluateRequest,
+  type PracticeGenerateRequest,
 } from '../learning-dispatch';
-import { generateTutorCandidate, getLearningCapabilities } from '../tutor';
+import {
+  assessPracticeCandidateForLearning,
+  evaluatePracticeAnswerForLearning,
+  generatePracticeCandidateForLearning,
+  generateTutorCandidate,
+  getLearningCapabilities,
+} from '../tutor';
+import {
+  practiceQuestionSchema,
+  type PracticeQuestionDTO,
+} from '../../learning/practice-contracts';
+import type { PracticeQuestionAnswerKey } from '../practice-generation';
 
 const { serverEnv } = vi.hoisted(() => ({
   serverEnv: {
@@ -53,6 +69,98 @@ const candidate = {
   citationIndexes: [0],
   proposedEffects: [],
 };
+const practiceQuestion: PracticeQuestionDTO = {
+  id: 'question-1',
+  kind: 'multiple-choice',
+  prompt: 'Which structure regulates cell transport?',
+  options: [{ id: 'option-1', text: 'Cell membrane' }],
+  unit: null,
+  objectiveIds: ['objective-1'],
+  sourceReferences: [sourceReference],
+};
+const practiceAnswerKey: PracticeQuestionAnswerKey = {
+  questionId: 'question-1',
+  kind: 'multiple-choice',
+  correctOptionId: 'option-1',
+  acceptedAlternatives: [],
+  explanation: 'The membrane regulates movement into and out of the cell.',
+};
+const practiceGenerationRequest: PracticeGenerateRequest = {
+  version: 1,
+  requestId: '3d6f6b84-ef17-4b64-9f5b-22af32083d84',
+  kind: 'practice-generate',
+  sessionId: 'session-1',
+  courseId: 'course-1',
+  contextRevision: 4,
+  input: {
+    topic: 'Cell transport',
+    difficulty: 'developing',
+    questionCount: 1,
+    objectives: [{ id: 'objective-1', description: 'Explain cell transport.' }],
+    sources: [
+      {
+        reference: sourceReference,
+        excerpt: 'The membrane regulates movement into and out of the cell.',
+      },
+    ],
+  },
+};
+const practiceGeneratedCandidate: GeneratedPracticeCandidate = {
+  questions: [practiceQuestion],
+  hostAnswerKey: [practiceAnswerKey],
+  rubricVersion: 'rubric-1',
+};
+const practiceModelCandidate = {
+  questions: [
+    {
+      difficulty: 'developing',
+      answerability: 'answerable',
+      prompt: 'Which structure regulates cell transport?',
+      objectiveIndexes: [0],
+      sourceIndexes: [0],
+      kind: 'multiple-choice',
+      options: [{ text: 'Cell membrane' }, { text: 'Nucleus' }],
+      answer: {
+        correctOptionIndex: 0,
+        explanation:
+          'The membrane regulates movement into and out of the cell.',
+        acceptedAlternatives: [],
+      },
+    },
+  ],
+};
+const safeIntegrityAssessment = {
+  verdict: 'safe',
+  riskTags: [],
+  reconstructionRisk: 'none',
+  sameSolutionPractice: false,
+  containsHiddenAnswer: false,
+  memoryPolicyBypass: false,
+};
+const practiceEvaluationRequest: PracticeEvaluateRequest = {
+  version: 1,
+  requestId: '4d6f6b84-ef17-4b64-9f5b-22af32083d84',
+  kind: 'practice-evaluate',
+  sessionId: 'session-1',
+  courseId: 'course-1',
+  contextRevision: 4,
+  input: {
+    question: practiceQuestion,
+    answer: 'option-1',
+    answerKey: practiceAnswerKey,
+    rubricVersion: 'rubric-1',
+    assisted: false,
+  },
+};
+const practiceEvaluation = {
+  questionId: 'question-1',
+  outcome: 'correct',
+  explanation: 'The membrane regulates movement into and out of the cell.',
+  acceptedAlternatives: [],
+  sourceReferences: [sourceReference],
+  rubricVersion: 'rubric-1',
+  assisted: false,
+};
 const capabilities = {
   version: 1,
   configurationRevision: 'configuration-1',
@@ -70,12 +178,30 @@ const capabilities = {
   },
 } as const;
 
+const metaChatResponse = (output: unknown) =>
+  Response.json({
+    id: 'test-completion',
+    model: 'muse-spark-1.3',
+    created: 1,
+    choices: [
+      {
+        index: 0,
+        message: { role: 'assistant', content: JSON.stringify(output) },
+        finish_reason: 'stop',
+      },
+    ],
+    usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 },
+  });
+
 beforeEach(() => {
   delete (serverEnv as Record<string, unknown>).INFERENCE_PROVIDER;
   delete (serverEnv as Record<string, unknown>).BASETEN_API_KEY;
   delete (serverEnv as Record<string, unknown>).BASETEN_MODEL;
-  serverEnv.META_MODEL = 'muse-spark-1.3';
-  serverEnv.META_API_KEY = 'x';
+  Object.assign(serverEnv, {
+    INFERENCE_PROVIDER: 'meta',
+    META_MODEL: 'muse-spark-1.3',
+    META_API_KEY: 'x',
+  });
 });
 afterEach(() => vi.unstubAllGlobals());
 
@@ -146,6 +272,207 @@ describe('Meta model capability selection', () => {
   });
 });
 
+describe('Meta practice handlers', () => {
+  it('generates host-private practice and assesses the full candidate with Meta Standard', async () => {
+    const outputs: unknown[] = [
+      practiceModelCandidate,
+      safeIntegrityAssessment,
+    ];
+    const fetchMock = vi.fn(async (_url: string, _init: RequestInit) =>
+      metaChatResponse(outputs.shift()),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await generatePracticeCandidateForLearning(
+      practiceGenerationRequest,
+      new AbortController().signal,
+    );
+    await assessPracticeCandidateForLearning(
+      practiceGenerationRequest,
+      result.candidate,
+      new AbortController().signal,
+    );
+
+    expect(result.candidate.questions).toHaveLength(1);
+    expect(result.candidate.hostAnswerKey).toHaveLength(1);
+    expect(JSON.stringify(result.candidate.questions)).not.toContain(
+      'correctOptionId',
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(
+      fetchMock.mock.calls.map(
+        ([, options]) => JSON.parse(String(options.body)).model,
+      ),
+    ).toEqual(['muse-spark-1.3', 'muse-spark-1.3']);
+    expect(
+      JSON.stringify(JSON.parse(String(fetchMock.mock.calls[1]![1].body))),
+    ).toContain('hostAnswerKey');
+  });
+
+  it('evaluates short explanations through the P23 evaluator on Meta Standard', async () => {
+    const question: PracticeQuestionDTO = {
+      ...practiceQuestion,
+      kind: 'short-explanation',
+      options: null,
+    };
+    const answerKey: PracticeQuestionAnswerKey = {
+      questionId: question.id,
+      kind: 'short-explanation',
+      rubricCriteria: ['Identifies controlled movement'],
+      acceptedAlternatives: [],
+      explanation: 'The membrane regulates movement into and out of a cell.',
+    };
+    const evaluationInput: PracticeEvaluateRequest = {
+      ...practiceEvaluationRequest,
+      input: {
+        ...practiceEvaluationRequest.input,
+        question,
+        answer: 'It regulates what enters and leaves.',
+        answerKey,
+      },
+    };
+    const fetchMock = vi.fn(async (_url: string, _init: RequestInit) =>
+      metaChatResponse({
+        outcome: 'correct',
+        explanation: 'That identifies the membrane’s transport role.',
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await evaluatePracticeAnswerForLearning(
+      evaluationInput,
+      new AbortController().signal,
+    );
+
+    expect(result.evaluation).toMatchObject({
+      questionId: question.id,
+      outcome: 'correct',
+      assisted: false,
+    });
+    expect(result.evaluation).not.toHaveProperty('answerKey');
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(JSON.parse(String(fetchMock.mock.calls[0]![1].body)).model).toBe(
+      'muse-spark-1.3',
+    );
+  });
+
+  it('maps generation and evaluation provider failures without exposing raw errors', async () => {
+    const fetchMock = vi.fn(
+      async () => new Response('PRIVATE_PROVIDER_BODY', { status: 500 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const question: PracticeQuestionDTO = {
+      ...practiceQuestion,
+      kind: 'short-explanation',
+      options: null,
+    };
+    const evaluationInput: PracticeEvaluateRequest = {
+      ...practiceEvaluationRequest,
+      input: {
+        ...practiceEvaluationRequest.input,
+        question,
+        answer: 'A membrane regulates transport.',
+        answerKey: {
+          questionId: question.id,
+          kind: 'short-explanation',
+          rubricCriteria: ['Identifies controlled movement'],
+          acceptedAlternatives: [],
+          explanation: 'The membrane regulates cell transport.',
+        },
+      },
+    };
+
+    const generationError = await generatePracticeCandidateForLearning(
+      practiceGenerationRequest,
+      new AbortController().signal,
+    ).catch((error: unknown) => error);
+    const evaluationError = await evaluatePracticeAnswerForLearning(
+      evaluationInput,
+      new AbortController().signal,
+    ).catch((error: unknown) => error);
+
+    expect(generationError).toMatchObject({ code: 'provider-failed' });
+    expect(evaluationError).toMatchObject({ code: 'provider-failed' });
+    expect(String(generationError)).not.toContain('PRIVATE_PROVIDER_BODY');
+    expect(String(evaluationError)).not.toContain('PRIVATE_PROVIDER_BODY');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails closed on unsupported Meta capability and cancellation', async () => {
+    serverEnv.META_MODEL = 'muse-spark-1.3-contributor';
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      generatePracticeCandidateForLearning(
+        practiceGenerationRequest,
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: 'feature-unavailable' });
+    await expect(
+      evaluatePracticeAnswerForLearning(
+        practiceEvaluationRequest,
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: 'feature-unavailable' });
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    serverEnv.META_MODEL = 'muse-spark-1.3';
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      generatePracticeCandidateForLearning(
+        practiceGenerationRequest,
+        controller.signal,
+      ),
+    ).rejects.toMatchObject({ code: 'cancelled' });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the P13 integrity assessment rejects or is unavailable', async () => {
+    const rejectedFetch = vi.fn(async (_url: string, _init: RequestInit) =>
+      metaChatResponse({
+        ...safeIntegrityAssessment,
+        verdict: 'unsafe',
+        riskTags: ['hidden-answer'],
+        containsHiddenAnswer: true,
+      }),
+    );
+    vi.stubGlobal('fetch', rejectedFetch);
+
+    await expect(
+      assessPracticeCandidateForLearning(
+        practiceGenerationRequest,
+        practiceGeneratedCandidate,
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: 'scope-denied' });
+
+    Object.assign(serverEnv, {
+      META_MODEL: 'muse-spark-1.3',
+      INFERENCE_PROVIDER: 'baseten',
+      BASETEN_API_KEY: 'legacy-test-key',
+    });
+    await expect(
+      assessPracticeCandidateForLearning(
+        practiceGenerationRequest,
+        practiceGeneratedCandidate,
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: 'feature-unavailable' });
+
+    serverEnv.META_MODEL = 'muse-spark-1.3-contributor';
+    await expect(
+      assessPracticeCandidateForLearning(
+        practiceGenerationRequest,
+        practiceGeneratedCandidate,
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: 'feature-unavailable' });
+    expect(rejectedFetch).toHaveBeenCalledOnce();
+  });
+});
+
 describe('learning inference request contracts', () => {
   it('accepts a bounded tutor operation and rejects caller-owned prompt/model/tool authority', () => {
     expect(learningRequestSchema.safeParse(request).success).toBe(true);
@@ -187,7 +514,179 @@ describe('learning inference request contracts', () => {
   });
 });
 
+describe('learning operation contracts', () => {
+  it('accepts the exact P23 practice inputs and rejects client authority fields', () => {
+    expect(
+      learningRequestSchema.safeParse(practiceGenerationRequest).success,
+    ).toBe(true);
+    expect(
+      learningRequestSchema.safeParse(practiceEvaluationRequest).success,
+    ).toBe(true);
+    expect(
+      learningRequestSchema.safeParse({
+        ...practiceGenerationRequest,
+        input: { ...practiceGenerationRequest.input, model: 'muse-spark-1.3' },
+      }).success,
+    ).toBe(false);
+    expect(
+      learningRequestSchema.safeParse({
+        ...practiceEvaluationRequest,
+        input: { ...practiceEvaluationRequest.input, grade: 'correct' },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('keeps hidden answer keys out of tutor and renderer question DTOs', () => {
+    expect(
+      learningCandidateSchema.safeParse({
+        ...candidate,
+        hostAnswerKey: practiceGeneratedCandidate.hostAnswerKey,
+      }).success,
+    ).toBe(false);
+    expect(
+      practiceQuestionSchema.safeParse({
+        ...practiceQuestion,
+        hostAnswerKey: practiceGeneratedCandidate.hostAnswerKey,
+      }).success,
+    ).toBe(false);
+  });
+});
+
 describe('learning inference dispatcher', () => {
+  it('returns strict practice operation responses after generation policy assessment', async () => {
+    const generateOperation = vi.fn().mockResolvedValue({
+      candidate: practiceGeneratedCandidate,
+      usage: { inputTokens: null, outputTokens: null },
+    });
+    const evaluateOperation = vi.fn().mockResolvedValue({
+      evaluation: practiceEvaluation,
+      usage: { inputTokens: null, outputTokens: null },
+    });
+    const assessPracticeCandidate = vi.fn().mockResolvedValue(undefined);
+    const dispatcher = createLearningDispatcher({
+      getCapabilities: vi.fn().mockResolvedValue(capabilities),
+      generateCandidate: vi.fn(),
+      operations: {
+        'practice-generate': generateOperation,
+        'practice-evaluate': evaluateOperation,
+      },
+      assessCandidate: vi.fn(),
+      assessPracticeCandidate,
+      now: () => 1_000,
+    } as never);
+    const signal = new AbortController().signal;
+
+    const generationResponse = await dispatcher.dispatch(
+      'account-1',
+      practiceGenerationRequest,
+      signal,
+    );
+    const evaluationResponse = await dispatcher.dispatch(
+      'account-1',
+      practiceEvaluationRequest,
+      signal,
+    );
+
+    expect(generationResponse).toMatchObject({
+      version: 1,
+      requestId: practiceGenerationRequest.requestId,
+      kind: 'practice-generate',
+      candidate: practiceGeneratedCandidate,
+      configurationRevision: 'configuration-1',
+    });
+    expect(evaluationResponse).toMatchObject({
+      version: 1,
+      requestId: practiceEvaluationRequest.requestId,
+      kind: 'practice-evaluate',
+      evaluation: practiceEvaluation,
+      configurationRevision: 'configuration-1',
+    });
+    expect(assessPracticeCandidate).toHaveBeenCalledOnce();
+    expect(generateOperation).toHaveBeenCalledOnce();
+    expect(evaluateOperation).toHaveBeenCalledOnce();
+  });
+
+  it('fails closed when generated question and answer key assessment rejects or is unavailable', async () => {
+    const operation = vi.fn().mockResolvedValue({
+      candidate: practiceGeneratedCandidate,
+      usage: { inputTokens: null, outputTokens: null },
+    });
+    const deniedDispatcher = createLearningDispatcher({
+      getCapabilities: vi.fn().mockResolvedValue(capabilities),
+      generateCandidate: vi.fn(),
+      operations: { 'practice-generate': operation },
+      assessCandidate: vi.fn(),
+      assessPracticeCandidate: vi
+        .fn()
+        .mockRejectedValue(new LearningDispatchError('scope-denied')),
+      now: () => 1_000,
+    } as never);
+
+    await expect(
+      deniedDispatcher.dispatch(
+        'account-1',
+        practiceGenerationRequest,
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: 'scope-denied' });
+
+    const unavailableDispatcher = createLearningDispatcher({
+      getCapabilities: vi.fn().mockResolvedValue(capabilities),
+      generateCandidate: vi.fn(),
+      operations: { 'practice-generate': operation },
+      assessCandidate: vi.fn(),
+      now: () => 2_000,
+    } as never);
+    await expect(
+      unavailableDispatcher.dispatch(
+        'account-1',
+        practiceGenerationRequest,
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: 'feature-unavailable' });
+  });
+
+  it('does not return an evaluation after the operation is cancelled', async () => {
+    const controller = new AbortController();
+    const dispatcher = createLearningDispatcher({
+      getCapabilities: vi.fn().mockResolvedValue(capabilities),
+      generateCandidate: vi.fn(),
+      operations: {
+        'practice-evaluate': vi.fn(async () => {
+          controller.abort();
+          return { evaluation: practiceEvaluation };
+        }),
+      },
+      assessCandidate: vi.fn(),
+      now: () => 1_000,
+    } as never);
+
+    await expect(
+      dispatcher.dispatch(
+        'account-1',
+        practiceEvaluationRequest,
+        controller.signal,
+      ),
+    ).rejects.toThrow();
+  });
+
+  it('fails closed when the practice evaluator is not configured', async () => {
+    const dispatcher = createLearningDispatcher({
+      getCapabilities: vi.fn().mockResolvedValue(capabilities),
+      generateCandidate: vi.fn(),
+      assessCandidate: vi.fn(),
+      now: () => 1_000,
+    });
+
+    await expect(
+      dispatcher.dispatch(
+        'account-1',
+        practiceEvaluationRequest,
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: 'feature-unavailable' });
+  });
+
   it('returns nothing until a candidate passes the injected policy gate', async () => {
     const order: string[] = [];
     const dispatcher = createLearningDispatcher({

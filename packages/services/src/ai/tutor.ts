@@ -12,6 +12,21 @@ import {
   type LearningRequest,
 } from './learning-dispatch';
 import { meta } from './models/meta';
+import { assessLearningCandidate } from './learning-integrity';
+import {
+  PracticeEvaluationError,
+  evaluatePracticeAnswer,
+} from './practice-evaluation';
+import {
+  PracticeGenerationError,
+  generatePracticeCandidate,
+} from './practice-generation';
+import type {
+  GeneratedPracticeCandidate,
+  PracticeEvaluateRequest,
+  PracticeGenerateRequest,
+} from './learning-dispatch';
+import type { JsonValue } from '../learning/product-contracts';
 
 const learningModelId = 'muse-spark-1.3';
 const materialWireBytes = 24 * 1024 * 1024;
@@ -154,4 +169,108 @@ export const assessTutorCandidate = async (
     if (error instanceof LearningDispatchError) throw error;
     throw new LearningDispatchError('provider-failed');
   }
+};
+
+const practiceDispatchError = (
+  error: unknown,
+  signal: AbortSignal,
+): LearningDispatchError => {
+  if (signal.aborted) return new LearningDispatchError('cancelled');
+  if (error instanceof LearningDispatchError) return error;
+  if (
+    (error instanceof PracticeGenerationError ||
+      error instanceof PracticeEvaluationError) &&
+    error.code === 'invalid-input'
+  )
+    return new LearningDispatchError('invalid-input');
+  return new LearningDispatchError('provider-failed');
+};
+
+export const generatePracticeCandidateForLearning = async (
+  request: PracticeGenerateRequest,
+  signal: AbortSignal,
+) => {
+  signalFrom(signal);
+  if (request.kind !== 'practice-generate')
+    throw new LearningDispatchError('feature-unavailable');
+  try {
+    const candidate = await generatePracticeCandidate(
+      request.input,
+      signal,
+      getModel(),
+    );
+    signalFrom(signal);
+    return {
+      candidate,
+      usage: { inputTokens: null, outputTokens: null },
+    };
+  } catch (error) {
+    throw practiceDispatchError(error, signal);
+  }
+};
+
+export const evaluatePracticeAnswerForLearning = async (
+  request: PracticeEvaluateRequest,
+  signal: AbortSignal,
+) => {
+  signalFrom(signal);
+  if (request.kind !== 'practice-evaluate')
+    throw new LearningDispatchError('feature-unavailable');
+  try {
+    const evaluation = await evaluatePracticeAnswer(
+      request.input,
+      signal,
+      getModel(),
+    );
+    signalFrom(signal);
+    return {
+      evaluation,
+      usage: { inputTokens: null, outputTokens: null },
+    };
+  } catch (error) {
+    throw practiceDispatchError(error, signal);
+  }
+};
+
+export const assessPracticeCandidateForLearning = async (
+  request: PracticeGenerateRequest,
+  candidate: GeneratedPracticeCandidate,
+  signal: AbortSignal,
+) => {
+  signalFrom(signal);
+  const selectedProvider = (serverEnv as unknown as Record<string, unknown>)
+    .INFERENCE_PROVIDER;
+  if (selectedProvider !== undefined && selectedProvider !== 'meta')
+    throw new LearningDispatchError('feature-unavailable');
+  let assessment;
+  try {
+    assessment = await assessLearningCandidate(
+      {
+        kind: 'practice-generate',
+        studentInput: request.input.topic,
+        taskContext: request.input.objectives
+          .map(({ description }) => description)
+          .join('\n')
+          .slice(0, 8000),
+        recentTurns: [],
+        priorAssistanceSummary: '',
+        sourcePassages: request.input.sources.map(({ excerpt }) => excerpt),
+        candidate: candidate as unknown as JsonValue,
+      },
+      signal,
+    );
+  } catch (error) {
+    if (signal.aborted) throw new LearningDispatchError('cancelled');
+    if (error instanceof LearningDispatchError) throw error;
+    throw new LearningDispatchError('feature-unavailable');
+  }
+  signalFrom(signal);
+  if (assessment.allowed) return;
+  if (assessment.reasonCode === 'assessment-unavailable')
+    throw new LearningDispatchError('feature-unavailable');
+  if (assessment.reasonCode === 'limit-exceeded')
+    throw new LearningDispatchError('limit-exceeded');
+  if (assessment.reasonCode === 'invalid-input')
+    throw new LearningDispatchError('invalid-input');
+  throw new LearningDispatchError('scope-denied');
 };

@@ -3,13 +3,16 @@ import { serverEnv } from '@/data/env/server';
 import {
   LearningDispatchError,
   createLearningDispatcher,
+  learningOperationResponseSchema,
   learningRequestSchema,
-  learningResponseSchema,
   type LearningCapabilities,
   type LearningRequest,
 } from '../../../../../../packages/services/src/ai/learning-dispatch';
 import {
+  assessPracticeCandidateForLearning,
   assessTutorCandidate,
+  evaluatePracticeAnswerForLearning,
+  generatePracticeCandidateForLearning,
   generateTutorCandidate,
   getLearningCapabilities,
 } from '../../../../../../packages/services/src/ai/tutor';
@@ -258,14 +261,30 @@ export const createLearningPostHandler = (
         signal,
       );
       signal.throwIfAborted();
-      const parsedResponse = learningResponseSchema.safeParse(learningResponse);
+      const parsedResponse =
+        learningOperationResponseSchema.safeParse(learningResponse);
       if (!parsedResponse.success)
         return jsonError(
           502,
           'provider-failed',
           'The learning response could not be validated.',
         );
-      return Response.json(parsedResponse.data, { headers: noStore });
+      const response = parsedResponse.data;
+      const operationMatches =
+        'kind' in response
+          ? response.kind === parsedRequest.data.kind
+          : parsedRequest.data.kind !== 'practice-generate' &&
+            parsedRequest.data.kind !== 'practice-evaluate';
+      if (
+        response.requestId !== parsedRequest.data.requestId ||
+        !operationMatches
+      )
+        return jsonError(
+          502,
+          'provider-failed',
+          'The learning response could not be validated.',
+        );
+      return Response.json(response, { headers: noStore });
     } catch (error) {
       if (signal.aborted)
         return jsonError(
@@ -302,7 +321,12 @@ export const createLearningPostHandler = (
 const dispatcher = createLearningDispatcher({
   getCapabilities: getLearningCapabilities,
   generateCandidate: generateTutorCandidate,
+  operations: {
+    'practice-generate': generatePracticeCandidateForLearning,
+    'practice-evaluate': evaluatePracticeAnswerForLearning,
+  },
   assessCandidate: assessTutorCandidate,
+  assessPracticeCandidate: assessPracticeCandidateForLearning,
 });
 export const POST = createLearningPostHandler({
   getCurrentUser,
