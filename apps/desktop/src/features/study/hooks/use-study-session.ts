@@ -301,6 +301,7 @@ export const useStudySession = (
   readOnlyRef.current = readOnly;
   const requestSequenceRef = useRef(0);
   const requestIdsRef = useRef(new Map<string, string>());
+  const [attachmentRevision, setAttachmentRevision] = useState(0);
   const previewRef = useRef<ApprovedTutorPreview | null>(null);
   const [approvedPreview, setApprovedPreview] =
     useState<ApprovedTutorPreview | null>(null);
@@ -436,6 +437,10 @@ export const useStudySession = (
           return;
         if (!['study', 'grades', 'context', 'memory'].includes(event.resource))
           return;
+        if (event.resource === 'context') {
+          // Ingestion can finish without changing the study session revision.
+          setAttachmentRevision((revision) => revision + 1);
+        }
         if (event.approvedTutorOutput) {
           const current = stateRef.current;
           if (
@@ -858,6 +863,7 @@ export const useStudySession = (
     loading,
     refreshing: isStateForScope && state.refreshing,
     snapshot: displayedSnapshot,
+    attachmentRevision,
     streamingMessageId:
       currentPreview && !currentPreview.output.done
         ? currentPreview.output.messageId

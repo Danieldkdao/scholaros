@@ -313,7 +313,7 @@ export const useLearningProgress = (
   useEffect(() => {
     if (!accountId) return;
     const unsubscribe = memoryBridge().onProductEvent((event) => {
-      if (event.accountId !== accountId) return;
+      if (event.accountId !== accountId || event.approvedTutorOutput) return;
       switch (event.resource) {
         case 'memory':
         case 'study':

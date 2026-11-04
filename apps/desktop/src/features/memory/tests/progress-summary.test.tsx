@@ -233,3 +233,37 @@ it('embeds progress evidence without a repeated card or heading', async () => {
   expect(container.textContent).not.toContain('Learning progress');
   expect(container.textContent).toContain('Cell structure');
 });
+
+it('ignores approved tutor delivery frames when refreshing learning progress', async () => {
+  let publish!: (event: ProductEventV1) => void;
+  bridge.onProductEvent.mockImplementation(
+    (listener: (event: ProductEventV1) => void) => {
+      publish = listener;
+      return () => undefined;
+    },
+  );
+  await renderSummary();
+  await act(async () =>
+    publish({
+      version: 1,
+      accountId: 'student-a',
+      revision: 50,
+      resource: 'study',
+      targetId: 'session-1',
+      approvedTutorOutput: {
+        turnId: 'turn-1',
+        generationEpoch: 1,
+        messageId: 'message-1',
+        messageSequence: 2,
+        createdAt: timestamp,
+        gradeDerived: false,
+        gradeConsentRevision: null,
+        partIndex: 0,
+        sequence: 0,
+        textDelta: 'Approved text',
+        done: false,
+      },
+    }),
+  );
+  expect(bridge.getLearningProgress).toHaveBeenCalledOnce();
+});

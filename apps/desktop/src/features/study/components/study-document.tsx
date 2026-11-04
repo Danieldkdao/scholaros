@@ -643,7 +643,7 @@ export const StudyDocument = ({
           readOnly={readOnly}
           activeTurn={snapshot.activeTurn}
           failedTurnId={failedTurnMessage?.turnId ?? null}
-          attachmentRevision={snapshot.revision}
+          attachmentRevision={study.attachmentRevision}
           onSend={study.sendTurn}
           onStop={async () => {
             if (snapshot.activeTurn)

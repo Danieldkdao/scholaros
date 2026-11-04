@@ -1940,3 +1940,43 @@ it('rejects wrong scopes, missing chunks, duplicates, changed epochs, and uncons
   );
   expect(container.textContent).toContain('A loop repeats.');
 });
+
+it('invalidates attachment readiness when ingestion finishes without a session revision change', async () => {
+  let study: ReturnType<typeof useStudySession> | null = null;
+  bridge();
+  const View = () => {
+    study = useStudySession('student-a', 'session-1');
+    return null;
+  };
+  const container = document.createElement('div');
+  document.body.append(container);
+  root = createRoot(container);
+  await act(async () => root?.render(createElement(View)));
+  await act(drain);
+  const originalRevision = study!.attachmentRevision;
+  const sessionRevision = study!.snapshot!.revision;
+  await act(async () => {
+    eventListener?.({
+      version: 1,
+      accountId: 'other',
+      resource: 'context',
+      targetId: 'item-1',
+      revision: 5,
+    });
+    await drain();
+  });
+  expect(study!.attachmentRevision).toBe(originalRevision);
+  await act(async () => {
+    eventListener?.({
+      version: 1,
+      accountId: 'student-a',
+      resource: 'context',
+      targetId: 'item-1',
+      revision: 5,
+      outcome: 'completed',
+    });
+    await drain();
+  });
+  expect(study!.snapshot!.revision).toBe(sessionRevision);
+  expect(study!.attachmentRevision).toBe(originalRevision + 1);
+});

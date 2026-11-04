@@ -679,3 +679,38 @@ describe('announcement overview content', () => {
     });
   });
 });
+
+it('ignores approved tutor delivery frames without refetching the dashboard', async () => {
+  let publish!: (event: ProductEventV1) => void;
+  todayBridge().onProductEvent = (listener) => {
+    publish = listener;
+    return () => undefined;
+  };
+  await act(async () =>
+    root.render(createElement(probeComponent, { accountId: 'student-a' })),
+  );
+  const reads = vi.mocked(todayBridge().getTodayOverview).mock.calls.length;
+  await act(async () =>
+    publish({
+      version: 1,
+      accountId: 'student-a',
+      revision: 50,
+      resource: 'study',
+      targetId: 'session-1',
+      approvedTutorOutput: {
+        turnId: 'turn-1',
+        generationEpoch: 1,
+        messageId: 'message-1',
+        messageSequence: 2,
+        createdAt: '2026-11-04T12:00:00Z',
+        gradeDerived: false,
+        gradeConsentRevision: null,
+        partIndex: 0,
+        sequence: 0,
+        textDelta: 'Approved text',
+        done: false,
+      },
+    }),
+  );
+  expect(todayBridge().getTodayOverview).toHaveBeenCalledTimes(reads);
+});

@@ -100,6 +100,7 @@ export const useToday = (accountId: string | null) => {
     const unsubscribeProduct = bridge.onProductEvent?.((event) => {
       if (
         event.accountId !== accountId ||
+        event.approvedTutorOutput ||
         !relevantResources.has(event.resource)
       )
         return;
