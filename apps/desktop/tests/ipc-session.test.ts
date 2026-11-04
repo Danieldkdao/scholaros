@@ -17,6 +17,7 @@ import * as databaseSchema from '../src/db/schema';
 import { academicTasks } from '../src/features/onboarding/services/academic-tasks';
 import {
   createLearningLifecycle,
+  notificationOutcomeId,
   registerLearningActions,
   loadLearningActionModules,
   type LearningActionModule,
@@ -432,6 +433,7 @@ describe('real account-local cleanup composition', () => {
   afterEach(async () => {
     await registerTestAcademicActions();
     await invoke('signOut');
+    vi.restoreAllMocks();
     mocks.realDb = null;
     sqlite.close();
   });
@@ -650,6 +652,498 @@ describe('real account-local cleanup composition', () => {
         path: '/untrusted',
       }),
     ).rejects.toMatchObject({ code: 'invalid-input' });
+  });
+
+  const enableRealNotifications = async () => {
+    await invoke('claimDueNotifications', {
+      operation: 'set-permission',
+      userId: 'student-a',
+      permission: 'granted',
+    });
+    const { revision, ...settings } = (await invoke(
+      'getNotificationSettings',
+    )) as import('@scholaros/services/learning/notification-contracts').NotificationSettings;
+    await invoke('saveNotificationSettings', {
+      settings: {
+        ...settings,
+        enabled: true,
+        categories: Object.fromEntries(
+          Object.keys(settings.categories).map((category) => [category, true]),
+        ),
+        quietHours: { ...settings.quietHours, enabled: false },
+      },
+      expectedRevision: revision,
+    });
+  };
+
+  it('enqueues a real terminal refresh failure once without notifying running progress or leaking task errors', async () => {
+    await enableRealNotifications();
+    const completion = academicTasks.run(
+      'student-a',
+      async (signal) => {
+        academicTasks.report(signal, 'PRIVATE_FIXTURE_ACADEMIC_PROGRESS');
+        expect(
+          sqlite.prepare('SELECT * FROM notification_events').all(),
+        ).toEqual([]);
+        throw new Error('PRIVATE_FIXTURE_PROVIDER_FAILURE');
+      },
+      undefined,
+      'cleanup-course-a',
+    );
+    await expect(completion).rejects.toThrow(
+      'PRIVATE_FIXTURE_PROVIDER_FAILURE',
+    );
+    await vi.waitFor(() =>
+      expect(
+        sqlite
+          .prepare(
+            'SELECT category, target_id, status FROM notification_events',
+          )
+          .all(),
+      ).toEqual([
+        {
+          category: 'sync-failed',
+          target_id: 'cleanup-course-a',
+          status: 'queued',
+        },
+      ]),
+    );
+    await invoke('getCourses');
+    await invoke('getCourses');
+    const rows = sqlite.prepare('SELECT * FROM notification_events').all();
+    expect(rows).toHaveLength(1);
+    expect(JSON.stringify(rows)).not.toContain('PRIVATE_FIXTURE');
+    expect(mocks.publish).toHaveBeenCalledWith(
+      'scholar:productEvent',
+      expect.objectContaining({
+        accountId: 'student-a',
+        resource: 'notifications',
+      }),
+    );
+  });
+
+  it.each(['cleanup-course-a', 'connection:terminal-connection-a'])(
+    'enqueues connection attention only after a real sign-in-required task settles for an owned persisted connection via %s',
+    async (key) => {
+      await enableRealNotifications();
+      mocks
+        .realDb!.insert(databaseSchema.AcademicConnectionTable)
+        .values({
+          id: 'terminal-connection-a',
+          userId: 'student-a',
+          name: 'Fixture source',
+          host: 'fixture.invalid',
+          url: 'https://fixture.invalid/courses',
+          kind: 'canvas',
+          status: 'confirmed',
+          isCourseResource: true,
+        })
+        .run();
+      sqlite
+        .prepare('UPDATE courses SET connection_id = ? WHERE id = ?')
+        .run('terminal-connection-a', 'cleanup-course-a');
+      await academicTasks.run(
+        'student-a',
+        async (signal) => {
+          sqlite
+            .prepare('UPDATE academic_connections SET status = ? WHERE id = ?')
+            .run('needs-sign-in', 'terminal-connection-a');
+          academicTasks.reportSignInRequired(
+            signal,
+            'PRIVATE_FIXTURE_SIGN_IN_URL',
+          );
+          expect(
+            sqlite.prepare('SELECT * FROM notification_events').all(),
+          ).toEqual([]);
+        },
+        undefined,
+        key,
+      );
+      await vi.waitFor(() =>
+        expect(
+          sqlite
+            .prepare(
+              'SELECT category, target_id, status FROM notification_events',
+            )
+            .all(),
+        ).toEqual([
+          {
+            category: 'connection-attention',
+            target_id: 'terminal-connection-a',
+            status: 'queued',
+          },
+        ]),
+      );
+      expect(
+        JSON.stringify(
+          sqlite.prepare('SELECT * FROM notification_events').all(),
+        ),
+      ).not.toContain('PRIVATE_FIXTURE');
+    },
+  );
+
+  it('enqueues a connection-scoped refresh failure against the owned connection rather than a nonexistent course', async () => {
+    await enableRealNotifications();
+    mocks
+      .realDb!.insert(databaseSchema.AcademicConnectionTable)
+      .values({
+        id: 'failed-connection-a',
+        userId: 'student-a',
+        name: 'Fixture source',
+        host: 'fixture.invalid',
+        url: 'https://fixture.invalid/courses',
+        kind: 'canvas',
+        status: 'confirmed',
+        isCourseResource: true,
+      })
+      .run();
+    await expect(
+      academicTasks.run(
+        'student-a',
+        async () => {
+          throw new Error('Fixture connection refresh failed.');
+        },
+        undefined,
+        'connection:failed-connection-a',
+        { exclusive: true },
+      ),
+    ).rejects.toThrow('Fixture connection refresh failed.');
+    await vi.waitFor(() =>
+      expect(
+        sqlite
+          .prepare(
+            'SELECT category, target_kind, target_id FROM notification_events',
+          )
+          .all(),
+      ).toEqual([
+        {
+          category: 'sync-failed',
+          target_kind: 'connection',
+          target_id: 'failed-connection-a',
+        },
+      ]),
+    );
+  });
+
+  it('enqueues completed sync only from complete source and material results rather than task settlement', async () => {
+    await enableRealNotifications();
+    const timestamp = new Date().toISOString();
+    const state = readyState() as unknown as OnboardingState;
+    state.settings.localSetupCompletedAt = timestamp;
+    state.discovery = {
+      ...state.discovery,
+      status: 'empty',
+      discoveredAt: timestamp,
+      coverage: { 'connection-a': 'empty' },
+    };
+    mocks.state = state as unknown as typeof mocks.state;
+    mocks.getCurrentUser.mockResolvedValue({
+      id: 'student-a',
+      hasCompletedOnboarding: true,
+    });
+    let materialRefreshStatus = 'partial';
+    mocks.startCourseRefresh.mockImplementation(
+      async (userId, isCurrent, externalSignal) =>
+        academicTasks.run(
+          userId,
+          async (signal) => {
+            if (!isCurrent()) throw new Error('Stale fixture account.');
+            academicTasks.report(signal, 'PRIVATE_FIXTURE_REFRESH_PROGRESS');
+            return {
+              state: mocks.state,
+              snapshot: {
+                courses: [],
+                lastSuccessfulAt: timestamp,
+                sources: [
+                  {
+                    connectionId: 'connection-a',
+                    outcome: 'complete',
+                    message: null,
+                    lastAttemptedAt: timestamp,
+                    lastSuccessfulAt: timestamp,
+                  },
+                ],
+              },
+              attemptedConnectionIds: ['connection-a'],
+              materialRefreshStatus,
+            };
+          },
+          externalSignal,
+          'courses',
+        ),
+    );
+    await invoke('refreshCourses');
+    await vi.waitFor(() =>
+      expect(
+        sqlite.prepare('SELECT category FROM notification_events').all(),
+      ).toEqual([{ category: 'sync-failed' }]),
+    );
+    materialRefreshStatus = 'complete';
+    await invoke('refreshCourses');
+    await vi.waitFor(() =>
+      expect(
+        sqlite
+          .prepare('SELECT category FROM notification_events ORDER BY category')
+          .all(),
+      ).toEqual([{ category: 'sync-completed' }, { category: 'sync-failed' }]),
+    );
+    expect(
+      sqlite
+        .prepare(
+          'SELECT COUNT(DISTINCT outcome_id) AS count FROM notification_events',
+        )
+        .get(),
+    ).toEqual({ count: 2 });
+  });
+
+  it.each(['complete', 'partial'])(
+    'enqueues the actual single-course material outcome %s after real task settlement',
+    async (materialRefreshStatus) => {
+      await enableRealNotifications();
+      const timestamp = new Date().toISOString();
+      const state = readyState() as unknown as OnboardingState;
+      state.settings.localSetupCompletedAt = timestamp;
+      mocks.state = state as unknown as typeof mocks.state;
+      mocks.getCurrentUser.mockResolvedValue({
+        id: 'student-a',
+        hasCompletedOnboarding: true,
+      });
+      sqlite
+        .prepare(
+          'UPDATE courses SET overview_synced_at = ?, announcements_status = ?, assignments_status = ? WHERE id = ?',
+        )
+        .run(timestamp, 'complete', 'complete', 'cleanup-course-a');
+      const courseStore = await vi.importActual<
+        typeof import('../src/features/courses/services/store')
+      >('../src/features/courses/services/store');
+      mocks.refreshSingleCourse.mockImplementation(async (userId, courseId) =>
+        academicTasks.run(
+          userId,
+          async () => {
+            const course = courseStore.getCourseDetail(userId, courseId);
+            expect(course).not.toBeNull();
+            return { ...course, materialRefreshStatus };
+          },
+          undefined,
+          courseId,
+        ),
+      );
+      await invoke('refreshCourse', 'cleanup-course-a');
+      await vi.waitFor(() =>
+        expect(
+          sqlite
+            .prepare(
+              'SELECT category, target_kind, target_id FROM notification_events',
+            )
+            .all(),
+        ).toEqual([
+          {
+            category:
+              materialRefreshStatus === 'complete'
+                ? 'sync-completed'
+                : 'sync-failed',
+            target_kind: 'course',
+            target_id: 'cleanup-course-a',
+          },
+        ]),
+      );
+    },
+  );
+
+  it('keeps a settled sync result tied to its actual run when a newer task replaces history', async () => {
+    await enableRealNotifications();
+    const timestamp = new Date().toISOString();
+    const state = readyState() as unknown as OnboardingState;
+    state.settings.localSetupCompletedAt = timestamp;
+    state.discovery = {
+      ...state.discovery,
+      status: 'empty',
+      discoveredAt: timestamp,
+      coverage: { 'connection-a': 'empty' },
+    };
+    mocks.state = state as unknown as typeof mocks.state;
+    mocks.getCurrentUser.mockResolvedValue({
+      id: 'student-a',
+      hasCompletedOnboarding: true,
+    });
+    let firstTaskId = '';
+    let finish!: () => void;
+    const mayReturn = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    mocks.startCourseRefresh.mockImplementationOnce(
+      async (userId, _isCurrent, externalSignal) => {
+        const result = await academicTasks.run(
+          userId,
+          async () => ({
+            state,
+            snapshot: {
+              courses: [],
+              lastSuccessfulAt: timestamp,
+              sources: [
+                {
+                  connectionId: 'connection-a',
+                  outcome: 'complete',
+                  message: null,
+                  lastAttemptedAt: timestamp,
+                  lastSuccessfulAt: timestamp,
+                },
+              ],
+            },
+            attemptedConnectionIds: ['connection-a'],
+            materialRefreshStatus: 'complete',
+          }),
+          externalSignal,
+          'courses',
+        );
+        firstTaskId = academicTasks
+          .getActivity(userId)
+          .find((task) => task.key === 'courses')!.id;
+        await mayReturn;
+        return result;
+      },
+    );
+    const refresh = invoke('refreshCourses');
+    await vi.waitFor(() => expect(firstTaskId).not.toBe(''));
+    try {
+      await academicTasks.run(
+        'student-a',
+        async () => undefined,
+        undefined,
+        'courses',
+      );
+    } finally {
+      finish();
+    }
+    await refresh;
+    await vi.waitFor(() =>
+      expect(
+        sqlite.prepare('SELECT outcome_id FROM notification_events').all(),
+      ).toEqual([{ outcome_id: notificationOutcomeId('sync', firstTaskId) }]),
+    );
+  });
+
+  it('keeps an old running task fenced across same-account cookie reauthentication', async () => {
+    await enableRealNotifications();
+    let finish!: () => void;
+    const mayFinish = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const completion = academicTasks.run(
+      'student-a',
+      async (signal) => {
+        await mayFinish;
+        academicTasks.report(signal, 'Late old-account progress');
+        throw new Error('Old task failed.');
+      },
+      undefined,
+      'cleanup-course-a',
+    );
+    void completion.catch(() => undefined);
+    await Promise.resolve();
+    mocks.getCookie.mockReturnValue('replacement-same-account-cookie');
+    await invoke('getCurrentUser');
+    await enableRealNotifications();
+    finish();
+    await expect(completion).rejects.toThrow('Old task failed.');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(sqlite.prepare('SELECT * FROM notification_events').all()).toEqual(
+      [],
+    );
+  });
+
+  it('never treats a cancelled or merely resolved academic task as a completed sync', async () => {
+    await enableRealNotifications();
+    await academicTasks.run(
+      'student-a',
+      async () => undefined,
+      undefined,
+      'cleanup-course-a',
+    );
+    let finish!: () => void;
+    const mayFinish = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const completion = academicTasks.run(
+      'student-a',
+      async () => mayFinish,
+      undefined,
+      'cleanup-course-a',
+    );
+    await Promise.resolve();
+    academicTasks.cancel('student-a');
+    finish();
+    await completion;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(sqlite.prepare('SELECT * FROM notification_events').all()).toEqual(
+      [],
+    );
+  });
+
+  it('drains an outstanding real notification producer before account-local deletion and never restores its row', async () => {
+    await enableRealNotifications();
+    const notifications =
+      await import('../src/features/notifications/services/notification-actions');
+    const original = notifications.enqueueProductNotification;
+    let finish!: () => void;
+    const mayEnqueue = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const enqueue = vi
+      .spyOn(notifications, 'enqueueProductNotification')
+      .mockImplementation(async (...args) => {
+        await mayEnqueue;
+        return original(...args);
+      });
+    await expect(
+      academicTasks.run(
+        'student-a',
+        async () => {
+          throw new Error('Fixture refresh failed.');
+        },
+        undefined,
+        'cleanup-course-a',
+      ),
+    ).rejects.toThrow('Fixture refresh failed.');
+    await vi.waitFor(() => expect(enqueue).toHaveBeenCalledOnce());
+    let deleted = false;
+    const deletion = invoke('deleteLocalAcademicData', {
+      requestId: randomUUID(),
+      scope: 'account-local',
+    }).then(() => {
+      deleted = true;
+    });
+    void deletion.catch(() => undefined);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(deleted).toBe(false);
+      expect(
+        sqlite
+          .prepare('SELECT id FROM courses WHERE user_id = ?')
+          .all('student-a'),
+      ).toHaveLength(1);
+    } finally {
+      finish();
+      await deletion;
+    }
+    expect(deleted).toBe(true);
+    expect(sqlite.prepare('SELECT * FROM notification_events').all()).toEqual(
+      [],
+    );
+    expect(
+      sqlite
+        .prepare('SELECT id FROM courses WHERE user_id = ?')
+        .all('student-a'),
+    ).toEqual([]);
+    expect(
+      sqlite
+        .prepare('SELECT id FROM courses WHERE user_id = ?')
+        .all('student-b'),
+    ).toHaveLength(1);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(sqlite.prepare('SELECT * FROM notification_events').all()).toEqual(
+      [],
+    );
   });
 
   it('fences an action still authenticating when local cleanup removes its account data', async () => {
@@ -1474,7 +1968,7 @@ describe('foreground browser work and background sync', () => {
     expect(mocks.startCourseRefresh).toHaveBeenCalledOnce();
     expect(mocks.startCourseRefresh.mock.calls[0]?.[0]).toBe('student-a');
     await expect(invoke('refreshCourses')).resolves.toEqual({
-      activity: [],
+      activity: academicTasks.getActivity('student-a'),
       courses: [],
       sources: [],
       lastSuccessfulAt: null,
@@ -1485,7 +1979,7 @@ describe('foreground browser work and background sync', () => {
 
   it('reads the saved catalog without touching the study browser', async () => {
     await expect(invoke('getCourses')).resolves.toEqual({
-      activity: [],
+      activity: academicTasks.getActivity('student-a'),
       refreshing: false,
       courses: [],
       sources: [],

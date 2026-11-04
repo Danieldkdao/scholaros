@@ -30,16 +30,22 @@ import type {
 } from '../../../services/academic/contracts';
 import {
   createLearningLifecycle,
+  createProductNotificationProducer,
+  notificationOutcomeId,
   registerLearningActions,
   type LearningActionModule,
 } from '../../../services/academic/learning-actions';
 import { ArtifactStoreError } from '../../study/services/artifact-store';
+import type { NotificationOutcome } from '../../notifications/services/notification-actions';
 import { createOriginalStore } from '../../context/services/original-store';
 import {
   createLocalDataCleanup,
   LocalDataCleanupError,
 } from '../../../services/academic/local-data-cleanup';
-import type { ActionCleanup } from '@scholaros/services/learning/product-contracts';
+import type {
+  ActionCleanup,
+  AuthorizedContext,
+} from '@scholaros/services/learning/product-contracts';
 import { productEventResources } from '@scholaros/services/learning/product-contracts';
 import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
@@ -60,6 +66,7 @@ import { db } from '../../../db';
 import {
   AcademicConnectionTable,
   BrowserWorkspaceTable,
+  CourseTable,
   SettingTable,
 } from '../../../db/schema';
 import { academicResources } from '../constants';
@@ -127,7 +134,10 @@ import {
   refreshSingleCourse,
   type CourseRefreshResult,
 } from '../../courses/services/refresh';
-import type { CoursesSnapshot } from '../../courses/types';
+import type {
+  CourseRefreshActivity,
+  CoursesSnapshot,
+} from '../../courses/types';
 import type { LaunchAtLoginPreference, OnboardingState } from '../types';
 
 const isOfflineDeviceReady = (userId: string) => {
@@ -171,6 +181,10 @@ let learningActionModules: readonly LearningActionModule[] = [];
 let learningActionRebind: Promise<void> = Promise.resolve();
 let learningRequestSequence = 0;
 let learningActionsCleanup: ActionCleanup | null = null;
+let taskNotificationProducer: ReturnType<
+  typeof createProductNotificationProducer
+> | null = null;
+const runningNotificationTasks = new Map<string, AuthorizedContext | null>();
 const accountCleanupGates = new Map<
   string,
   { operationId: string; completion: Promise<void> }
@@ -193,7 +207,19 @@ const registerLearningActionModules = async () => {
   if (learningActionRegistrar)
     learningActionsCleanup = await registerLearningActions(
       learningActionRegistrar,
-      learningActionModules,
+      [
+        ...learningActionModules,
+        (registrar) => {
+          const producer = createProductNotificationProducer(registrar);
+          taskNotificationProducer = producer;
+          return async () => {
+            if (taskNotificationProducer === producer)
+              taskNotificationProducer = null;
+            // Retain old running-task fences until settlement; never rebind them to a new epoch.
+            await producer.dispose();
+          };
+        },
+      ],
     );
 };
 
@@ -219,6 +245,228 @@ type IpcContext = {
   isCurrent: () => boolean;
 };
 
+const captureTaskNotificationContext = (
+  userId: string,
+): AuthorizedContext | null => {
+  const epoch = learningLifecycle.epoch;
+  const signal = learningLifecycle.signal;
+  const cookie = boundCookie;
+  const accessRevision = accountAccessRevision;
+  const admissionRevision = cleanupAdmissionRevision;
+  const isCurrent = () =>
+    !signal.aborted &&
+    learningLifecycle.isCurrent(epoch) &&
+    boundAccountId === userId &&
+    boundAuthMode === 'online' &&
+    accountAccessRevision === accessRevision &&
+    cleanupAdmissionRevision === admissionRevision &&
+    !accountCleanupGates.has(userId) &&
+    cookie !== null &&
+    isAccountSessionCurrent(cookie) &&
+    getOnboardingState(userId).settings.consent;
+  return isCurrent() ? { userId, epoch, signal, isCurrent } : null;
+};
+
+const observeAcademicTaskNotifications = (userId: string) => {
+  for (const task of academicTasks.getActivity(userId)) {
+    if (task.status === 'running') {
+      if (!runningNotificationTasks.has(task.id))
+        runningNotificationTasks.set(
+          task.id,
+          captureTaskNotificationContext(userId),
+        );
+      continue;
+    }
+    const context = runningNotificationTasks.get(task.id);
+    runningNotificationTasks.delete(task.id);
+    if (!context || !context.isCurrent()) continue;
+    const connectionId = task.key.startsWith('connection:')
+      ? task.key.slice('connection:'.length)
+      : null;
+    if (task.status === 'sign-in-required') {
+      const course = db
+        .select({ connectionId: CourseTable.connectionId })
+        .from(CourseTable)
+        .where(
+          and(eq(CourseTable.userId, userId), eq(CourseTable.id, task.key)),
+        )
+        .get();
+      const connections = db
+        .select({ id: AcademicConnectionTable.id })
+        .from(AcademicConnectionTable)
+        .where(
+          and(
+            eq(AcademicConnectionTable.userId, userId),
+            eq(AcademicConnectionTable.status, 'needs-sign-in'),
+            ...(task.key === 'courses'
+              ? []
+              : [
+                  eq(
+                    AcademicConnectionTable.id,
+                    course?.connectionId ?? connectionId ?? task.key,
+                  ),
+                ]),
+          ),
+        )
+        .limit(50)
+        .all();
+      for (const connection of connections)
+        void taskNotificationProducer?.enqueue(
+          context,
+          {
+            category: 'connection-attention',
+            outcome: 'attention',
+            outcomeId: notificationOutcomeId(
+              'connection',
+              task.id,
+              connection.id,
+            ),
+            targetKind: 'connection',
+            targetId: connection.id,
+            route: { kind: 'settings', section: 'connections' },
+            expiresAt: new Date(Date.now() + 24 * 60 * 60_000).toISOString(),
+          },
+          learningLifecycle.now(),
+        );
+      continue;
+    }
+    if (task.status !== 'failed') continue;
+    const target =
+      task.key === 'courses'
+        ? {
+            targetKind: 'device' as const,
+            targetId: null,
+            route: { kind: 'today' as const },
+          }
+        : connectionId
+          ? {
+              targetKind: 'connection' as const,
+              targetId: connectionId,
+              route: {
+                kind: 'settings' as const,
+                section: 'connections' as const,
+              },
+            }
+          : {
+              targetKind: 'course' as const,
+              targetId: task.key,
+              route: { kind: 'course' as const, courseId: task.key },
+            };
+    void taskNotificationProducer?.enqueue(
+      context,
+      {
+        category: 'sync-failed',
+        outcome: 'failed',
+        outcomeId: notificationOutcomeId('sync', task.id),
+        ...target,
+        expiresAt: new Date(Date.now() + 24 * 60 * 60_000).toISOString(),
+      },
+      learningLifecycle.now(),
+    );
+  }
+};
+
+const enqueueSyncOutcome = (
+  context: AuthorizedContext,
+  task: CourseRefreshActivity,
+  completed: boolean,
+  target: Pick<NotificationOutcome, 'targetKind' | 'targetId' | 'route'>,
+) =>
+  void taskNotificationProducer?.enqueue(
+    context,
+    {
+      category: completed ? 'sync-completed' : 'sync-failed',
+      outcome: completed ? 'completed' : 'failed',
+      outcomeId: notificationOutcomeId('sync', task.id),
+      ...target,
+      expiresAt: new Date(Date.now() + 24 * 60 * 60_000).toISOString(),
+    },
+    learningLifecycle.now(),
+  );
+
+const notifySingleCourseOutcome = (
+  context: AuthorizedContext,
+  courseId: string,
+  course: Awaited<ReturnType<typeof refreshSingleCourse>>,
+  task: CourseRefreshActivity | undefined,
+) => {
+  try {
+    if (
+      !context.isCurrent() ||
+      !task ||
+      task.status !== 'complete' ||
+      !course ||
+      course.id !== courseId
+    )
+      return;
+    const completed =
+      course.active &&
+      !!course.overviewSyncedAt &&
+      course.materialRefreshStatus === 'complete' &&
+      course.assignmentsStatus === 'complete' &&
+      course.announcementsStatus === 'complete';
+    enqueueSyncOutcome(context, task, completed, {
+      targetKind: 'course',
+      targetId: courseId,
+      route: { kind: 'course', courseId },
+    });
+  } catch {
+    // Notification storage does not own the committed course result.
+  }
+};
+
+const notifyCourseRefreshOutcome = (
+  context: AuthorizedContext,
+  refreshed: CourseRefreshResult,
+  task: CourseRefreshActivity | undefined,
+) => {
+  try {
+    const attempted = refreshed.attemptedConnectionIds;
+    if (
+      !context.isCurrent() ||
+      !task ||
+      task.status !== 'complete' ||
+      !attempted?.length ||
+      ['pending', 'running', 'cancelled'].includes(
+        refreshed.state.discovery.status,
+      )
+    )
+      return;
+    const completed =
+      refreshed.materialRefreshStatus === 'complete' &&
+      ['complete', 'empty'].includes(refreshed.state.discovery.status) &&
+      attempted.every(
+        (connectionId) =>
+          refreshed.state.connections.some(
+            (connection) => connection.id === connectionId,
+          ) &&
+          refreshed.snapshot.sources.some(
+            (source) =>
+              source.connectionId === connectionId &&
+              source.outcome === 'complete',
+          ),
+      ) &&
+      refreshed.snapshot.courses
+        .filter(
+          (course) =>
+            course.connectionId !== null &&
+            attempted.includes(course.connectionId),
+        )
+        .every(
+          (course) =>
+            course.assignmentsStatus === 'complete' &&
+            course.announcementsStatus === 'complete',
+        );
+    enqueueSyncOutcome(context, task, completed, {
+      targetKind: 'device',
+      targetId: null,
+      route: { kind: 'today' },
+    });
+  } catch {
+    // Optional alerts never change refresh results or scheduler state.
+  }
+};
+
 let backgroundSyncAccountId: string | null = null;
 let publish: (channel: AcademicEventChannel, value: unknown) => void = () =>
   undefined;
@@ -240,7 +488,15 @@ const backgroundSync = createBackgroundSyncController<CourseRefreshResult>({
           !accountCleanupGates.has(userId) && isCurrent();
         if (signal.aborted || !accountIsCurrent() || user?.id !== userId)
           throw new Error('Please sign in again to resume background sync.');
-        return startCourseRefresh(userId, accountIsCurrent, signal);
+        const context = captureTaskNotificationContext(userId);
+        const refresh = startCourseRefresh(userId, accountIsCurrent, signal);
+        const task = academicTasks
+          .getActivity(userId)
+          .find((task) => task.key === 'courses' && task.status === 'running');
+        const refreshed = await refresh;
+        if (context && !signal.aborted && accountIsCurrent())
+          notifyCourseRefreshOutcome(context, refreshed, task);
+        return refreshed;
       },
     );
   },
@@ -714,9 +970,13 @@ export const registerAcademicActions = async (service: {
     await localDataCleanup.deleteLocalAcademicData(context, input);
   });
   if (!broadcastingPreview) {
-    academicTasks.subscribe((accountId) =>
-      publish('scholar:coursesChange', { accountId, courseId: null }),
-    );
+    academicTasks.subscribe((accountId) => {
+      try {
+        publish('scholar:coursesChange', { accountId, courseId: null });
+      } finally {
+        observeAcademicTaskNotifications(accountId);
+      }
+    });
     subscribeCourseChanges((change) =>
       publish('scholar:coursesChange', change),
     );
@@ -1073,7 +1333,8 @@ export const registerAcademicActions = async (service: {
   });
   // A manual refresh takes the study browser over from a scheduled one, exactly
   // like every other foreground browser action.
-  handle('refreshCourses', async ({ userId, isCurrent }) => {
+  handle('refreshCourses', async (context) => {
+    const { userId, isCurrent } = context;
     requireConsent(userId);
     if (
       !boundOnboardingComplete ||
@@ -1084,7 +1345,12 @@ export const registerAcademicActions = async (service: {
       return manualCourseRefresh.completion;
     const completion = withBrowserWorkStopped(async () => {
       if (!isCurrent()) throw new Error('Your session changed; sign in again.');
-      const refreshed = await startCourseRefresh(userId, isCurrent);
+      const refresh = startCourseRefresh(userId, isCurrent);
+      const task = academicTasks
+        .getActivity(userId)
+        .find((task) => task.key === 'courses' && task.status === 'running');
+      const refreshed = await refresh;
+      notifyCourseRefreshOutcome(context, refreshed, task);
       // Re-evaluating eligibility keeps the scheduler honest after a scan.
       prepareState(refreshed.state, undefined, isCurrent);
       return {
@@ -1098,7 +1364,8 @@ export const registerAcademicActions = async (service: {
     manualCourseRefresh = { userId, completion };
     return completion;
   });
-  handle('refreshCourse', async ({ userId, isCurrent }, input) => {
+  handle('refreshCourse', async (context, input) => {
+    const { userId, isCurrent } = context;
     const courseId = idSchema.parse(input);
     requireConsent(userId);
     if (
@@ -1118,7 +1385,12 @@ export const registerAcademicActions = async (service: {
       }
       await stoppingBackgroundSync;
       if (!isCurrent()) throw new Error('Your session changed; sign in again.');
-      const course = await refreshSingleCourse(userId, courseId, isCurrent);
+      const refresh = refreshSingleCourse(userId, courseId, isCurrent);
+      const task = academicTasks
+        .getActivity(userId)
+        .find((task) => task.key === courseId && task.status === 'running');
+      const course = await refresh;
+      notifySingleCourseOutcome(context, courseId, course, task);
       return course
         ? {
             ...course,
