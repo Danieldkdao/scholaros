@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
+import { cn } from 'cn';
 import {
   AlertCircleIcon,
   CheckCircle2Icon,
@@ -32,7 +33,6 @@ import {
   MessageContent,
   MessageFooter,
   MessageGroup,
-  MessageHeader,
 } from '@scholaros/ui/components/message';
 import type { StudyAttachmentDetails } from '../hooks/use-study-session';
 
@@ -40,10 +40,6 @@ type AttachmentPresentation = {
   label: string;
   Icon: LucideIcon;
   state: 'idle' | 'processing' | 'error' | 'done';
-};
-type MessageStatusPresentation = {
-  label: string;
-  Icon: LucideIcon;
 };
 export type StudyMessageProps = {
   message: StudyMessageDTO;
@@ -147,19 +143,6 @@ export const isStudyAttachmentUnavailable = (
   status === 'unsupported' ||
   status === 'failed' ||
   status === 'cancelled';
-
-const formatMessageStatus = (
-  status: StudyMessageDTO['status'],
-): MessageStatusPresentation => {
-  switch (status) {
-    case 'accepted':
-      return { label: 'Saved', Icon: CheckCircle2Icon };
-    case 'interrupted':
-      return { label: 'Interrupted', Icon: AlertCircleIcon };
-    case 'failed':
-      return { label: 'Could not finish', Icon: XCircleIcon };
-  }
-};
 
 const formatSafeStatusPart = (code: string) => {
   switch (code) {
@@ -326,12 +309,85 @@ export const StudyMessage = ({
   const isStudent = message.role === 'student';
   const isSystem = message.role === 'system-status';
   const hiddenGradeContent = message.gradeDerived && !gradeContentVisible;
-  const statusPresentation = formatMessageStatus(message.status);
-  const StatusIcon = statusPresentation.Icon;
   const parts = hiddenGradeContent ? [] : message.parts;
 
+  const content = (
+    <>
+      {hiddenGradeContent && (
+        <Card data-slot="grade-content-withheld" className="gap-2 p-3">
+          <CardContent className="gap-2 px-0">
+            <p className="flex items-center gap-2 text-base text-muted-foreground">
+              <AlertCircleIcon aria-hidden="true" className="size-4 shrink-0" />
+              Some past tutor content is hidden because current grade permission
+              could not be confirmed.
+            </p>
+          </CardContent>
+        </Card>
+      )}
+      {parts.map((part, index) => {
+        const key = `${message.id}:${index}`;
+        const specialPart = renderSpecialPart?.(part, message);
+        if (specialPart !== null && specialPart !== undefined) {
+          return (
+            <div key={key} className="min-w-0">
+              {specialPart}
+            </div>
+          );
+        }
+        switch (part.kind) {
+          case 'text':
+            return <TextPart key={key} text={part.text} />;
+          case 'citation':
+            if (
+              part.reference.sourceKind === 'grade-evidence' &&
+              !gradeEvidenceVisible
+            )
+              return null;
+            return (
+              <SourcePart
+                key={key}
+                reference={part.reference}
+                onInspectSource={onInspectSource}
+              />
+            );
+          case 'attachment':
+            return (
+              <AttachmentPart
+                key={key}
+                itemId={part.itemId}
+                versionId={part.versionId}
+                loadAttachment={loadAttachment}
+              />
+            );
+          case 'activity':
+          case 'practice':
+            return (
+              <Card key={key} className="gap-2 p-3">
+                <CardContent className="gap-2 px-0">
+                  <p className="flex items-center gap-2 text-base text-muted-foreground">
+                    <CircleHelpIcon
+                      aria-hidden="true"
+                      className="size-4 shrink-0"
+                    />
+                    This learning activity is unavailable right now; the
+                    conversation is still saved.
+                  </p>
+                </CardContent>
+              </Card>
+            );
+          case 'status':
+            return <StatusPart key={key} code={part.code} />;
+        }
+      })}
+    </>
+  );
+
   return (
-    <MessageGroup data-message-id={message.id} className="gap-3">
+    <MessageGroup
+      data-message-id={message.id}
+      tabIndex={0}
+      className="group/study-message gap-2 rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+    >
       <Message
         align={isStudent ? 'end' : 'start'}
         role="article"
@@ -344,96 +400,35 @@ export const StudyMessage = ({
         }
         className="text-base"
       >
-        <MessageContent className="gap-3 text-base">
-          <MessageHeader className="flex flex-wrap items-center gap-2 px-0 text-base">
-            <span className="font-medium text-foreground">
-              {isStudent ? 'You' : isSystem ? 'Study session' : 'ScholarOS'}
-            </span>
-            <span aria-hidden="true" className="text-muted-foreground">
-              /
-            </span>
+        <MessageContent
+          className={cn(
+            'gap-2 text-base',
+            isStudent ? 'items-end' : 'items-start',
+          )}
+        >
+          {isStudent ? (
+            <Card className="w-fit max-w-[85%] gap-0 rounded-2xl border-0 bg-card py-3 shadow-none ring-0 sm:max-w-[75%]">
+              <CardContent className="flex min-w-0 flex-col gap-3 px-4">
+                {content}
+              </CardContent>
+            </Card>
+          ) : (
+            <div
+              data-slot="study-message-body"
+              className="flex w-full min-w-0 flex-col gap-3"
+            >
+              {content}
+            </div>
+          )}
+          <MessageFooter className="flex flex-wrap items-center gap-2 px-0 text-base opacity-0 transition-opacity group-hover/study-message:opacity-100 group-focus-within/study-message:opacity-100 motion-reduce:transition-none">
             <time
               className="text-base text-muted-foreground"
               dateTime={message.createdAt}
             >
               {formatMessageTime(message.createdAt)}
             </time>
-          </MessageHeader>
-          {hiddenGradeContent && (
-            <Card data-slot="grade-content-withheld" className="gap-2 p-3">
-              <CardContent className="gap-2 px-0">
-                <p className="flex items-center gap-2 text-base text-muted-foreground">
-                  <AlertCircleIcon
-                    aria-hidden="true"
-                    className="size-4 shrink-0"
-                  />
-                  Some past tutor content is hidden because current grade
-                  permission could not be confirmed.
-                </p>
-              </CardContent>
-            </Card>
-          )}
-          {parts.map((part, index) => {
-            const key = `${message.id}:${index}`;
-            const specialPart = renderSpecialPart?.(part, message);
-            if (specialPart !== null && specialPart !== undefined) {
-              return (
-                <div key={key} className="min-w-0">
-                  {specialPart}
-                </div>
-              );
-            }
-            switch (part.kind) {
-              case 'text':
-                return <TextPart key={key} text={part.text} />;
-              case 'citation':
-                if (
-                  part.reference.sourceKind === 'grade-evidence' &&
-                  !gradeEvidenceVisible
-                )
-                  return null;
-                return (
-                  <SourcePart
-                    key={key}
-                    reference={part.reference}
-                    onInspectSource={onInspectSource}
-                  />
-                );
-              case 'attachment':
-                return (
-                  <AttachmentPart
-                    key={key}
-                    itemId={part.itemId}
-                    versionId={part.versionId}
-                    loadAttachment={loadAttachment}
-                  />
-                );
-              case 'activity':
-              case 'practice':
-                return (
-                  <Card key={key} className="gap-2 p-3">
-                    <CardContent className="gap-2 px-0">
-                      <p className="flex items-center gap-2 text-base text-muted-foreground">
-                        <CircleHelpIcon
-                          aria-hidden="true"
-                          className="size-4 shrink-0"
-                        />
-                        This learning activity is unavailable right now; the
-                        conversation is still saved.
-                      </p>
-                    </CardContent>
-                  </Card>
-                );
-              case 'status':
-                return <StatusPart key={key} code={part.code} />;
-            }
-          })}
-          {!isSystem && message.status !== 'accepted' && (
-            <MessageFooter className="flex flex-wrap items-center gap-2 px-0 text-base">
-              <StatusIcon aria-hidden="true" className="size-4" />
-              <span>{statusPresentation.label}</span>
-            </MessageFooter>
-          )}
+            {message.status === 'interrupted' && <span>Interrupted</span>}
+          </MessageFooter>
         </MessageContent>
       </Message>
     </MessageGroup>
