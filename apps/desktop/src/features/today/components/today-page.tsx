@@ -469,8 +469,14 @@ export const TodayPage = ({
                             {announcement.title}
                           </ItemTitle>
                           <p className="text-base text-muted-foreground">
-                            {getCourseName(announcement.courseId)}
+                            {announcement.courseName ??
+                              getCourseName(announcement.courseId)}
                           </p>
+                          {announcement.preview && (
+                            <p className="line-clamp-3 text-base text-muted-foreground">
+                              {announcement.preview}
+                            </p>
+                          )}
                           {announcement.publishedAt && (
                             <p className="text-base text-muted-foreground">
                               Published{' '}
@@ -481,7 +487,10 @@ export const TodayPage = ({
                         <ItemActions>
                           <OpenCourseButton
                             courseId={announcement.courseId}
-                            courseName={getCourseName(announcement.courseId)}
+                            courseName={
+                              announcement.courseName ??
+                              getCourseName(announcement.courseId)
+                            }
                             onOpen={openCourse}
                           />
                         </ItemActions>
@@ -625,25 +634,11 @@ export const TodayPage = ({
                       </Item>
                     ))}
                   </ItemGroup>
-                ) : (
-                  <Empty className="border-0 p-4">
-                    <EmptyHeader>
-                      <EmptyTitle>No course materials saved</EmptyTitle>
-                      <EmptyDescription className="text-base">
-                        {formatTodayCollectionEmpty('materials')}
-                      </EmptyDescription>
-                    </EmptyHeader>
-                    <Button
-                      variant="outline"
-                      disabled={syncing || !accountId}
-                      onClick={() => void syncCourses()}
-                    >
-                      <LoadingSwap isLoading={syncing}>
-                        Refresh classes
-                      </LoadingSwap>
-                    </Button>
-                  </Empty>
-                )}
+                ) : snapshot.recentCourses.length ? (
+                  <p className="text-base text-muted-foreground">
+                    Course files will appear here when syncing finds them.
+                  </p>
+                ) : null}
               </CardContent>
             </Card>
 

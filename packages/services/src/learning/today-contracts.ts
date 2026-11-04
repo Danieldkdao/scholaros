@@ -49,7 +49,9 @@ export type UpcomingItem = z.infer<typeof upcomingItemSchema>;
 export const announcementSummarySchema = z.strictObject({
   id: idSchema,
   courseId: idSchema,
+  courseName: z.string().max(300).optional(),
   title: z.string().max(300),
+  preview: z.string().max(500).nullable().optional(),
   publishedAt: instantSchema.nullable(),
   sourceReference: sourceReferenceSchema,
 });

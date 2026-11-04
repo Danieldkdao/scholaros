@@ -632,3 +632,50 @@ describe('projectTodayOverview', () => {
     expect(probe.error).toBeTruthy();
   });
 });
+
+describe('announcement overview content', () => {
+  it('omits empty section placeholders while preserving real untitled content and course names', () => {
+    const makeAnnouncement = (
+      id: string,
+      title: string,
+      body: string | null,
+    ) => {
+      const source = projectedAssignment(id, null);
+      return {
+        courseId: source.courseId,
+        courseName: 'Biology beyond the recent list',
+        item: { ...source.item, title, body },
+        sourceReference: {
+          ...source.sourceReference,
+          sourceKind: 'announcement' as const,
+        },
+      };
+    };
+    const result = projectTodayOverview(
+      emptyProjection({
+        announcements: [
+          makeAnnouncement('empty', 'Announcement:', null),
+          makeAnnouncement(
+            'untitled',
+            'Announcement',
+            '<p>Lab starts on Thursday.</p>',
+          ),
+          makeAnnouncement(
+            'real',
+            'Field trip',
+            'Bring your signed permission slip.',
+          ),
+        ],
+      }),
+      10,
+    );
+    expect(result.announcements).toHaveLength(2);
+    expect(
+      result.announcements.find(({ id }) => id === 'untitled')?.title,
+    ).toBe('Lab starts on Thursday.');
+    expect(result.announcements.find(({ id }) => id === 'real')).toMatchObject({
+      courseName: 'Biology beyond the recent list',
+      preview: 'Bring your signed permission slip.',
+    });
+  });
+});

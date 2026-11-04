@@ -41,6 +41,7 @@ import {
   WatchTargetTable,
 } from '../../../db/schema';
 import { academicDateFor } from '../../courses/lib/dates';
+import { formatTodayAnnouncementContent } from '../lib/formatters';
 import {
   sortAnnouncements,
   sortAssignments,
@@ -194,6 +195,7 @@ export type TodayProjectedAssignment = {
 
 export type TodayProjectedAnnouncement = {
   courseId: string;
+  courseName?: string;
   item: TodayCourseChild;
   sourceReference: SourceReference;
 };
@@ -776,6 +778,7 @@ const readTodayProjection = (
       return [
         {
           courseId: row.courseId,
+          courseName: courseById.get(row.courseId)!.name,
           item,
           sourceReference,
         },
@@ -1298,18 +1301,29 @@ export const projectTodayOverview = (
   const announcementItems = sortAnnouncements(
     input.announcements.map(({ item }) => item),
   );
+  const courseNames = new Map(
+    input.recentCourses.map((course) => [course.id, course.name]),
+  );
+  for (const announcement of input.announcements)
+    if (announcement.courseName)
+      courseNames.set(announcement.courseId, announcement.courseName);
   const announcements: AnnouncementSummary[] = announcementItems
-    .slice(0, Math.min(visibleLimit, 10))
-    .map((item) => {
+    .flatMap((item) => {
+      const content = formatTodayAnnouncementContent(item.title, item.body);
+      if (!content) return [];
       const date = academicDateFor(item);
-      return {
-        id: item.id,
-        courseId: item.courseId,
-        title: item.title,
-        publishedAt: date?.kind === 'instant' ? date.instant : null,
-        sourceReference: announcementReferences.get(item.id)!,
-      };
-    });
+      return [
+        {
+          id: item.id,
+          courseId: item.courseId,
+          courseName: courseNames.get(item.courseId),
+          ...content,
+          publishedAt: date?.kind === 'instant' ? date.instant : null,
+          sourceReference: announcementReferences.get(item.id)!,
+        },
+      ];
+    })
+    .slice(0, Math.min(visibleLimit, 10));
   return todayOverviewSchema.parse({
     attention: input.attention.slice(0, 10),
     freshness: input.freshness.slice(0, maxOverviewLimit),

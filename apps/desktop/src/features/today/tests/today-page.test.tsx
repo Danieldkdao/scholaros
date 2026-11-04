@@ -277,3 +277,49 @@ describe('TodayPage', () => {
     expect(mocks.today.reload).toHaveBeenCalledOnce();
   });
 });
+
+it('keeps a populated course list free of a contradictory materials empty card', async () => {
+  mocks.today.snapshot = overview({
+    recentCourses: [
+      {
+        id: 'biology',
+        name: 'Biology',
+        code: null,
+        term: null,
+        connectionId: null,
+        active: true,
+        sourceName: 'Schoology',
+        sourceHost: 'school.example.test',
+        lastSeenAt: '2026-11-03T12:00:00Z',
+        assignmentCount: 0,
+        announcementCount: 0,
+      },
+    ],
+  });
+  await renderPage();
+  expect(container.textContent).toContain('Biology');
+  expect(container.textContent).not.toContain('No course materials saved');
+});
+
+it('renders announcement content and its course even outside the recent course list', async () => {
+  mocks.today.snapshot = overview({
+    announcements: [
+      {
+        id: 'notice',
+        courseId: 'biology',
+        courseName: 'Biology',
+        title: 'Lab reminder',
+        preview: 'Bring your lab notebook.',
+        publishedAt: null,
+        sourceReference: {
+          ...recommendation.sourceReferences[0]!,
+          sourceKind: 'announcement',
+          sourceId: 'notice',
+        },
+      },
+    ],
+  });
+  await renderPage();
+  expect(container.textContent).toContain('Bring your lab notebook.');
+  expect(container.textContent).toContain('Biology');
+});

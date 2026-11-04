@@ -150,3 +150,23 @@ export const formatTodayItemSource = (kind: SourceKind) => {
       return 'View grade evidence in course';
   }
 };
+
+export const formatTodayAnnouncementContent = (
+  title: string,
+  body: string | null,
+) => {
+  const heading = title.replace(/\s+/g, ' ').trim();
+  const text = (body ?? '')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const isPlaceholder =
+    !heading || /^(?:announcements?|updates?)\s*:?$/i.test(heading);
+  if (isPlaceholder && !text) return null;
+  const label = isPlaceholder ? text.slice(0, 140) : heading;
+  return {
+    title: label,
+    preview: text && text !== label ? text.slice(0, 500) : null,
+  };
+};
