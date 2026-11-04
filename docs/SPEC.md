@@ -1,194 +1,77 @@
-# ScholarOS Specification
+# ScholarOS Product Specification
 
-## Product summary
+## Product purpose
 
-**The AI that learns your classes so it can teach you.**
+ScholarOS is a desktop learning workspace that uses a student's authorized course context to help them understand one course at a time. The web application provides authentication and the bounded inference API; it does not mirror the desktop product. This document states intended product behavior, not release verification; actual evidence and open gates belong in `docs/release-verification.md`.
 
-ScholarOS connects the academic resources a student authorizes, understands course expectations, and turns that context into personalized study sessions.
+## Product surface
 
-A bounded local browser agent gathers context so students do not have to manually collect and upload everything. ScholarOS answers: **What matters now, what do I understand, and what should I learn next?**
+The desktop app centers on **Today**, **Courses**, **Study**, **Context**, **Connections**, and **Settings**. There is no Planner product surface; any legacy Planner route redirects to the appropriate Study or Today destination. The experience is English-first and macOS-first, with Windows distribution planned but not considered verified by macOS results.
 
-ScholarOS is the working name. The experience must suit nontechnical students.
+Today presents current authorized course attention, source freshness, upcoming work, recent study activity, and evidence-backed next steps. Recommendations explain their source and prefill Study setup; they never start a session or infer a grade. Empty, partial, offline, disconnected, and stale states are explicit and useful rather than filled with invented content.
 
-Build the product experience for desktop only. The web application exists for browser authentication, the authorized inference API, and at most a landing page; it does not mirror the desktop experience, and any broader web surface is deferred to a later decision.
+## Focused Study
 
-## Core experience
+A study session has exactly one selected course, one of five goals, and an optional target assignment, topic, selected Context items, and duration:
 
-1. Install one desktop application with normal consumer installation steps.
-2. Create an account and sign in through the system browser.
-3. Set up a dedicated academic browser workspace and choose permitted services.
-4. Sign into each academic service directly on its real website, including SSO and MFA.
-5. Add optional context in a notes-only step, then review access boundaries, data handling, and optional background activity; course discovery is not a prerequisite or a course-map scan in onboarding.
-6. Open a unified academic home or give the agent a mission.
+- **Understand a topic**
+- **Prepare for an exam**
+- **Practice what I know**
+- **Review graded mistakes**
+- **Help me get started on an assignment**
 
-Example mission: **“I have a biology exam Friday and 30 minutes to study. Get me ready.”**
+Setup saves before the session begins, validates the selected course and target, and never autostarts from a prefilled link. Supplementary uploaded material does not grant access to another connected course. Session history is searchable and resumable; a focused session view keeps the course, goal, cited context, draft, timer, and exit action easy to find.
 
-The agent finds authorized exam information and materials, connects the concepts, and builds a study session that adapts to the student’s responses.
+Timed sessions use an absolute persisted deadline. Minimizing, changing windows, suspending the machine, or closing the last window does not pause time. Finish, extend, or continue without a timer are explicit idempotent actions. Expiry preserves accepted work and the draft, produces one status per timer revision, and is reconciled when the app reopens; explicit Quit stops the app-owned service and does not promise background reminders.
 
-## Main product areas
+The tutor is **text-only**. Microphone dictation is optional input: the user explicitly starts and stops capture, sees editable provisional/final text, and chooses when to send it. ScholarOS does not speak tutor responses, automatically submit recognized speech, or save raw audio. A changed draft is never overwritten by a late transcript.
 
-### Academic home and radar
+Tutor answers distinguish connected-source facts, general explanations, and inferences. Course-specific claims use inspectable references to the selected course or selected personal Context, with page/heading locators where available. Missing, stale, partial, historical, removed, unreadable, or uncertain evidence is labeled honestly. Students can stop or retry a response without duplicating a turn; provider errors do not become fabricated answers or fallback-provider calls.
 
-- Show courses, upcoming deadlines, exams, announcements, and recommended priorities.
-- Explain why a recommendation matters using the deadline, course evidence, and study history.
-- Offer clear entry points to start a study session, give a mission, or sync classes.
-- Show connection health, last sync times, and services that need the student to sign in again.
+## Learning activities and assessment
 
-### Academic browser and missions
+Practice can use generated interactive activities and app-owned quizzes. An interactive activity may use bounded HTML/CSS/JavaScript, DOM/SVG/Canvas and accessible input, but runs in a dedicated isolated Electron process/view with no preload, Node access, app bridge, cookies, file access, external navigation, network, popup, download, permission, or WebRTC egress. The trusted host owns authorization, content versions, state validation, attempt identity, persistence, and the single live executor. Inline and expanded presentations move the same runtime; expansion must not reset state. Saved activities remain versioned and can be resumed offline when their authorized data is present.
 
-- Maintain a persistent, dedicated Chromium workspace separate from personal browsing.
-- Navigate authorized LMS pages, portals, textbook sites, documents, and other connected resources.
-- Support missions such as finding exam material, catching up after an absence, or reviewing the coming week.
-- Show understandable activity updates, discovered sources, and a way to cancel a mission.
-- Pace school navigation, reuse observed rendering dependencies to avoid repeated bootstrap reloads, and respect rate-limit cooldowns across attempts; stop clearly on rate-limit responses instead of treating them as empty course pages.
-- Preserve source links, course context, and retrieval times alongside extracted information; checkpoint findings to local storage as pages are read so cancellation does not discard completed work.
-- Discover the course list once, then scan each course in its own parallel worker tab within the same academic profile, inheriting connection notes and stopping at that course’s task.
-- Auto-save agent settings: a shared navigation delay from 0.5 through 5 seconds, defaulting to one second, and an optional URL word block list that is empty by default.
-- Open mission tabs in the background without activating each tab; the browser itself may still appear when its process first starts.
-- Discover courses from confirmed academic home pages through bounded, protected navigation and Meta classification of observed links; unfamiliar platforms do not require a school-name or course-path allowlist.
-- Treat empty course lists as explicit observed evidence, preserve prior results on cancelled or inconclusive refreshes, and distinguish partial coverage and sign-in requirements from successful discovery.
+A quiz defaults to end-of-quiz feedback. Per-answer feedback is an explicit option for ordinary practice. Exam mode withholds answer keys, hints, and solutions until submission and permitted review. Switching to guided help marks that attempt as assisted before help is shown. Scores are learning feedback only; activity output never changes an official LMS grade or claims mastery by itself. Uncertain answers and accepted alternatives remain possible outcomes.
 
-Browsing gathers context; the learning system decides what to learn next.
+Assignments whose completion or remaining attempts are unknown, active, reopened, or conflicting stay protected. The tutor may explain concepts, requirements, and a bounded next step, but does not provide a worked answer to active assessed work or reconstruct it cumulatively across turns, sessions, source previews, memory, practice, or hidden activity data. Verified source-provided feedback may be explained only while current local policy allows it. This is a defense-in-depth learning policy, not a promise that semantic assessment is infallible.
 
-Browser navigation mode is server-owned through `BROWSER_NAV=decision|inout`, with `decision` as the default. The authenticated capability is cached for the session; a missing, invalid, or changed capability stops the current work instead of silently choosing another mode. `INFERENCE_PROVIDER` independently chooses the server-side model provider. Decision mode reads pages deterministically and selects only from offered targets. Inout mode uses Stagehand observation and extraction on the explicit worker page, inspects each proposed action, and permits only bounded read navigation. Both modes use the same request protections, per-host pacing, evidence validation, identity reconciliation, and local checkpoints.
+## Context, course knowledge, and memory
 
-Navigation knowledge is stored locally by account, connection, optional course, and purpose. It keeps observed destinations, their parent pages, bounded read-navigation recipes, supporting evidence, verification state, and failure history. Verified destinations are preferred on later work; failed routes can be repaired from a verified parent without treating rate limits or expired sessions as permanent route failures. Learning materials are stored separately from navigation notes: source text and versioned passages remain local, are indexed with SQLite FTS5, and keep source URLs and page or heading locators for citations. Retrieval applies account and course filters locally before returning a small, bounded evidence package. PDF text is read through the guarded material path; scanned, encrypted, oversized, or unsupported documents remain explicitly unreadable or partial.
+Context holds user-authored notes/preferences, user-selected files, and appropriately authorized course material. File selection is native and explicit; the renderer cannot submit an arbitrary path or remote URL. Extraction is bounded. PDF page numbers remain aligned across blank pages; scanned/handwritten interpretation remains uncertain unless actually supported. Unsupported formats, including PowerPoint, are not silently treated as readable. Each source version is immutable; retries or replacements preserve historical citations while current search uses only an available, authorized version. Removing a source stops future retrieval and marks earlier references historical or removed.
 
-### Course knowledge and student understanding
+The course-knowledge graph describes course concepts, relationships, prerequisites, and supporting sources. The learning model stores small, evidence-linked observations about practice and demonstrated understanding. Unknown is not failure, and no fixed ability, intelligence, or clinical label is inferred. Explicit preferences remain distinct from provisional observations; user corrections override inferred older preferences, and deletion invalidates prepared context and recommendations.
 
-Keep two distinct models:
+## Grades, consent, and connected services
 
-| Model                  | Purpose                                                                                                             |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| Course knowledge graph | Concepts, prerequisites, relationships, course expectations, and supporting resources.                              |
-| Student learning model | Estimates of understanding supported by practice responses, mistakes, confidence checks, and tutoring interactions. |
+Grade collection is off by default behind one explicit revocable setting. A collected value is not treated as proof that an assignment is finished or has no retry, resubmission, or retake opportunity. Missing, stale, conflicting, and pass/fail evidence retains its observed uncertainty, including a legitimate numeric zero. Revoking consent invalidates pending reads and future grade-derived use; removing collected grades does not erase unrelated Context or practice history.
 
-Link concepts to supporting course material. Distinguish unknown topics from demonstrated difficulties. Understanding estimates are learning aids, not assessments of intelligence or ability.
+Connected academic services are read-only. ScholarOS may use an already authorized session to inspect permitted course and assignment pages, but never submits, edits, starts, resumes, or retakes coursework. It respects the existing browser scope, rate limits, cancellation, sign-in boundaries, and user-selected connections. Personal browsing profiles and credentials are not imported into the dedicated academic browser workspace.
 
-### Adaptive study sessions
+## Settings, devices, and notifications
 
-- Build sessions around a deadline, topic, goal, or available time.
-- Combine explanations, retrieval practice, worked examples, and feedback where useful.
-- Update the learning model from explicit study interactions.
-- Revisit prerequisites when a mistake suggests an underlying gap; move on when the student demonstrates understanding.
-- Make progress and the next recommended activity easy to understand.
+Settings apply valid edits automatically, preserve pending changes when closed, and show save/retry status in the fixed settings indicator; there is no Save button. Invalid fields have accessible inline errors. Browser-workspace replacement stages and verifies a separate candidate before committing, does not copy personal cookies, and can cancel without replacing the current workspace. A signed-in account on a new device still requires local device/browser setup.
 
-### Evidence-backed assistance
+Notifications are off by default and require an explicit enable action before requesting operating-system permission. User-controlled categories, quiet hours, focus state, account, current target, and permissions are rechecked before delivery and routing. Only actual settled outcomes can notify; queued work, polling, or streaming tokens are not completion. Delivery is at-most-once when uncertain. Explicit Quit stops app-owned work; deadlines and pending state are reconciled on reopening rather than promising a daemon or push service.
 
-Ground course-specific claims in connected resources. Distinguish teacher-provided requirements from AI inferences, identify conflicting or missing information, and let students inspect the supporting sources.
+## Data and architecture
 
-### Background assistance
+The Electron desktop renderer uses shared UI components and a narrow authenticated preload/IPC bridge. Desktop main owns trusted windows, file/microphone/notification adapters, and the academic service lifecycle. A separate service process inside the shipped Electron runtime owns local academic SQLite data, migrations, Context originals, the dedicated browser profile, scoped jobs, cancellation, and named service operations. Native SQLite remains outside the renderer; test/build processes use isolated fixture profiles and never replace a user's working profile.
 
-Make scheduled syncing and launch at login opt-in and revocable. Show activity and sync status; support pause, cancellation, and manual sync. Background work starts after onboarding is complete and stays within existing permissions.
+The Next.js web app owns browser authentication and bounded server-side Meta inference/transcription. `META_MODEL` defaults to Meta Muse Spark Standard `muse-spark-1.3`, and `META_API_KEY` remains server-only; unsupported model IDs or missing keys make inference unavailable, with no alternate provider/model fallback. Each inference operation must be covered by the server capability registry. Dictation uses Meta `muse-voice-transcribe-1.0`. The renderer and local database never receive provider credentials. Inference sends only a bounded, currently authorized context package. Model output remains private until host-side schema, ownership, policy, citation, and resource checks approve it.
 
-## Architecture and technology
+Generated activities use an actual isolated Electron runtime rather than a DOM iframe or Node `vm`. Verify the packaged Electron process, native module ABI, fuse wire, private protocol, CSP/headers, process boundary, file controls, network/WebRTC denial and offline assets on the real packaged binary. Source config and DOM-only tests do not prove isolation. If required isolation fails, execution must fail closed with recoverable UI rather than weakening security settings.
 
-```text
-Electron desktop application
-  React interface → narrow preload/IPC bridge → academic service client
-                                                │ authenticated local socket
-Dedicated Electron academic service process      │
-  Structured reads, commands and scoped events ←─┘
-  ├─ local SQLite academic data and migrations
-  ├─ one scheduler and bounded refresh workers
-  └─ protected academic browser workspace through CDP
+## Privacy and launch boundary
 
-Next.js web application and API
-  Browser authentication, account services, and authorized cloud operations
-  └─ PostgreSQL account/authentication data
+Academic sources, browser sessions, grades, practice answers, study history, learning observations, and original uploads are sensitive. Minimize local retention and provider transmission, avoid academic text/grades/audio in logs and notifications, and delete only the requesting fixture/account's data. Shareable demos use synthetic identities and test-owned course/source/assignment data; do not publish real student records, grades, questions, or screenshots without explicit permission.
 
-Shared packages
-  UI and styles · authentication · typed environment variables · services · utilities
-```
+The product does not impose an age gate. That is a product choice, not a legal-compliance conclusion or exemption. COPPA, education-record privacy, GDPR and other regional rules, school/provider terms, guardian or school consent, retention, and data-processing obligations require qualified human review before any public child-facing launch. See `docs/privacy-launch-review.md`; this specification makes no legal certification.
 
-- **Workspace:** TypeScript, pnpm workspaces, and Turborepo, with applications under `apps/` and reusable packages under `packages/`.
-- **Desktop:** Electron, Electron Forge, Vite, and React. The renderer uses isolated preload APIs; the desktop main process authenticates renderer frames and delegates academic operations to a separate service process.
-- **Web/API:** Next.js App Router and route handlers for browser authentication, account services, and the authorized inference API the desktop app calls. Keep it to those server responsibilities plus an optional landing page; do not rebuild desktop product surfaces for the web.
-- **UI:** Shared shadcn/Base UI components, Tailwind CSS, and theme tokens. Use React Hook Form and Zod for web forms.
-- **Assets:** Shared images, media, and fonts live in `@scholaros/assets` under `src/`, grouped by purpose with lowercase kebab-case names, and are imported by path — `import logo from '@scholaros/assets/images/logo-light.png'`. Each app bundles what it imports, so no build step or public server is involved: Next.js gives that import static image metadata and Vite gives a URL string, which is why image import typing stays in the consuming app instead of the package. Render light/dark artwork through each app's theme-aware `Image` component, which takes `src={{ light, dark? }}` and falls back to `light` when no dark variant is given. Keep files that need fixed public URLs in `apps/web/public`, installer icons in desktop packaging resources, and student uploads or downloads in runtime storage. See `packages/assets/readme.md`.
-- **Authentication:** Better Auth and its Electron integration, Google/GitHub OAuth, and email/password with email verification. Mailjet delivers verification emails.
-- **Data:** Drizzle ORM with PostgreSQL/Neon for cloud account data and `better-sqlite3` for local academic data. Keep cloud database credentials on the server and local database access outside the renderer.
-- **AI services:** All model calls use Vercel AI SDK through `packages/services/src/ai/`; provider instances live in `models/baseten.ts` and `models/meta.ts`, selected through `models/inference.ts`, configured from typed `serverEnv`. Use the official `@ai-sdk/baseten` and `@ai-sdk/typesafe-ai` adapters.
-- **Agent:** Stagehand with Chromium/CDP for semantic navigation and extraction; use ordinary browser/DOM APIs for deterministic operations where appropriate.
-- **Verification:** Vitest for tests, TypeScript checks, Oxlint, and Oxfmt. Build and test commands belong in workspace manifests.
+## Platform and release boundaries
 
-## Local academic service
+macOS packaging must verify the actual app bundle, native SQLite migration/FTS, PDF.js and worker resources, Stagehand extension resources, SDK/worklet assets, runtime versions, actual fuse wire, signed/notarized state when required, and a reproducible test-owned demo profile. Windows requires a separate real-device checklist for paths, named pipes/ACLs, browser assets, native modules, installer/shortcuts, microphone, notifications, and package lifecycle; macOS verification cannot close it. See `docs/windows-verification.md` and `docs/release-verification.md` for evidence and gates.
 
-The installed executable also runs independently with `--academic-service`, without creating a desktop window. Hosting it in the shipped Electron runtime keeps the native SQLite ABI, encrypted Better Auth storage, browser integration, extension assets, and installer together; it does not require a separately installed Node runtime. Electron Node mode remains disabled. The desktop process never imports the academic stores or opens the dedicated browser profile.
+Hackathon eligibility, waiver, video, repository visibility, source/asset/model rights, and submission rules must be checked against the organizer's current official materials before any external submission. Prepare demo materials only until the complete rules and required human approvals are available.
 
-The service owns academic database access, migrations, browser sessions, refresh jobs, cancellation, and the existing background scheduler. A process singleton and service ownership guard prevent a second academic service from owning the database and browser workspace. SQLite uses normal WAL locking so Drizzle Studio can inspect committed data while the service runs. Close older desktop instances before activating an updated installation; records and account-specific browser profiles remain in their existing locations.
-
-Communication uses a Unix domain socket on macOS/Linux and a named pipe on Windows. A private endpoint file supplies a random credential to the desktop main process; the credential is never passed to the renderer, placed in a URL, or logged. Every request and subscription authenticates and validates its protocol version, and only named academic operations are available. Subscriptions acknowledge readiness before the desktop loads its snapshot. Events identify account and resource scope; reconnecting clients reload persisted state instead of requiring an event history.
-
-Cached reads do not wait for browser navigation or inference. Equivalent refresh requests share one job; all-course work is exclusive and uses at most four course-content workers, while at most two individual courses can refresh together. Targeted refresh uses a saved course destination and the existing authenticated profile, verifies the destination after SSO, and does not rediscover every course. Navigation pacing, request guards, model limits, rate-limit cooldowns, and cancellation remain enforced in code. Completed findings are checkpointed before subsequent navigation and survive partial or cancelled scans. Refresh activity and watcher state expose account-scoped, content-free counters and timings; local material retrieval reports its duration and bounded context size.
-
-Scheduling requires saved academic consent, completed onboarding, a ready workspace, and the opt-in background preference. Manual refresh does not require scheduled-sync consent. Transient scheduled failures back off and stop after three failed attempts; sign-in failures wait for explicit intervention. Confirmed expired ScholarOS credentials are not repeatedly retried until the credential changes. Login preferences are applied only when the OS state differs from the saved choice. Pause applies to the current service session; disabling background sync is the persistent revocation control.
-
-Closing the last desktop window exits the desktop process and leaves the independent service running only when background sync is enabled. Explicitly quitting the desktop application requests service shutdown, cancels browser work, and closes the academic workspace. Reopening the desktop reconnects to an existing service or starts one and reloads cached data; restarting the service restores saved scheduling eligibility. This is not an installed operating-system daemon and does not promise continuation after explicit Quit. Launch at login remains opt-in and uses the existing application login-item integration; OS-managed unattended service installation is a separate delivery task. Background tabs do not activate themselves, but starting Chromium can still show its window.
-
-Installers bundle the service in the same application executable, including the existing native-module unpacking and Stagehand extension resources. Application updates must stop the service before replacing the installation; breaking transport changes require a protocol-version change, which incompatible clients reject. Windows startup, named-pipe ACLs, signing, and installer updates must be verified on Windows hardware.
-
-## Structured academic records and freshness
-
-Course discovery selects only observed destination IDs. Extraction is a separate, resource-specific operation: courses carry explicit names, codes, sections, terms, descriptions and instructors; assignments carry requirements, kind, submission/availability state, separate due/opening/closing dates, points and supporting links; announcements carry body, author, publication/update dates and supporting links. A course label is never parsed into a confirmed code or term, and an exam mentioned in an announcement is never treated as its publication date.
-
-Dates distinguish exact instants with offsets, local dates and times whose timezone is unresolved, calendar dates without times, and unresolved source wording with a reason; an absent deadline is `null`. The application supplies the actual retrieval timestamp, observed locale, course scope and source context. The device timezone is not a course timezone. Calendar validity, source references, offered link IDs, numerical bounds and coverage are checked before persistence; invalid records downgrade collection coverage while valid findings remain usable. Reaching a batch or text limit is partial coverage.
-
-Normalized resource fields and supporting evidence are stored as typed JSON alongside existing identity and query columns. Trusted retrieval/freshness timestamps and meaningful content-change timestamps are separate. Source IDs take precedence over observed item URLs for identity, with a scoped page-and-title fallback for items that have neither; a collection URL alone never identifies all its items. Existing IDs and relationships survive adoption of richer metadata. Legacy records remain readable immediately, preserving validated ISO dates and retaining other date wording as unresolved until refreshed.
-
-Only a successful, complete collection scan can retire missing records. Partial coverage, unknown assignment eligibility, pagination gaps, failed authentication, timeouts, limits and cancellation preserve previous records. Retirement is reversible and keeps evidence and associated history. Explicitly deleted source records leave local identity tombstones, so later scans do not recreate them; manual records are kept outside source retirement. An unchanged check advances freshness and evidence without claiming that academic content changed. Unknown assignment status never becomes confirmed active, unsubmitted work.
-
-Consumers use normalized dates and fields. Exact instants compare chronologically; date-only values compare as calendar days, with the viewer's display day used when mixing precisions and date-only items listed before timed items on the same day. Local times with unresolved timezones form a separate ordered group, followed by unresolved/missing dates in stable order. Date wording and precision remain visible through concise labels and tooltips; only an exact instant establishes a timed overdue claim.
-
-Study-session preparation should use the existing targeted course refresh, structured course read, and local material retrieval, inspecting collection status and freshness before presenting requirements as verified. Cached or partial sources remain available with their uncertainty; this boundary does not implement tutoring, study UI, or a learning-model schema.
-
-### Course-page watching
-
-Watching is a separate opt-in from scheduled full sync and is off by default. It requires completed setup, academic consent, a ready workspace, and an eligible course-resource connection. Students can provide up to 20 HTTPS page URLs, each at most 2,048 characters; custom URLs replace the default course-resource home pages. An empty custom list restores those defaults. URL scope and read-navigation policy are rechecked in the academic service when settings are saved and before every visit.
-
-The watcher checks each target on a five-minute schedule, owns at most two loaded pages, and waits for one second of DOM quiet before reading, up to five seconds. Loaded pages can report detectable changes promptly, while periodic revisits are still required for server-side changes and frozen or discarded background tabs. Checks share the same per-host navigation pacing and protected browser workspace as foreground work. Transient failures back off for one, five, and fifteen minutes; a target is blocked after three failed attempts. Broader course reconciliation runs at most daily while eligible and active.
-
-Detected and successfully processed fingerprints are stored separately. A detected change is persisted before refresh is queued, remains pending through cancellation or failure, and is cleared only after successful handling of that revision. Duplicate signals are coalesced and equivalent active refreshes are reused. Disabling watching cancels watcher-owned work and closes its pages without cancelling unrelated manual work. Sign-out, revoked consent, or connection removal stops or suspends affected targets. System suspend pauses activity and resume performs bounded catch-up work. Closing the last window keeps the academic service alive when either watcher or scheduled sync is enabled; explicit Quit stops both.
-
-Runtime and contract guidance follows the installed dependencies and the official [Electron process and fuse documentation](https://www.electronjs.org/docs/latest/tutorial/fuses), [SQLite WAL concurrency](https://www.sqlite.org/wal.html), [AI SDK structured output](https://ai-sdk.dev/docs/ai-sdk-core/generating-structured-data), and [Base UI composition](https://base-ui.com/react/handbook/composition).
-
-## Meta model integration
-
-Meta models must interpret course material, connect concepts, synthesize evidence, and adapt tutoring.
-
-- Use a suitable Meta reasoning/multimodal model, such as Muse Spark, for academic understanding and learning decisions.
-- Voice transcription can turn a spoken study request into a mission.
-- Visual analysis can help explain handwritten work and diagrams when it improves the learning experience.
-- Treat SAM as a segmentation tool when supported by its verified API; do not assume it is a general screen classifier or safety decision-maker.
-
-Use `generateText` with schema-validated `Output.object` for academic extraction and bounded navigation choices through the selected inference provider; navigation results may only select offered target IDs. Route desktop inference through the authenticated Next.js API; keep provider credentials in the web server environment, never the desktop renderer or distributed app. Preserve cancellation, request limits, source validation, and user permissions; do not replace these with model decisions. Disable content telemetry by default and bound provider calls with deadlines and explicit retry limits.
-
-Server configuration uses `INFERENCE_PROVIDER` (`baseten` by default, or `meta`) and the selected provider's API key, supplied in the web app environment and read via `@scholaros/env/server`. `BASETEN_MODEL` defaults to `meta-models/muse-spark-open-1026`; `META_MODEL` defaults to Standard mode `muse-spark-1.3`. Meta Contributor model variants may use prompts and responses to improve future models, so they require an explicit server configuration. All agent inference operations use the configured selection without falling back to another provider.
-
-Verify model capabilities in current official documentation. Add models only for concrete learning benefits.
-
-## Privacy, permissions, and authentication
-
-- Keep academic resources, the course graph, and study history local by default. Cloud accounts support authentication, service access, and rate limits.
-- Explain and minimize content sent to model providers. Local storage does not imply local inference; avoid academic content in cloud logs by default.
-- Students enter academic-service passwords only on the real service. Persist isolated sessions locally and request reconnection when needed.
-- Resource notes may authorize choosing one explicitly named existing account from an unambiguous account picker; credential inputs, unmatched accounts, and further consent require the student to continue manually.
-- Keep personal browser profiles inaccessible. Manage the academic workspace without terminal commands, browser flags, ports, API keys, or developer setup.
-- Enforce domain/resource allowlists and mission boundaries in code, outside model prompts. Account for redirects, subframes, popups, downloads, and SSO destinations.
-- Agent missions gather context by reading, searching, and navigating permitted material; exam, quiz, and submission words do not prevent reading by default. Keep mutating requests and form submissions blocked, and apply URL word restrictions only when the student configures them.
-- Require fresh user authorization for any future expansion into write actions. A model classifier may assist review but cannot be the permission boundary.
-- Protect browser sessions and application credentials, restrict IPC, and prevent cloud requests from becoming arbitrary machine-control commands.
-- Provide controls to revoke sources, stop background work, and delete local academic data and the dedicated profile.
-- Desktop sign-in requests use fresh state/PKCE and explicit user action. Completed browser handoffs must be refresh-safe and must not replay requests or cause redirect loops.
-
-## Product boundaries and delivery
-
-ScholarOS is a proactive learning workspace, not a homework-completion bot, cheating assistant, generic chatbot, PDF uploader, or flashcard collection.
-
-Prioritize reliable workflows over broad LMS coverage. Demonstrate one mission from source discovery to evidence-backed planning, practice, and adaptation to the student’s answer.
-
-Distribute consumer-friendly macOS and Windows installers from one codebase. Account for platform-specific builds, signing, updates, and startup permissions.
-
-For the Meta hackathon, target “Build for Your World,” materially use Meta models, and demonstrate original event-built functionality. Verify requirements for the public repository and three-minute demo against the official guide.
-
-`AGENTS.md` is the authority for repository working conventions. Keep this document focused on product behavior and architecture, not implementation progress, task lists, or development history.
+`AGENTS.md` remains the authority for repository working conventions. Keep implementation history and test claims out of this product specification.

@@ -17,13 +17,6 @@ export type NodeEnv = (typeof nodeEnvValues)[number];
 export const nodeEnvSchema = z.enum(nodeEnvValues).default('development');
 export type NodeEnvSchema = z.infer<typeof nodeEnvSchema>;
 
-export const inferenceProviderValues = ['meta', 'baseten'] as const;
-export type InferenceProvider = (typeof inferenceProviderValues)[number];
-export const inferenceProviderSchema = z
-  .enum(inferenceProviderValues)
-  .default('baseten');
-export type InferenceProviderSchema = z.infer<typeof inferenceProviderSchema>;
-
 export const serverEnv = createEnv({
   server: {
     NODE_ENV: nodeEnvSchema,
@@ -38,15 +31,8 @@ export const serverEnv = createEnv({
     MAILJET_API_KEY: z.string().min(1),
     MAILJET_API_SECRET: z.string().min(1),
     SENDER_EMAIL: z.email(),
-    TYPESAFE_API_KEY: z.string().min(1).optional(),
-    BASETEN_API_KEY: z.string().min(1).optional(),
     META_API_KEY: z.string().min(1).optional(),
-    INFERENCE_PROVIDER: inferenceProviderSchema,
     BROWSER_NAV: browserNavigationModeSchema.default('decision'),
-    BASETEN_MODEL: z
-      .string()
-      .min(1)
-      .default('meta-models/muse-spark-open-1026'),
     META_MODEL: z.string().min(1).default('muse-spark-1.3'),
   },
   runtimeEnvStrict: {
@@ -62,12 +48,8 @@ export const serverEnv = createEnv({
     MAILJET_API_KEY: process.env.MAILJET_API_KEY,
     MAILJET_API_SECRET: process.env.MAILJET_API_SECRET,
     SENDER_EMAIL: process.env.SENDER_EMAIL,
-    TYPESAFE_API_KEY: process.env.TYPESAFE_API_KEY,
-    BASETEN_API_KEY: process.env.BASETEN_API_KEY,
     META_API_KEY: process.env.META_API_KEY,
     META_MODEL: process.env.META_MODEL,
-    BASETEN_MODEL: process.env.BASETEN_MODEL,
-    INFERENCE_PROVIDER: process.env.INFERENCE_PROVIDER,
     BROWSER_NAV: process.env.BROWSER_NAV,
   },
   emptyStringAsUndefined: true,
