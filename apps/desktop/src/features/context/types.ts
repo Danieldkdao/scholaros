@@ -1,4 +1,6 @@
 import type { MaterialSourceType } from '@scholaros/services/ai/resources/material';
+import type { CourseMaterialSearchResultSchema } from './schemas';
+import type { NavigationContextPackage } from './lib/navigation-context';
 
 export const navigationPurposes = [
   'courses',
@@ -94,4 +96,15 @@ export type CourseMaterialSummaryEvidence = {
   sourceUrl: string;
   excerpts: string[];
   locator: string | null;
+};
+
+export type AcademicContextPackage = {
+  navigation: NavigationContextPackage;
+  academic: {
+    passages: CourseMaterialSearchResultSchema['passages'];
+    characters: number;
+    retrievalMs: number;
+    truncated: boolean;
+  };
+  truncated: boolean;
 };

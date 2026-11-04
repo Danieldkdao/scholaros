@@ -1,24 +1,17 @@
 import type { NavigationContextPackage } from './navigation-context';
 import type { CourseMaterialSearchResultSchema } from '../schemas';
+import {
+  academicContextMaxCharacters,
+  academicContextMaxPassages,
+} from '../constants';
+import type { AcademicContextPackage } from '../types';
 
-const maxPassages = 8;
-const maxAcademicCharacters = 16_000;
-
-export type AcademicContextPackage = {
-  navigation: NavigationContextPackage;
-  academic: {
-    passages: CourseMaterialSearchResultSchema['passages'];
-    characters: number;
-    retrievalMs: number;
-    truncated: boolean;
-  };
-  truncated: boolean;
-};
+export type { AcademicContextPackage } from '../types';
 
 export const createAcademicContextPackage = ({
   navigation,
   search,
-  maxAcademicCharacters: requestedCharacters = maxAcademicCharacters,
+  maxAcademicCharacters: requestedCharacters = academicContextMaxCharacters,
 }: {
   navigation: NavigationContextPackage | null;
   search: CourseMaterialSearchResultSchema | null;
@@ -32,11 +25,15 @@ export const createAcademicContextPackage = ({
   )
     return null;
 
-  const characterLimit = Math.min(requestedCharacters, maxAcademicCharacters);
+  const characterLimit = Math.min(
+    requestedCharacters,
+    academicContextMaxCharacters,
+  );
   let characters = 0;
-  let truncated = search.truncated || search.passages.length > maxPassages;
+  let truncated =
+    search.truncated || search.passages.length > academicContextMaxPassages;
   const passages: CourseMaterialSearchResultSchema['passages'] = [];
-  for (const passage of search.passages.slice(0, maxPassages)) {
+  for (const passage of search.passages.slice(0, academicContextMaxPassages)) {
     const remaining = characterLimit - characters;
     if (remaining <= 0) {
       truncated = true;
