@@ -1,3 +1,4 @@
+import { issuePracticeProof, verifyPracticeProof } from './practice-provenance';
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { activityCandidateSchema } from '../learning/activity-contracts';
@@ -439,6 +440,26 @@ export type LearningOperationHandler = (
   request: LearningRequest,
   signal: AbortSignal,
 ) => Promise<LearningCandidateResult | unknown>;
+export type VerifiedPracticeEvaluationContext = Readonly<{
+  accountId: string;
+  courseId: string;
+  sessionId: string;
+  configurationRevision: string;
+  rubricVersion: string;
+}>;
+const verifiedPracticeContexts = new WeakMap<object, string>();
+const practiceRequestBinding = (request: PracticeEvaluateRequest) =>
+  canonicalJson(request);
+export const isVerifiedPracticeEvaluationContext = (
+  value: unknown,
+  request?: PracticeEvaluateRequest,
+): value is VerifiedPracticeEvaluationContext =>
+  typeof value === 'object' &&
+  value !== null &&
+  verifiedPracticeContexts.has(value) &&
+  (!request ||
+    verifiedPracticeContexts.get(value) === practiceRequestBinding(request));
+
 export type LearningOperationHandlers = {
   'activity-generate'?: LearningOperationHandler;
   'practice-generate'?: (
@@ -448,6 +469,7 @@ export type LearningOperationHandlers = {
   'practice-evaluate'?: (
     request: PracticeEvaluateRequest,
     signal: AbortSignal,
+    context: VerifiedPracticeEvaluationContext,
   ) => Promise<unknown>;
   'memory-propose'?: LearningOperationHandler;
 };
@@ -456,6 +478,7 @@ export type LearningAssessment = {
   reasonCode: z.infer<typeof safeErrorCodeSchema> | null;
 };
 export type LearningDispatcherDependencies = {
+  practiceProofSecret?: () => string | undefined;
   getCapabilities: () => Promise<LearningCapabilities>;
   generateCandidate: LearningOperationHandler;
   operations?: LearningOperationHandlers;
@@ -672,6 +695,7 @@ export const createLearningDispatcher = (
   };
 
   const dispatchPracticeGeneration = async (
+    accountId: string,
     request: PracticeGenerateRequest,
     signal: AbortSignal,
   ): Promise<PracticeGenerateResponse> => {
@@ -682,6 +706,8 @@ export const createLearningDispatcher = (
     if (!generate || !assess)
       throw new LearningDispatchError('feature-unavailable');
 
+    const secret = dependencies.practiceProofSecret?.();
+    if (!secret) throw new LearningDispatchError('feature-unavailable');
     const generated = await generate(request, signal);
     signal.throwIfAborted();
     const { value, usage } = parseOperationResult(generated, 'candidate');
@@ -710,17 +736,44 @@ export const createLearningDispatcher = (
     await assess(request, candidate.data, signal);
     signal.throwIfAborted();
     await assertCapabilitiesUnchanged(capabilities.configurationRevision);
+    const sealedCandidate = {
+      ...candidate.data,
+      hostAnswerKey: candidate.data.hostAnswerKey.map((answerKey) => {
+        const question = candidate.data.questions.find(
+          ({ id }) => id === answerKey.questionId,
+        );
+        if (!question) throw new LearningDispatchError('provider-failed');
+        const { generationProof: _untrustedProof, ...privateKey } = answerKey;
+        return {
+          ...privateKey,
+          generationProof: issuePracticeProof(
+            {
+              accountId,
+              courseId: request.courseId,
+              sessionId: request.sessionId,
+              configurationRevision: capabilities.configurationRevision,
+              rubricVersion: candidate.data.rubricVersion,
+              question,
+              answerKey: privateKey,
+            },
+            secret,
+            now(),
+          ),
+        };
+      }),
+    };
     return practiceGenerateResponseSchema.parse({
       version: 1,
       requestId: request.requestId,
       kind: 'practice-generate',
-      candidate: candidate.data,
+      candidate: sealedCandidate,
       configurationRevision: capabilities.configurationRevision,
       usage,
     });
   };
 
   const dispatchPracticeEvaluation = async (
+    accountId: string,
     request: PracticeEvaluateRequest,
     signal: AbortSignal,
   ): Promise<PracticeEvaluateResponse> => {
@@ -729,7 +782,30 @@ export const createLearningDispatcher = (
     const evaluate = dependencies.operations?.['practice-evaluate'];
     if (!evaluate) throw new LearningDispatchError('feature-unavailable');
 
-    const evaluated = await evaluate(request, signal);
+    const secret = dependencies.practiceProofSecret?.();
+    if (!secret) throw new LearningDispatchError('feature-unavailable');
+    const origin = Object.freeze({
+      accountId,
+      courseId: request.courseId,
+      sessionId: request.sessionId,
+      configurationRevision: capabilities.configurationRevision,
+      rubricVersion: request.input.rubricVersion,
+    });
+    if (
+      !verifyPracticeProof(
+        {
+          ...origin,
+          question: request.input.question,
+          answerKey: request.input.answerKey,
+        },
+        request.input.answerKey.generationProof ?? '',
+        secret,
+        now(),
+      )
+    )
+      throw new LearningDispatchError('scope-denied');
+    verifiedPracticeContexts.set(origin, practiceRequestBinding(request));
+    const evaluated = await evaluate(request, signal, origin);
     signal.throwIfAborted();
     const { value, usage } = parseOperationResult(evaluated, 'evaluation');
     const evaluation = practiceEvaluationSchema.safeParse(value);
@@ -791,9 +867,9 @@ export const createLearningDispatcher = (
     }
     const result =
       request.kind === 'practice-generate'
-        ? dispatchPracticeGeneration(request, signal)
+        ? dispatchPracticeGeneration(accountId, request, signal)
         : request.kind === 'practice-evaluate'
-          ? dispatchPracticeEvaluation(request, signal)
+          ? dispatchPracticeEvaluation(accountId, request, signal)
           : dispatchCandidate(accountId, request, signal);
     idempotency.set(idempotencyKey, {
       digest,

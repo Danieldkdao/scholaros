@@ -5,6 +5,8 @@ import { z } from 'zod';
 import type { SourceReference } from '../learning/context-contracts';
 import {
   LearningDispatchError,
+  isVerifiedPracticeEvaluationContext,
+  type VerifiedPracticeEvaluationContext,
   learningCandidateSchema,
   learningCapabilitiesSchema,
   type LearningCapabilities,
@@ -215,12 +217,23 @@ export const generatePracticeCandidateForLearning = async (
 export const evaluatePracticeAnswerForLearning = async (
   request: PracticeEvaluateRequest,
   signal: AbortSignal,
+  verifiedOrigin?: VerifiedPracticeEvaluationContext,
 ) => {
   signalFrom(signal);
   if (request.kind !== 'practice-evaluate')
     throw new LearningDispatchError('feature-unavailable');
+  if (
+    !isVerifiedPracticeEvaluationContext(verifiedOrigin, request) ||
+    verifiedOrigin.configurationRevision !== configurationRevision() ||
+    verifiedOrigin.courseId !== request.courseId ||
+    verifiedOrigin.sessionId !== request.sessionId ||
+    verifiedOrigin.rubricVersion !== request.input.rubricVersion
+  )
+    throw new LearningDispatchError('scope-denied');
   try {
-    const { priorAssistanceSummary, ...evaluationInput } = request.input;
+    const { priorAssistanceSummary, ...inputWithProof } = request.input;
+    const { generationProof: _proof, ...privateKey } = inputWithProof.answerKey;
+    const evaluationInput = { ...inputWithProof, answerKey: privateKey };
     const evaluation = await evaluatePracticeAnswer(
       evaluationInput,
       signal,
@@ -241,6 +254,7 @@ export const evaluatePracticeAnswerForLearning = async (
         candidate: jsonValueSchema.parse(evaluation),
       },
       signal,
+      verifiedOrigin,
     );
     signalFrom(signal);
     if (!assessment.allowed)

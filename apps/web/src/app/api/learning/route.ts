@@ -320,6 +320,7 @@ export const createLearningPostHandler = (
 };
 
 const dispatcher = createLearningDispatcher({
+  practiceProofSecret: () => serverEnv.BETTER_AUTH_SECRET,
   getCapabilities: getLearningCapabilities,
   generateCandidate: generateTutorCandidate,
   operations: {

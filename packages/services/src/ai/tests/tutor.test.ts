@@ -1,3 +1,4 @@
+import { issuePracticeProof } from '../practice-provenance';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createLearningDispatcher,
@@ -345,7 +346,102 @@ describe('Meta model capability selection', () => {
   });
 });
 
+const evaluateVerifiedPractice = async (
+  request: PracticeEvaluateRequest,
+  signal: AbortSignal,
+) => {
+  const dispatcher = createLearningDispatcher({
+    practiceProofSecret: () => 'explicit-test-practice-secret',
+    getCapabilities: getLearningCapabilities,
+    generateCandidate: async () => ({}),
+    assessCandidate: async () => ({
+      allowed: false,
+      reasonCode: 'scope-denied',
+    }),
+    assessPracticeCandidate: async () => undefined,
+    operations: {
+      'practice-generate': async () => ({
+        candidate: {
+          questions: [request.input.question],
+          hostAnswerKey: [request.input.answerKey],
+          rubricVersion: request.input.rubricVersion,
+        },
+      }),
+      'practice-evaluate': evaluatePracticeAnswerForLearning,
+    },
+  });
+  const generated = await dispatcher.dispatch(
+    'account-1',
+    {
+      ...practiceGenerationRequest,
+      courseId: request.courseId,
+      sessionId: request.sessionId,
+      requestId: '00000000-0000-4000-8000-000000000901',
+    },
+    signal,
+  );
+  if (!('kind' in generated) || generated.kind !== 'practice-generate')
+    throw new Error('Expected generated fixture');
+  const evaluated = await dispatcher.dispatch(
+    'account-1',
+    {
+      ...request,
+      input: {
+        ...request.input,
+        answerKey: generated.candidate.hostAnswerKey[0]!,
+      },
+    },
+    signal,
+  );
+  if (!('kind' in evaluated) || evaluated.kind !== 'practice-evaluate')
+    throw new Error('Expected fixture evaluation');
+  return evaluated;
+};
+
 describe('Meta practice handlers', () => {
+  it('rejects direct or forged practice origin before any provider request', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(
+      evaluatePracticeAnswerForLearning(
+        practiceEvaluationRequest,
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: 'scope-denied' });
+    await expect(
+      evaluatePracticeAnswerForLearning(
+        practiceEvaluationRequest,
+        new AbortController().signal,
+        {
+          accountId: 'account-1',
+          courseId: 'course-1',
+          sessionId: 'session-1',
+          configurationRevision: 'configuration-1',
+          rubricVersion: 'rubric-1',
+        },
+      ),
+    ).rejects.toMatchObject({ code: 'scope-denied' });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it('fails closed before generation when the server proof secret is absent', async () => {
+    const operation = vi.fn();
+    const dispatcher = createLearningDispatcher({
+      getCapabilities: async () => capabilities,
+      generateCandidate: vi.fn(),
+      assessCandidate: vi.fn(),
+      assessPracticeCandidate: vi.fn(),
+      operations: { 'practice-generate': operation },
+    });
+    await expect(
+      dispatcher.dispatch(
+        'account-1',
+        practiceGenerationRequest,
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: 'feature-unavailable' });
+    expect(operation).not.toHaveBeenCalled();
+  });
+
   it('rejects unsafe feedback even when the app-owned answer evaluation is deterministic', async () => {
     const fetchMock = vi.fn(async () =>
       metaChatResponse({
@@ -357,7 +453,7 @@ describe('Meta practice handlers', () => {
     );
     vi.stubGlobal('fetch', fetchMock);
     await expect(
-      evaluatePracticeAnswerForLearning(
+      evaluateVerifiedPractice(
         practiceEvaluationRequest,
         new AbortController().signal,
       ),
@@ -477,7 +573,7 @@ describe('Meta practice handlers', () => {
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    const result = await evaluatePracticeAnswerForLearning(
+    const result = await evaluateVerifiedPractice(
       evaluationInput,
       new AbortController().signal,
     );
@@ -524,7 +620,7 @@ describe('Meta practice handlers', () => {
       practiceGenerationRequest,
       new AbortController().signal,
     ).catch((error: unknown) => error);
-    const evaluationError = await evaluatePracticeAnswerForLearning(
+    const evaluationError = await evaluateVerifiedPractice(
       evaluationInput,
       new AbortController().signal,
     ).catch((error: unknown) => error);
@@ -548,7 +644,7 @@ describe('Meta practice handlers', () => {
       ),
     ).rejects.toMatchObject({ code: 'feature-unavailable' });
     await expect(
-      evaluatePracticeAnswerForLearning(
+      evaluateVerifiedPractice(
         practiceEvaluationRequest,
         new AbortController().signal,
       ),
@@ -699,6 +795,7 @@ describe('learning inference dispatcher', () => {
     });
     const assessPracticeCandidate = vi.fn().mockResolvedValue(undefined);
     const dispatcher = createLearningDispatcher({
+      practiceProofSecret: () => 'explicit-test-practice-secret',
       getCapabilities: vi.fn().mockResolvedValue(capabilities),
       generateCandidate: vi.fn(),
       operations: {
@@ -718,7 +815,28 @@ describe('learning inference dispatcher', () => {
     );
     const evaluationResponse = await dispatcher.dispatch(
       'account-1',
-      practiceEvaluationRequest,
+      {
+        ...practiceEvaluationRequest,
+        input: {
+          ...practiceEvaluationRequest.input,
+          answerKey: {
+            ...practiceAnswerKey,
+            generationProof: issuePracticeProof(
+              {
+                accountId: 'account-1',
+                courseId: practiceEvaluationRequest.courseId,
+                sessionId: practiceEvaluationRequest.sessionId,
+                configurationRevision: 'configuration-1',
+                rubricVersion: practiceEvaluationRequest.input.rubricVersion,
+                question: practiceQuestion,
+                answerKey: practiceAnswerKey,
+              },
+              'explicit-test-practice-secret',
+              1_000,
+            ),
+          },
+        },
+      },
       signal,
     );
 
@@ -747,6 +865,7 @@ describe('learning inference dispatcher', () => {
       usage: { inputTokens: null, outputTokens: null },
     });
     const deniedDispatcher = createLearningDispatcher({
+      practiceProofSecret: () => 'explicit-test-practice-secret',
       getCapabilities: vi.fn().mockResolvedValue(capabilities),
       generateCandidate: vi.fn(),
       operations: { 'practice-generate': operation },
@@ -766,6 +885,7 @@ describe('learning inference dispatcher', () => {
     ).rejects.toMatchObject({ code: 'scope-denied' });
 
     const unavailableDispatcher = createLearningDispatcher({
+      practiceProofSecret: () => 'explicit-test-practice-secret',
       getCapabilities: vi.fn().mockResolvedValue(capabilities),
       generateCandidate: vi.fn(),
       operations: { 'practice-generate': operation },
@@ -784,6 +904,7 @@ describe('learning inference dispatcher', () => {
   it('does not return an evaluation after the operation is cancelled', async () => {
     const controller = new AbortController();
     const dispatcher = createLearningDispatcher({
+      practiceProofSecret: () => 'explicit-test-practice-secret',
       getCapabilities: vi.fn().mockResolvedValue(capabilities),
       generateCandidate: vi.fn(),
       operations: {
@@ -807,6 +928,7 @@ describe('learning inference dispatcher', () => {
 
   it('fails closed when the practice evaluator is not configured', async () => {
     const dispatcher = createLearningDispatcher({
+      practiceProofSecret: () => 'explicit-test-practice-secret',
       getCapabilities: vi.fn().mockResolvedValue(capabilities),
       generateCandidate: vi.fn(),
       assessCandidate: vi.fn(),
@@ -825,6 +947,7 @@ describe('learning inference dispatcher', () => {
   it('returns nothing until a candidate passes the injected policy gate', async () => {
     const order: string[] = [];
     const dispatcher = createLearningDispatcher({
+      practiceProofSecret: () => 'explicit-test-practice-secret',
       getCapabilities: vi.fn().mockResolvedValue(capabilities),
       generateCandidate: vi.fn(async () => {
         order.push('generate');
@@ -856,6 +979,7 @@ describe('learning inference dispatcher', () => {
 
   it('does not return a rejected candidate or call a client-selected model', async () => {
     const dispatcher = createLearningDispatcher({
+      practiceProofSecret: () => 'explicit-test-practice-secret',
       getCapabilities: vi.fn().mockResolvedValue(capabilities),
       generateCandidate: vi.fn().mockResolvedValue(candidate),
       assessCandidate: vi
@@ -875,6 +999,7 @@ describe('learning inference dispatcher', () => {
       .fn()
       .mockResolvedValue({ allowed: true, reasonCode: null });
     const dispatcher = createLearningDispatcher({
+      practiceProofSecret: () => 'explicit-test-practice-secret',
       getCapabilities: vi.fn().mockResolvedValue(capabilities),
       generateCandidate: vi.fn().mockResolvedValue({
         ...candidate,
@@ -905,6 +1030,7 @@ describe('learning inference dispatcher', () => {
       input: { objective: 'Explain membrane transport.', sources: [] },
     } as const;
     const dispatcher = createLearningDispatcher({
+      practiceProofSecret: () => 'explicit-test-practice-secret',
       getCapabilities: vi.fn().mockResolvedValue(capabilities),
       generateCandidate: vi.fn(),
       operations: {
@@ -943,6 +1069,7 @@ describe('learning inference dispatcher', () => {
         configurationRevision: 'configuration-2',
       });
     const dispatcher = createLearningDispatcher({
+      practiceProofSecret: () => 'explicit-test-practice-secret',
       getCapabilities,
       generateCandidate: vi.fn().mockResolvedValue(candidate),
       assessCandidate: vi
@@ -960,6 +1087,7 @@ describe('learning inference dispatcher', () => {
   it('reuses an identical request and rejects a changed payload under the same request ID', async () => {
     const generateCandidate = vi.fn().mockResolvedValue(candidate);
     const dispatcher = createLearningDispatcher({
+      practiceProofSecret: () => 'explicit-test-practice-secret',
       getCapabilities: vi.fn().mockResolvedValue(capabilities),
       generateCandidate,
       assessCandidate: vi
@@ -997,6 +1125,7 @@ describe('learning inference dispatcher', () => {
 
   it('fails closed for an operation whose real sibling handler is unavailable', async () => {
     const dispatcher = createLearningDispatcher({
+      practiceProofSecret: () => 'explicit-test-practice-secret',
       getCapabilities: vi.fn().mockResolvedValue(capabilities),
       generateCandidate: vi.fn(),
       assessCandidate: vi.fn(),

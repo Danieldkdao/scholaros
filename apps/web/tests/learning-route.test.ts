@@ -1,3 +1,5 @@
+import { issuePracticeProof } from '../../../packages/services/src/ai/practice-provenance';
+import { getLearningCapabilities } from '../../../packages/services/src/ai/tutor';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   POST as productionLearningPost,
@@ -7,7 +9,10 @@ import { createLearningCapabilitiesHandler } from '../src/app/api/learning/capab
 
 const { authUser, webEnv, serviceEnv } = vi.hoisted(() => ({
   authUser: vi.fn(),
-  webEnv: { BETTER_AUTH_URL: 'https://scholaros.example' },
+  webEnv: {
+    BETTER_AUTH_URL: 'https://scholaros.example',
+    BETTER_AUTH_SECRET: 'x',
+  },
   serviceEnv: {
     BETTER_AUTH_URL: 'https://scholaros.example',
     BETTER_AUTH_SECRET: 'x',
@@ -363,8 +368,30 @@ describe('POST /api/learning', () => {
       'fetch',
       vi.fn(async () => metaResponse(safeIntegrityAssessment)),
     );
+    const currentCapabilities = await getLearningCapabilities();
+    const proof = issuePracticeProof(
+      {
+        accountId: 'account-1',
+        courseId: practiceEvaluationRequest.courseId,
+        sessionId: practiceEvaluationRequest.sessionId,
+        configurationRevision: currentCapabilities.configurationRevision,
+        rubricVersion: practiceEvaluationRequest.input.rubricVersion,
+        question: practiceQuestion,
+        answerKey: practiceEvaluationRequest.input.answerKey,
+      },
+      'x',
+    );
     const response = await productionLearningPost(
-      postRequest(practiceEvaluationRequest),
+      postRequest({
+        ...practiceEvaluationRequest,
+        input: {
+          ...practiceEvaluationRequest.input,
+          answerKey: {
+            ...practiceEvaluationRequest.input.answerKey,
+            generationProof: proof,
+          },
+        },
+      }),
     );
 
     expect(response.status).toBe(200);

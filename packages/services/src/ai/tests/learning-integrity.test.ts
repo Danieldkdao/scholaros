@@ -52,15 +52,22 @@ beforeEach(() => {
 });
 
 describe('server learning integrity assessment', () => {
-  it('distinguishes distinct-practice feedback from hidden external-work answers', async () => {
+  it('does not grant trusted practice origin from an operation name or forged context', async () => {
     await assessLearningCandidate(
       { ...request, kind: 'practice-evaluate' },
       new AbortController().signal,
+      {
+        accountId: 'caller-claim',
+        courseId: 'course-1',
+        sessionId: 'session-1',
+        configurationRevision: 'configuration-1',
+        rubricVersion: 'rubric-1',
+      },
     );
     expect(mocks.generateText).toHaveBeenCalledWith(
       expect.objectContaining({
-        instructions: expect.stringMatching(
-          /genuinely distinct app-generated practice/,
+        instructions: expect.not.stringContaining(
+          'server has cryptographically verified',
         ),
       }),
     );

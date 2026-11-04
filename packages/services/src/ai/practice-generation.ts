@@ -148,6 +148,7 @@ export const practiceCandidateSchema = z.strictObject({
 export type PracticeCandidate = z.infer<typeof practiceCandidateSchema>;
 
 const answerKeyBase = {
+  generationProof: z.string().min(1).max(4096).optional(),
   questionId: idSchema,
   acceptedAlternatives: z.array(z.string().trim().min(1).max(1000)).max(10),
   explanation: z.string().trim().min(1).max(4000),
