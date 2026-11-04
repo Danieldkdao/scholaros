@@ -46,6 +46,51 @@ describe('server-selected browser navigation mode', () => {
     );
   });
 
+  it('accepts the agent response envelope with additive model capability metadata', async () => {
+    mocks.request.mockResolvedValueOnce({
+      browserNavigationMode: 'decision',
+      modelCapabilities: {
+        version: 1,
+        configurationRevision: 'v1-model-configuration',
+        endpointCategory: 'meta-standard',
+        operations: { 'decision-navigation': true },
+      },
+    });
+
+    await expect(
+      getBrowserNavigationMode({
+        signal: new AbortController().signal,
+        isCurrent: () => true,
+      }),
+    ).resolves.toBe('decision');
+  });
+
+  it.each([
+    { browserNavigationMode: 'fallback', modelCapabilities: {} },
+    { modelCapabilities: {} },
+    { browserNavigationMode: null, modelCapabilities: {} },
+    null,
+    [],
+  ])(
+    'still rejects malformed browser modes in an agent envelope %j',
+    async (response) => {
+      mocks.request.mockResolvedValueOnce(response);
+      await expect(
+        getBrowserNavigationMode({
+          signal: new AbortController().signal,
+          isCurrent: () => true,
+        }),
+      ).rejects.toThrow(/browser mode/i);
+      mocks.request.mockResolvedValueOnce({ browserNavigationMode: 'inout' });
+      await expect(
+        getBrowserNavigationMode({
+          signal: new AbortController().signal,
+          isCurrent: () => true,
+        }),
+      ).resolves.toBe('inout');
+    },
+  );
+
   it('reloads the capability after the authenticated session changes', async () => {
     const options = {
       signal: new AbortController().signal,

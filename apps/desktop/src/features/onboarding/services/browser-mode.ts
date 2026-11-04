@@ -66,7 +66,11 @@ export const getBrowserNavigationMode = async (
   options.signal.throwIfAborted();
   if (!options.isCurrent() || !isAccountSessionCurrent(cookie))
     throw new Error('Your session changed while loading browser mode.');
-  const parsed = browserNavigationCapabilitySchema.safeParse(capability);
+  // The authenticated agent response also includes model capability metadata.
+  // Validate our mode without rejecting additive fields owned by that endpoint.
+  const parsed = browserNavigationCapabilitySchema
+    .strip()
+    .safeParse(capability);
   if (!parsed.success)
     throw new Error('The server returned an invalid browser mode capability.');
   sessionModeCache.set(sessionKey, parsed.data.browserNavigationMode);
