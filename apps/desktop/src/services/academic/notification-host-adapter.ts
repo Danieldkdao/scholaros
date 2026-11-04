@@ -74,6 +74,7 @@ export const createNotificationHostAdapter = (
   const visibleEventsByAccount = new Map<string, Set<string>>();
   const eventOwners = new Map<string, string>();
   const pendingOperations = new Set<Promise<void>>();
+  const pendingAccountCleanups = new Set<Promise<void>>();
 
   const command = async (userId: string, input: NotificationServiceCommand) =>
     requestAcademicService('claimDueNotifications', { ...input, userId });
@@ -110,6 +111,16 @@ export const createNotificationHostAdapter = (
     pendingOperations.add(trackedOperation);
     void trackedOperation.catch(() => undefined);
     return trackedOperation;
+  };
+
+  const scheduleAccountCleanup = (operation: Promise<void>): Promise<void> => {
+    let trackedCleanup: Promise<void>;
+    trackedCleanup = operation.finally(() =>
+      pendingAccountCleanups.delete(trackedCleanup),
+    );
+    pendingAccountCleanups.add(trackedCleanup);
+    void trackedCleanup.catch(() => undefined);
+    return trackedCleanup;
   };
 
   const persistence: NotificationDeliveryPersistence = {
@@ -279,7 +290,15 @@ export const createNotificationHostAdapter = (
   const clearAccount = (context: AuthorizedContext): Promise<void> => {
     if (disposed || !context.isCurrent()) return Promise.resolve();
     if (activeContext?.userId === context.userId) activeContext = null;
-    return scheduleOperation(Promise.resolve(delivery.clearAccount(context)));
+    const activeRun =
+      activeDeliveryContext?.userId === context.userId
+        ? activeDeliveryRun
+        : null;
+    return scheduleAccountCleanup(
+      Promise.resolve(delivery.clearAccount(context)).then(async () => {
+        await activeRun?.catch(() => undefined);
+      }),
+    );
   };
 
   const handleClick = (userId: string, eventId: string): Promise<boolean> =>
@@ -294,7 +313,7 @@ export const createNotificationHostAdapter = (
     if (disposed) return;
     disposed = true;
     activeContext = null;
-    await Promise.allSettled(pendingOperations);
+    await Promise.allSettled([...pendingOperations, ...pendingAccountCleanups]);
     await activeDeliveryRun?.catch(() => undefined);
   };
 

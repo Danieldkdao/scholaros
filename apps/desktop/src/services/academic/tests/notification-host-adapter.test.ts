@@ -397,6 +397,55 @@ it('cancels the account service state and dismisses its visible notification', a
   await adapter.dispose();
 });
 
+it('awaits in-flight delivery dismissal before account cleanup resolves', async () => {
+  let cleared = false;
+  service.request.mockImplementation(async (_method, input) => {
+    const command = input as { operation: string };
+    switch (command.operation) {
+      case 'claim':
+        return [{ ...event, status: 'claimed' }];
+      case 'authorize-show':
+        return true;
+      case 'clear-account':
+        cleared = true;
+        return true;
+      case 'settle':
+        return !cleared;
+      default:
+        return true;
+    }
+  });
+  let finishShow!: (result: 'shown') => void;
+  const show = vi.fn(
+    () =>
+      new Promise<'shown'>((resolve) => {
+        finishShow = resolve;
+      }),
+  );
+  const dismiss = vi.fn();
+  const adapter = createNotificationHostAdapter(
+    dependencies({ show, dismiss }) as never,
+  );
+  const delivery = adapter.deliverDueNotifications(context);
+  await vi.waitFor(() => expect(show).toHaveBeenCalledOnce());
+  let cleanupSettled = false;
+  const cleanup = adapter.clearAccount(context).then(() => {
+    cleanupSettled = true;
+  });
+  await vi.waitFor(() => expect(cleared).toBe(true));
+
+  const cleanupResolvedEarly = await Promise.race([
+    cleanup.then(() => true),
+    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 10)),
+  ]);
+  expect(cleanupResolvedEarly).toBe(false);
+  finishShow('shown');
+  await Promise.all([delivery, cleanup]);
+
+  expect(cleanupSettled).toBe(true);
+  expect(dismiss).toHaveBeenCalledWith(event.id);
+});
+
 it('rejects native click callbacks after adapter teardown', async () => {
   mockServiceReplies();
   let onClick: (() => Promise<boolean>) | undefined;
