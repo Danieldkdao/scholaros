@@ -32,7 +32,7 @@ import {
   StudySessionTable,
   StudySourceReferenceTable,
 } from '../../../db/schema';
-import { createOriginalStore } from './original-store';
+import { ContextStorageError, createOriginalStore } from './original-store';
 
 export type ContextStoreErrorCode =
   | 'cancelled'
@@ -198,6 +198,8 @@ type ContextItemRow = typeof ContextItemTable.$inferSelect;
 type ContextVersionRow = typeof ContextVersionTable.$inferSelect;
 export type ContextIngestionStoreItem = {
   id: string;
+  title: string;
+  kind: ContextItemRow['kind'];
   revision: number;
   removed: false;
   currentVersionId: string | null;
@@ -825,6 +827,27 @@ const removeOriginalKeysIfUnreferenced = async (
   }
 };
 
+export const removeUnreferencedContextOriginals = async (
+  context: AuthorizedContext,
+  rawStorageKeys: unknown,
+): Promise<void> => {
+  assertAuthorized(context);
+  const parsed = z
+    .array(z.string().min(1).max(160))
+    .max(100)
+    .safeParse(rawStorageKeys);
+  if (!parsed.success) throw new ContextStoreError('invalid-input');
+  try {
+    await removeOriginalKeysIfUnreferenced(context.userId, parsed.data);
+    assertAuthorized(context);
+  } catch (error) {
+    if (error instanceof ContextStoreError) throw error;
+    if (error instanceof ContextStorageError)
+      throw new ContextStoreError(error.code);
+    throw new ContextStoreError('storage-failed');
+  }
+};
+
 export const listContextItems = (
   context: AuthorizedContext,
   input: unknown,
@@ -1135,6 +1158,8 @@ export const readContextIngestionItem = (
     }
     return {
       id: item.id,
+      title: item.title,
+      kind: item.kind,
       revision: item.revision,
       removed: false,
       currentVersionId: itemDto.currentVersionId,

@@ -52,6 +52,7 @@ const {
   resolveHistoricalContextCitation,
   readContextIngestionItem,
   readContextIngestionVersion,
+  removeUnreferencedContextOriginals,
   saveGeneratedContextItem,
   saveContextIngestionResult,
   setContextIngestionStatus,
@@ -1371,6 +1372,50 @@ describe('P09 ingestion against P08 storage', () => {
     ).rejects.toThrow();
     expect(await originalStore.read(userId, original.storageKey)).toEqual(
       bytes,
+    );
+  });
+
+  it('removes only newly unreferenced originals within the authorized account', async () => {
+    const itemId = randomUUID();
+    const bytes = Buffer.from('original');
+    await createUploadedContextItem(context, {
+      itemId,
+      title: 'lecture.pdf',
+      kind: 'document',
+      saveToLibrary: true,
+    });
+    const referenced = await originalStore.write(userId, bytes);
+    await saveContextIngestionResult(context, {
+      itemId,
+      expectedRevision: 0,
+      attemptId: randomUUID(),
+      originalHash: referenced.hash,
+      contentHash: createHash('sha256').update('saved').digest('hex'),
+      mimeType: 'application/pdf',
+      byteLength: bytes.length,
+      originalStorageKey: referenced.storageKey,
+      extractedText: 'saved',
+      extractionStatus: 'complete',
+      uncertainty: null,
+      pageCount: 1,
+      interpretedPages: [],
+      locators: [],
+    });
+    const orphan = await originalStore.write(userId, bytes);
+
+    await removeUnreferencedContextOriginals(context, [
+      orphan.storageKey,
+      referenced.storageKey,
+    ]);
+
+    expect(await originalStore.has(userId, orphan.storageKey)).toBe(false);
+    expect(await originalStore.has(userId, referenced.storageKey)).toBe(true);
+    const foreign = await originalStore.write('other-account', bytes);
+    await expect(
+      removeUnreferencedContextOriginals(context, [foreign.storageKey]),
+    ).rejects.toMatchObject({ code: 'scope-denied' });
+    expect(await originalStore.has('other-account', foreign.storageKey)).toBe(
+      true,
     );
   });
 
