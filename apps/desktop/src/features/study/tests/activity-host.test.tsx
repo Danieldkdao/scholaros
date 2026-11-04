@@ -561,3 +561,11 @@ it('rejects incompatible saved runtime versions without creating a native run', 
   );
   expect(bridge.mountActivity).not.toHaveBeenCalled();
 });
+
+it('does not mount or reset an activity when persisted state cannot be read', async () => {
+  const { bridge } = createBridge();
+  vi.mocked(bridge.getArtifactState).mockResolvedValue(null);
+  const node = await renderActivity(bridge);
+  expect(node.textContent).toContain('This activity is unavailable');
+  expect(bridge.mountActivity).not.toHaveBeenCalled();
+});

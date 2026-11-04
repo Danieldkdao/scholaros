@@ -6,16 +6,10 @@ import {
   correctMemory,
   deleteMemory,
   listMemories,
-  MemoryServiceError,
   subscribeMemoryChanges,
   upsertExplicitPreference,
 } from './memory-store';
 import { getLearningProgress } from './learning-model';
-
-const requireReadResult = <T>(result: T | null): T => {
-  if (result === null) throw new MemoryServiceError('storage-failed');
-  return result;
-};
 
 export const registerMemoryActions = (
   registrar: AuthorizedRegistrar,
@@ -34,9 +28,19 @@ export const registerMemoryActions = (
   };
   registrar.lifecycle.onTeardown(cleanup);
 
-  registrar.handle('listMemories', async (context, input) =>
-    requireReadResult(listMemories(context, input)),
-  );
+  registrar.handle('listMemories', async (context, input) => {
+    try {
+      return await listMemories(context, input);
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        'code' in error &&
+        error.code === 'storage-failed'
+      )
+        return null;
+      throw error;
+    }
+  });
   registrar.handle('upsertExplicitPreference', async (context, input) =>
     upsertExplicitPreference(context, input),
   );
@@ -46,9 +50,19 @@ export const registerMemoryActions = (
   registrar.handle('deleteMemory', async (context, input) => {
     deleteMemory(context, input);
   });
-  registrar.handle('getLearningProgress', async (context, input) =>
-    requireReadResult(getLearningProgress(context, input)),
-  );
+  registrar.handle('getLearningProgress', async (context, input) => {
+    try {
+      return await getLearningProgress(context, input);
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        'code' in error &&
+        error.code === 'storage-failed'
+      )
+        return null;
+      throw error;
+    }
+  });
 
   return cleanup;
 };

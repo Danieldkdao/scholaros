@@ -3,11 +3,7 @@ import type {
   ActionCleanup,
   AuthorizedRegistrar,
 } from '@scholaros/services/learning/product-contracts';
-import {
-  createArtifactStore,
-  ArtifactStoreError,
-  type ArtifactStore,
-} from './artifact-store';
+import { createArtifactStore, type ArtifactStore } from './artifact-store';
 
 export { createArtifactStore };
 
@@ -34,14 +30,30 @@ export const registerArtifactActions = (
   store: ArtifactStore = artifactStore,
 ): ActionCleanup => {
   registrar.handle('getArtifactVersion', async (context, input) => {
-    const version = await store.getArtifactVersion(context, input);
-    if (!version) throw new ArtifactStoreError('not-found');
-    return version;
+    try {
+      return await store.getArtifactVersion(context, input);
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        'code' in error &&
+        error.code === 'storage-failed'
+      )
+        return null;
+      throw error;
+    }
   });
   registrar.handle('getArtifactState', async (context, input) => {
-    const state = await store.getArtifactState(context, input);
-    if (!state) throw new ArtifactStoreError('not-found');
-    return state;
+    try {
+      return await store.getArtifactState(context, input);
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        'code' in error &&
+        error.code === 'storage-failed'
+      )
+        return null;
+      throw error;
+    }
   });
   registrar.handle('resetArtifactAttempt', (context, input) =>
     store.resetArtifactAttempt(context, input),

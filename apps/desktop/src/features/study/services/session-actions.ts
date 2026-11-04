@@ -6,7 +6,6 @@ import {
   createSessionStore,
   type CreateSessionStoreOptions,
 } from './session-store';
-import { StudySessionError } from './session-events';
 
 type SessionStore = ReturnType<typeof createSessionStore>;
 
@@ -33,22 +32,30 @@ export const registerSessionActions = (
     store.createStudySession(context, input),
   );
   registrar.handle('listStudySessions', async (context, input) => {
-    const page = await store.listStudySessions(context, input);
-    if (!page)
-      throw new StudySessionError(
-        'storage-failed',
-        'Study history could not be read.',
-      );
-    return page;
+    try {
+      return await store.listStudySessions(context, input);
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        'code' in error &&
+        error.code === 'storage-failed'
+      )
+        return null;
+      throw error;
+    }
   });
   registrar.handle('getStudySession', async (context, input) => {
-    const snapshot = await store.getStudySession(context, input);
-    if (!snapshot)
-      throw new StudySessionError(
-        'storage-failed',
-        'The study session could not be read.',
-      );
-    return snapshot;
+    try {
+      return await store.getStudySession(context, input);
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        'code' in error &&
+        error.code === 'storage-failed'
+      )
+        return null;
+      throw error;
+    }
   });
   registrar.handle('renameStudySession', (context, input) =>
     store.renameStudySession(context, input),

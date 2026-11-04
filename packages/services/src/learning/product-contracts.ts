@@ -58,14 +58,19 @@ export const safeErrorCodes = [
 ] as const;
 export type SafeErrorCode = (typeof safeErrorCodes)[number];
 export const safeErrorCodeSchema = z.enum(safeErrorCodes);
+export type SafeErrorCodeSchema = z.infer<typeof safeErrorCodeSchema>;
 
 export const idSchema = z.string().min(1).max(300);
+export type IdSchema = z.infer<typeof idSchema>;
 export type Id = z.infer<typeof idSchema>;
 export const requestIdSchema = z.uuid();
+export type RequestIdSchema = z.infer<typeof requestIdSchema>;
 export type RequestId = z.infer<typeof requestIdSchema>;
 export const revisionSchema = z.number().int().nonnegative().safe();
+export type RevisionSchema = z.infer<typeof revisionSchema>;
 export type Revision = z.infer<typeof revisionSchema>;
 export const instantSchema = z.iso.datetime({ offset: true });
+export type InstantSchema = z.infer<typeof instantSchema>;
 export type Instant = z.infer<typeof instantSchema>;
 
 export type JsonValue =
@@ -98,6 +103,7 @@ const isJsonValue = (value: unknown, depth = 0): value is JsonValue => {
 export const jsonValueSchema = z.custom<JsonValue>(isJsonValue, {
   message: 'Expected bounded JSON data.',
 });
+export type JsonValueSchema = z.infer<typeof jsonValueSchema>;
 
 export const pageInputSchema = z.strictObject({
   query: z.string().max(200).optional(),
@@ -105,6 +111,7 @@ export const pageInputSchema = z.strictObject({
   cursor: z.string().max(500).optional(),
   limit: z.number().int().min(1).max(50).optional(),
 });
+export type PageInputSchema = z.infer<typeof pageInputSchema>;
 export type PageInput = z.infer<typeof pageInputSchema>;
 export type Page<T> = {
   items: T[];
@@ -138,6 +145,7 @@ export const productEventV1Schema = z.strictObject({
   outcome: z.enum(productEventOutcomes).optional(),
   operationId: idSchema.optional(),
 });
+export type ProductEventV1Schema = z.infer<typeof productEventV1Schema>;
 export type ProductEventV1 = z.infer<typeof productEventV1Schema>;
 
 export type AuthorizedContext = {
@@ -148,14 +156,14 @@ export type AuthorizedContext = {
 };
 
 export type LearningMethodContracts = {
-  listContextItems: { input: PageInput; result: Page<ContextItemDTO> };
+  listContextItems: { input: PageInput; result: Page<ContextItemDTO> | null };
   getContextItem: {
     input: { itemId: Id; versionId?: Id };
     result: {
       item: ContextItemDTO;
       versions: ContextVersionDTO[];
       preview: ContextPreview;
-    };
+    } | null;
   };
   createContextNote: {
     input: {
@@ -223,11 +231,11 @@ export type LearningMethodContracts = {
   };
   listStudySessions: {
     input: PageInput & { status?: StudySessionDTO['status'] };
-    result: Page<StudySessionDTO>;
+    result: Page<StudySessionDTO> | null;
   };
   getStudySession: {
     input: { sessionId: Id; beforeSequence?: number; limit?: number };
-    result: SessionSnapshot;
+    result: SessionSnapshot | null;
   };
   renameStudySession: {
     input: { sessionId: Id; title: string; expectedRevision: Revision };
@@ -284,11 +292,11 @@ export type LearningMethodContracts = {
   cancelStudyTurn: { input: { sessionId: Id; turnId: Id }; result: void };
   getArtifactVersion: {
     input: { artifactId: Id; versionId: Id };
-    result: ArtifactVersionDTO;
+    result: ArtifactVersionDTO | null;
   };
   getArtifactState: {
     input: { artifactId: Id; versionId: Id; attemptId: Id };
-    result: ArtifactStateDTO;
+    result: ArtifactStateDTO | null;
   };
   resetArtifactAttempt: {
     input: {
@@ -333,7 +341,7 @@ export type LearningMethodContracts = {
   };
   listMemories: {
     input: PageInput & { type?: MemoryDTO['type'] };
-    result: Page<MemoryDTO>;
+    result: Page<MemoryDTO> | null;
   };
   upsertExplicitPreference: {
     input: {
@@ -355,7 +363,10 @@ export type LearningMethodContracts = {
     input: { memoryId: Id; expectedRevision: Revision };
     result: void;
   };
-  getLearningProgress: { input: { courseId?: Id }; result: LearningProgress };
+  getLearningProgress: {
+    input: { courseId?: Id };
+    result: LearningProgress | null;
+  };
   getTodayOverview: { input: { limit?: number }; result: TodayOverview };
   getStudyRecommendations: {
     input: { limit?: number };

@@ -346,7 +346,7 @@ export const useActivityHost = ({
           attemptId: initialAttemptId,
         });
         if (!current) return;
-        if (artifactState && artifactState.attemptId !== initialAttemptId) {
+        if (!artifactState || artifactState.attemptId !== initialAttemptId) {
           setStatus('unavailable');
           return;
         }

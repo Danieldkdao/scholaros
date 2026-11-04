@@ -41,14 +41,30 @@ export const registerContextActions = (
   registrar: AuthorizedRegistrar,
 ): ActionCleanup => {
   registrar.handle('listContextItems', async (context, input) => {
-    const page = listContextItems(context, input);
-    if (!page) throw new ContextStoreError('storage-failed');
-    return page;
+    try {
+      return await listContextItems(context, input);
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        'code' in error &&
+        error.code === 'storage-failed'
+      )
+        return null;
+      throw error;
+    }
   });
   registrar.handle('getContextItem', async (context, input) => {
-    const result = await getContextItem(context, input);
-    if (!result) throw new ContextStoreError('not-found');
-    return result;
+    try {
+      return await getContextItem(context, input);
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        'code' in error &&
+        error.code === 'storage-failed'
+      )
+        return null;
+      throw error;
+    }
   });
   registrar.handle('createContextNote', async (context, input) => {
     const createdContextItem = await createContextNote(context, input);
