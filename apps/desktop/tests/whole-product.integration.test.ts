@@ -1,7 +1,33 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { expect, it, vi } from 'vitest';
 import { extractPdfContent } from '../src/features/context/services/pdf-content';
-import { createPdfFixture } from './fixtures/whole-product-runner';
+import {
+  createPdfFixture,
+  parseAcademicEndpointFile,
+} from './fixtures/whole-product-runner';
+
+it('reads service ownership metadata without passing it to transport requests', () => {
+  expect(
+    parseAcademicEndpointFile({
+      version: 1,
+      address: '/tmp/academic.sock',
+      token: 'a'.repeat(64),
+      instanceId: '11111111-1111-4111-8111-111111111111',
+    }),
+  ).toEqual({
+    version: 1,
+    address: '/tmp/academic.sock',
+    token: 'a'.repeat(64),
+  });
+  expect(() =>
+    parseAcademicEndpointFile({
+      version: 1,
+      address: '/tmp/academic.sock',
+      token: 'a'.repeat(64),
+      instanceId: 'invalid',
+    }),
+  ).toThrow();
+});
 
 vi.mock('electron', () => ({ app: { getAppPath: () => process.cwd() } }));
 

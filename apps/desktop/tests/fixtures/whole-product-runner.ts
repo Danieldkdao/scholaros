@@ -6,7 +6,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
-  academicEndpointSchema,
+  academicEndpointFileSchema,
   type AcademicEndpointSchema,
 } from '../../src/services/academic/contracts';
 import { academicRequest } from '../../src/services/academic/transport';
@@ -56,6 +56,13 @@ export type PackagedAcademicService = {
 const runtimeVersionsPrefix = 'SCHOLAROS_RUNTIME_VERSIONS=';
 const testApiUrlPrefix = 'SCHOLAROS_TEST_API_URL=';
 const pdfProbePrefix = 'SCHOLAROS_PACKAGED_PDF_RESULT=';
+
+export const parseAcademicEndpointFile = (
+  data: unknown,
+): AcademicEndpointSchema => {
+  const { version, address, token } = academicEndpointFileSchema.parse(data);
+  return { version, address, token };
+};
 
 export const createPdfFixture = (pages: string[]) => {
   const objects = [
@@ -428,7 +435,7 @@ export const startPackagedAcademicService = async (
       try {
         const endpointData = JSON.parse(await readFile(endpointPath, 'utf8'));
         endpointFileSeen = true;
-        const candidate = academicEndpointSchema.parse(endpointData);
+        const candidate = parseAcademicEndpointFile(endpointData);
         lastHealthSocketExists = existsSync(candidate.address);
         const health = (await academicRequest(
           candidate,
