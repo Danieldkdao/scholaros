@@ -709,7 +709,9 @@ describe('real learning module activity composition', () => {
     rmSync(storage.directory, { recursive: true, force: true });
   });
 
-  const registerRealModules = async () => {
+  const registerRealModules = async (
+    reusedModules?: Awaited<ReturnType<typeof loadLearningActionModules>>,
+  ) => {
     const handlers = new Map<
       string,
       (context: AuthorizedContext, input: never) => Promise<unknown>
@@ -740,7 +742,7 @@ describe('real learning module activity composition', () => {
       activityAdapters,
       'createAcademicActivityAdapter',
     );
-    const modules = await loadLearningActionModules();
+    const modules = reusedModules ?? (await loadLearningActionModules());
     dispose = await registerLearningActions(registrar, modules);
     const store = storeFactory.mock.results.at(-1)!
       .value as artifactStores.ArtifactStore;
@@ -765,6 +767,8 @@ describe('real learning module activity composition', () => {
       return handler(current, input as never);
     };
     return {
+      modules,
+      publish: registrar.publish as ReturnType<typeof vi.fn>,
       handlers,
       lifecycle,
       store,
@@ -775,6 +779,42 @@ describe('real learning module activity composition', () => {
       context,
       invokeAction,
     };
+  };
+
+  const enableNotifications = async ({
+    invokeAction,
+  }: Pick<Awaited<ReturnType<typeof registerRealModules>>, 'invokeAction'>) => {
+    await invokeAction('claimDueNotifications', {
+      operation: 'set-permission',
+      userId: 'student-a',
+      permission: 'granted',
+    });
+    const settings = (await invokeAction('getNotificationSettings', {})) as {
+      revision: number;
+      enabled: boolean;
+      categories: Record<string, boolean>;
+      quietHours: {
+        enabled: boolean;
+        startMinute: number;
+        endMinute: number;
+        timeZone: string;
+      };
+    };
+    const { revision, ...preferences } = settings;
+    await invokeAction('saveNotificationSettings', {
+      settings: {
+        ...preferences,
+        enabled: true,
+        categories: Object.fromEntries(
+          Object.keys(preferences.categories).map((category) => [
+            category,
+            true,
+          ]),
+        ),
+        quietHours: { ...preferences.quietHours, enabled: false },
+      },
+      expectedRevision: revision,
+    });
   };
 
   const createActivity = (
@@ -1044,8 +1084,9 @@ describe('real learning module activity composition', () => {
         configurationRevision: 'fixture-meta-only',
       });
     });
-    const { handlers, store, sessionFactory, context, invokeAction } =
-      await registerRealModules();
+    const real = await registerRealModules();
+    const { handlers, store, sessionFactory, context, invokeAction } = real;
+    await enableNotifications(real);
     for (const method of [
       'sendStudyTurn',
       'retryStudyTurn',
@@ -1139,6 +1180,361 @@ describe('real learning module activity composition', () => {
         )
         .get(admitted.turnId, 'tutor'),
     ).toEqual({ count: 2 });
+    await vi.waitFor(() =>
+      expect(
+        sqlite
+          .prepare(
+            'SELECT category, target_id, status FROM notification_events ORDER BY category',
+          )
+          .all(),
+      ).toEqual([
+        { category: 'activity-ready', target_id: session.id, status: 'queued' },
+        { category: 'tutor-ready', target_id: session.id, status: 'queued' },
+      ]),
+    );
+    for (let index = 0; index < 3; index += 1)
+      await invokeAction('getStudySession', { sessionId: session.id });
+    expect(
+      sqlite.prepare('SELECT * FROM notification_events').all(),
+    ).toHaveLength(2);
+  });
+
+  it('enqueues actual timer expiry once per persisted timer revision across reconciliation and reopen', async () => {
+    const real = await registerRealModules();
+    await enableNotifications(real);
+    let now = Date.now();
+    vi.spyOn(real.lifecycle, 'now').mockImplementation(() => now);
+    const session = (await real.invokeAction('createStudySession', {
+      requestId: randomUUID(),
+      courseId: 'course-a',
+      activity: 'understand-topic',
+      targetAssignmentId: null,
+      contextItemIds: [],
+      durationMinutes: 1,
+    })) as { id: string; timer: { revision: number } };
+    expect(sqlite.prepare('SELECT * FROM notification_events').all()).toEqual(
+      [],
+    );
+    now += 60_001;
+    await real.invokeAction('reconcileStudyDeadline', {
+      sessionId: session.id,
+    });
+    await vi.waitFor(() =>
+      expect(
+        sqlite
+          .prepare(
+            'SELECT category, target_id, status FROM notification_events',
+          )
+          .all(),
+      ).toEqual([
+        { category: 'timer-expired', target_id: session.id, status: 'queued' },
+      ]),
+    );
+    for (let index = 0; index < 3; index += 1)
+      await real.invokeAction('reconcileStudyDeadline', {
+        sessionId: session.id,
+      });
+    expect(
+      sqlite.prepare('SELECT * FROM notification_events').all(),
+    ).toHaveLength(1);
+    const extended = (await real.invokeAction('extendStudySession', {
+      sessionId: session.id,
+      requestId: randomUUID(),
+      expectedTimerRevision: session.timer.revision,
+      durationMinutes: 1,
+    })) as { revision: number };
+    expect(extended.revision).toBeGreaterThan(session.timer.revision);
+    now += 60_001;
+    await real.invokeAction('reconcileStudyDeadline', {
+      sessionId: session.id,
+    });
+    await vi.waitFor(() =>
+      expect(
+        sqlite.prepare('SELECT * FROM notification_events').all(),
+      ).toHaveLength(2),
+    );
+    const ids = sqlite
+      .prepare('SELECT outcome_id FROM notification_events')
+      .all();
+    expect(
+      new Set(ids.map((row) => (row as { outcome_id: string }).outcome_id))
+        .size,
+    ).toBe(2);
+    await dispose!();
+    dispose = undefined;
+    const reopened = await registerRealModules();
+    vi.spyOn(reopened.lifecycle, 'now').mockImplementation(() => now);
+    await reopened.invokeAction('getStudySession', { sessionId: session.id });
+    expect(
+      sqlite.prepare('SELECT * FROM notification_events').all(),
+    ).toHaveLength(2);
+  });
+
+  it('reconciles an expired timer in the resident service without renderer polling', async () => {
+    const real = await registerRealModules();
+    await enableNotifications(real);
+    let now = Date.now();
+    vi.spyOn(real.lifecycle, 'now').mockImplementation(() => now);
+    const session = (await real.invokeAction('createStudySession', {
+      requestId: randomUUID(),
+      courseId: 'course-a',
+      activity: 'understand-topic',
+      targetAssignmentId: null,
+      contextItemIds: [],
+      durationMinutes: 1,
+    })) as { id: string };
+    now += 60_001;
+    await vi.waitFor(
+      () =>
+        expect(
+          sqlite
+            .prepare('SELECT category, target_id FROM notification_events')
+            .all(),
+        ).toEqual([{ category: 'timer-expired', target_id: session.id }]),
+      { timeout: 2_500 },
+    );
+  });
+
+  it('discards an old registrar event after the same real modules are rebound', async () => {
+    const real = await registerRealModules();
+    await enableNotifications(real);
+    let now = Date.now();
+    vi.spyOn(real.lifecycle, 'now').mockImplementation(() => now);
+    const session = (await real.invokeAction('createStudySession', {
+      requestId: randomUUID(),
+      courseId: 'course-a',
+      activity: 'understand-topic',
+      targetAssignmentId: null,
+      contextItemIds: [],
+      durationMinutes: 1,
+    })) as { id: string };
+    const oldPublish = real.sessionFactory.mock.calls.at(-1)![0]!.publish!;
+    now += 60_001;
+    await real.invokeAction('reconcileStudyDeadline', {
+      sessionId: session.id,
+    });
+    await vi.waitFor(() =>
+      expect(
+        sqlite.prepare('SELECT * FROM notification_events').all(),
+      ).toHaveLength(1),
+    );
+    const event = real.publish.mock.calls
+      .map(([event]) => event)
+      .find(
+        (event) => event.resource === 'study' && event.outcome === 'completed',
+      );
+    expect(event).toBeDefined();
+    await dispose!();
+    dispose = undefined;
+    sqlite.prepare('DELETE FROM notification_events').run();
+    const rebound = await registerRealModules(real.modules);
+    await enableNotifications(rebound);
+    oldPublish(event);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(sqlite.prepare('SELECT * FROM notification_events').all()).toEqual(
+      [],
+    );
+  });
+
+  it('does not resurrect a deleted study target when its optional notification enqueue is delayed', async () => {
+    const real = await registerRealModules();
+    await enableNotifications(real);
+    let now = Date.now();
+    vi.spyOn(real.lifecycle, 'now').mockImplementation(() => now);
+    const notifications =
+      await import('../src/features/notifications/services/notification-actions');
+    const enqueue = notifications.enqueueProductNotification;
+    let finish!: () => void;
+    const mayEnqueue = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const delayed = vi
+      .spyOn(notifications, 'enqueueProductNotification')
+      .mockImplementation(async (...input) => {
+        await mayEnqueue;
+        return enqueue(...input);
+      });
+    const session = (await real.invokeAction('createStudySession', {
+      requestId: randomUUID(),
+      courseId: 'course-a',
+      activity: 'understand-topic',
+      targetAssignmentId: null,
+      contextItemIds: [],
+      durationMinutes: 1,
+    })) as { id: string };
+    now += 60_001;
+    await real.invokeAction('reconcileStudyDeadline', {
+      sessionId: session.id,
+    });
+    await vi.waitFor(() => expect(delayed).toHaveBeenCalledOnce());
+    const snapshot = (await real.invokeAction('getStudySession', {
+      sessionId: session.id,
+    })) as { session: { revision: number } };
+    await real.invokeAction('deleteStudySession', {
+      sessionId: session.id,
+      requestId: randomUUID(),
+      expectedRevision: snapshot.session.revision,
+    });
+    finish();
+    await delayed.mock.results[0]!.value.catch(() => undefined);
+    expect(sqlite.prepare('SELECT * FROM notification_events').all()).toEqual(
+      [],
+    );
+  });
+
+  it('enqueues one private terminal notification after real selected-file ingestion commits', async () => {
+    const { invokeAction } = await registerRealModules();
+    await enableNotifications({ invokeAction });
+    expect(sqlite.prepare('SELECT * FROM notification_events').all()).toEqual(
+      [],
+    );
+    const filePath = join(storage.directory, 'private-selected-note.txt');
+    writeFileSync(filePath, 'PRIVATE_FIXTURE_ACADEMIC_TEXT');
+    const result = contextFileSelectionResultSchema.parse(
+      await invokeAction('registerSelectedContextFiles', {
+        filePaths: [filePath],
+        saveToLibrary: true,
+        courseId: 'course-a',
+      }),
+    );
+    const { itemId } = result.items[0]!;
+    await vi.waitFor(() =>
+      expect(
+        sqlite
+          .prepare(
+            'SELECT category, target_id, status FROM notification_events',
+          )
+          .all(),
+      ).toEqual([
+        { category: 'context-completed', target_id: itemId, status: 'queued' },
+      ]),
+    );
+    expect(
+      sqlite
+        .prepare('SELECT status FROM context_items WHERE id = ?')
+        .get(itemId),
+    ).toEqual({ status: 'complete' });
+    for (let index = 0; index < 3; index += 1)
+      await invokeAction('readContextPreview', { itemId });
+    expect(
+      sqlite.prepare('SELECT * FROM notification_events').all(),
+    ).toHaveLength(1);
+    const serialized = JSON.stringify(
+      sqlite.prepare('SELECT * FROM notification_events').all(),
+    );
+    expect(serialized).not.toContain('PRIVATE_FIXTURE_ACADEMIC_TEXT');
+    expect(serialized).not.toContain('private-selected-note');
+    expect(serialized).not.toContain(filePath);
+  });
+
+  it('reports unsupported ingestion as failure rather than completion', async () => {
+    const real = await registerRealModules();
+    await enableNotifications(real);
+    const filePath = join(storage.directory, 'unsupported-fixture.pptx');
+    writeFileSync(filePath, 'Test-owned unsupported document.');
+    const selected = contextFileSelectionResultSchema.parse(
+      await real.invokeAction('registerSelectedContextFiles', {
+        filePaths: [filePath],
+        saveToLibrary: true,
+        courseId: 'course-a',
+      }),
+    );
+    await vi.waitFor(() =>
+      expect(
+        sqlite
+          .prepare('SELECT category, target_id FROM notification_events')
+          .all(),
+      ).toEqual([
+        { category: 'context-failed', target_id: selected.items[0]!.itemId },
+      ]),
+    );
+    expect(
+      sqlite
+        .prepare('SELECT status FROM context_items WHERE id = ?')
+        .get(selected.items[0]!.itemId),
+    ).toEqual({ status: 'unsupported' });
+  });
+
+  it('keeps a committed timer outcome successful when its optional notification store fails', async () => {
+    const real = await registerRealModules();
+    await enableNotifications(real);
+    let now = Date.now();
+    vi.spyOn(real.lifecycle, 'now').mockImplementation(() => now);
+    const notifications =
+      await import('../src/features/notifications/services/notification-actions');
+    sqlite.exec(`CREATE TRIGGER fixture_notification_failure BEFORE INSERT ON notification_events
+      BEGIN SELECT RAISE(ABORT, 'Test-owned notification write failure.'); END`);
+    const enqueue = vi.spyOn(notifications, 'enqueueProductNotification');
+    const session = (await real.invokeAction('createStudySession', {
+      requestId: randomUUID(),
+      courseId: 'course-a',
+      activity: 'understand-topic',
+      targetAssignmentId: null,
+      contextItemIds: [],
+      durationMinutes: 1,
+    })) as { id: string; timer: { revision: number } };
+    now += 60_001;
+    await expect(
+      real.invokeAction('reconcileStudyDeadline', { sessionId: session.id }),
+    ).resolves.toMatchObject({ expiredRevision: session.timer.revision });
+    await vi.waitFor(() => expect(enqueue).toHaveBeenCalledOnce());
+    await real.lifecycle.cancelOperationsAndWait();
+    expect(
+      sqlite
+        .prepare('SELECT expired_revision FROM study_sessions WHERE id = ?')
+        .get(session.id),
+    ).toEqual({ expired_revision: session.timer.revision });
+    expect(sqlite.prepare('SELECT * FROM notification_events').all()).toEqual(
+      [],
+    );
+  });
+
+  it('awaits outstanding notification producers during lifecycle teardown and prevents late rows', async () => {
+    const real = await registerRealModules();
+    await enableNotifications(real);
+    let now = Date.now();
+    vi.spyOn(real.lifecycle, 'now').mockImplementation(() => now);
+    const notifications =
+      await import('../src/features/notifications/services/notification-actions');
+    const original = notifications.enqueueProductNotification;
+    let finish!: () => void;
+    const mayEnqueue = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const enqueue = vi
+      .spyOn(notifications, 'enqueueProductNotification')
+      .mockImplementation(async (...args) => {
+        await mayEnqueue;
+        return original(...args);
+      });
+    const session = (await real.invokeAction('createStudySession', {
+      requestId: randomUUID(),
+      courseId: 'course-a',
+      activity: 'understand-topic',
+      targetAssignmentId: null,
+      contextItemIds: [],
+      durationMinutes: 1,
+    })) as { id: string };
+    now += 60_001;
+    await real.invokeAction('reconcileStudyDeadline', {
+      sessionId: session.id,
+    });
+    await vi.waitFor(() => expect(enqueue).toHaveBeenCalledOnce());
+    let settled = false;
+    const teardown = real.lifecycle.invalidate().then(() => {
+      settled = true;
+    });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(settled).toBe(false);
+      expect(enqueue.mock.calls[0]![0].signal.aborted).toBe(true);
+    } finally {
+      finish();
+      await teardown;
+    }
+    expect(sqlite.prepare('SELECT * FROM notification_events').all()).toEqual(
+      [],
+    );
   });
 
   it('routes native-selected text through the actual loader and ingestion stores without exposing file tickets', async () => {

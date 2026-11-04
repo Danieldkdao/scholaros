@@ -1,7 +1,12 @@
+import { createHash, randomUUID } from 'node:crypto';
+import { and, eq, isNull } from 'drizzle-orm';
 import type {
   ActionCleanup,
+  AuthorizedContext,
   LearningLifecycle,
+  ProductEventV1,
 } from '@scholaros/services/learning/product-contracts';
+import type { NotificationOutcome } from '../../features/notifications/services/notification-actions';
 import type { LearningActionRegistrar } from './contracts';
 import {
   learningRequestSchema,
@@ -342,6 +347,91 @@ export const registerLearningActions = async (
   return cleanup;
 };
 
+export const notificationOutcomeId = (...identity: (string | number)[]) =>
+  createHash('sha256').update(JSON.stringify(identity)).digest('hex');
+
+export const createProductNotificationProducer = (
+  registrar: Pick<LearningActionRegistrar, 'lifecycle' | 'publish'>,
+) => {
+  const pending = new Set<Promise<void>>();
+  const controllers = new Set<AbortController>();
+  let closed = false;
+  const enqueue = (
+    context: AuthorizedContext,
+    outcome: NotificationOutcome,
+    revision: number,
+  ): Promise<void> => {
+    const controller = new AbortController();
+    let targetIsCurrent = () => true;
+    const isCurrent = () =>
+      !closed &&
+      !controller.signal.aborted &&
+      !context.signal.aborted &&
+      registrar.lifecycle.isCurrent(context.epoch) &&
+      context.isCurrent() &&
+      targetIsCurrent();
+    if (!isCurrent()) return Promise.resolve();
+    let unregister: () => void;
+    try {
+      unregister = registrar.lifecycle.registerOperation(
+        `notifications:${context.userId}`,
+        randomUUID(),
+        controller,
+      );
+    } catch {
+      return Promise.resolve();
+    }
+    controllers.add(controller);
+    const operation = (async () => {
+      try {
+        const [actions, store] = await Promise.all([
+          import('../../features/notifications/services/notification-actions'),
+          import('../../features/notifications/services/notification-store'),
+        ]);
+        targetIsCurrent = () =>
+          store.isNotificationTargetAvailable(context.userId, {
+            targetKind: outcome.targetKind,
+            targetId: outcome.targetId,
+            safeRoute: outcome.route,
+          });
+        if (!isCurrent()) return;
+        const result = await actions.enqueueProductNotification(
+          {
+            ...context,
+            isCurrent,
+            signal: AbortSignal.any([context.signal, controller.signal]),
+          },
+          outcome,
+        );
+        if (result.created && isCurrent())
+          registrar.publish({
+            version: 1,
+            accountId: context.userId,
+            resource: 'notifications',
+            revision,
+            targetId: result.eventId,
+          });
+      } catch {
+        // Optional alerts cannot undo an already committed product outcome.
+      } finally {
+        controllers.delete(controller);
+        unregister();
+      }
+    })();
+    pending.add(operation);
+    void operation.then(() => pending.delete(operation));
+    return operation;
+  };
+  return {
+    enqueue,
+    dispose: async () => {
+      closed = true;
+      for (const controller of controllers) controller.abort();
+      await Promise.allSettled(pending);
+    },
+  };
+};
+
 export const loadLearningActionModules = async (): Promise<
   LearningActionModule[]
 > => {
@@ -362,6 +452,8 @@ export const loadLearningActionModules = async (): Promise<
     policy,
     originalStore,
     database,
+    libraryStore,
+    tables,
   ] = await Promise.all([
     import('../../features/context/services/library-actions'),
     import('./context-ingestion-adapter'),
@@ -379,7 +471,235 @@ export const loadLearningActionModules = async (): Promise<
     import('../../features/integrity/services/policy'),
     import('../../features/context/services/original-store'),
     import('../../db'),
+    import('../../features/context/services/library-store'),
+    import('../../db/schema'),
   ]);
+
+  const contexts = new Map<string, AuthorizedContext>();
+  let producer: ReturnType<typeof createProductNotificationProducer>;
+  const notifyCommittedEvent = (event: ProductEventV1) => {
+    const context = contexts.get(event.accountId);
+    if (
+      !context ||
+      context.signal.aborted ||
+      !context.isCurrent() ||
+      !event.targetId ||
+      !event.operationId
+    )
+      return;
+    if (event.resource === 'study') {
+      const session = database.db
+        .select({
+          id: tables.StudySessionTable.id,
+          revision: tables.StudySessionTable.revision,
+          generationEpoch: tables.StudySessionTable.generationEpoch,
+          timerRevision: tables.StudySessionTable.timerRevision,
+          expiredRevision: tables.StudySessionTable.expiredRevision,
+          resolvedExpiredRevision:
+            tables.StudySessionTable.resolvedExpiredRevision,
+        })
+        .from(tables.StudySessionTable)
+        .where(
+          and(
+            eq(tables.StudySessionTable.userId, context.userId),
+            eq(tables.StudySessionTable.id, event.targetId),
+            isNull(tables.StudySessionTable.deletedAt),
+          ),
+        )
+        .get();
+      if (!session || session.revision < event.revision) return;
+      if (
+        event.outcome === 'completed' &&
+        event.operationId ===
+          `study-timer-${session.id}-${session.timerRevision}` &&
+        session.expiredRevision === session.timerRevision &&
+        session.resolvedExpiredRevision !== session.timerRevision
+      ) {
+        void producer.enqueue(
+          context,
+          {
+            category: 'timer-expired',
+            outcome: 'completed',
+            outcomeId: notificationOutcomeId(
+              'timer',
+              session.id,
+              session.timerRevision,
+            ),
+            targetKind: 'study',
+            targetId: session.id,
+            route: { kind: 'study', sessionId: session.id },
+            expiresAt: new Date(Date.now() + 24 * 60 * 60_000).toISOString(),
+          },
+          event.revision,
+        );
+        return;
+      }
+      const message = database.db
+        .select({ turnId: tables.StudyMessageTable.turnId })
+        .from(tables.StudyMessageTable)
+        .where(
+          and(
+            eq(tables.StudyMessageTable.userId, context.userId),
+            eq(tables.StudyMessageTable.sessionId, session.id),
+            eq(tables.StudyMessageTable.id, event.operationId),
+            eq(tables.StudyMessageTable.role, 'tutor'),
+            eq(tables.StudyMessageTable.status, 'accepted'),
+          ),
+        )
+        .get();
+      const turn = database.db
+        .select()
+        .from(tables.StudyTurnTable)
+        .where(
+          and(
+            eq(tables.StudyTurnTable.userId, context.userId),
+            eq(tables.StudyTurnTable.sessionId, session.id),
+            eq(tables.StudyTurnTable.id, message?.turnId ?? event.operationId),
+            eq(tables.StudyTurnTable.generationEpoch, session.generationEpoch),
+            eq(tables.StudyTurnTable.status, 'complete'),
+          ),
+        )
+        .get();
+      if (!turn?.settledAt) return;
+      const messages = database.db
+        .select({ parts: tables.StudyMessageTable.parts })
+        .from(tables.StudyMessageTable)
+        .where(
+          and(
+            eq(tables.StudyMessageTable.userId, context.userId),
+            eq(tables.StudyMessageTable.sessionId, session.id),
+            eq(tables.StudyMessageTable.turnId, turn.id),
+            eq(tables.StudyMessageTable.role, 'tutor'),
+            eq(tables.StudyMessageTable.status, 'accepted'),
+          ),
+        )
+        .all();
+      const parts = messages.flatMap(({ parts }) => parts);
+      const notify = (
+        category: 'tutor-ready' | 'activity-ready',
+        identity: string[],
+      ) =>
+        void producer.enqueue(
+          context,
+          {
+            category,
+            outcome: 'completed',
+            outcomeId: notificationOutcomeId(category, session.id, ...identity),
+            targetKind: 'study',
+            targetId: session.id,
+            route: { kind: 'study', sessionId: session.id },
+            expiresAt: new Date(Date.now() + 24 * 60 * 60_000).toISOString(),
+          },
+          event.revision,
+        );
+      if (parts.some((part) => part.kind === 'text'))
+        notify('tutor-ready', [turn.id, String(turn.attemptNumber)]);
+      for (const part of parts) {
+        if (part.kind !== 'activity') continue;
+        const version = database.db
+          .select({ id: tables.ArtifactVersionTable.id })
+          .from(tables.ArtifactVersionTable)
+          .innerJoin(
+            tables.ArtifactTable,
+            eq(tables.ArtifactTable.id, tables.ArtifactVersionTable.artifactId),
+          )
+          .where(
+            and(
+              eq(tables.ArtifactVersionTable.userId, context.userId),
+              eq(tables.ArtifactVersionTable.artifactId, part.artifactId),
+              eq(tables.ArtifactVersionTable.id, part.versionId),
+              eq(tables.ArtifactTable.userId, context.userId),
+              isNull(tables.ArtifactTable.removedAt),
+            ),
+          )
+          .get();
+        if (version)
+          notify('activity-ready', [
+            part.artifactId,
+            part.versionId,
+            part.attemptId,
+          ]);
+      }
+      return;
+    }
+    if (
+      event.resource !== 'context' ||
+      !event.outcome ||
+      event.outcome === 'cancelled'
+    )
+      return;
+    const item = libraryStore.readContextIngestionItem(context, {
+      itemId: event.targetId,
+    });
+    if (!item || item.revision !== event.revision) return;
+    const completed =
+      event.outcome === 'completed' && item.status === 'complete';
+    const failed = ['failed', 'partial', 'unreadable', 'unsupported'].includes(
+      item.status,
+    );
+    if (!completed && !failed) return;
+    if (completed) {
+      const version = libraryStore.readContextIngestionVersion(context, {
+        itemId: item.id,
+        attemptId: event.operationId,
+      });
+      if (!version || version.extractionStatus !== 'complete') return;
+    }
+    void producer.enqueue(
+      context,
+      {
+        category: completed ? 'context-completed' : 'context-failed',
+        outcome: completed ? 'completed' : 'failed',
+        outcomeId: notificationOutcomeId(
+          'context',
+          item.id,
+          event.operationId,
+          item.revision,
+        ),
+        targetKind: 'context',
+        targetId: item.id,
+        route: { kind: 'context', itemId: item.id },
+        expiresAt: new Date(Date.now() + 24 * 60 * 60_000).toISOString(),
+      },
+      event.revision,
+    );
+  };
+  const withOutcomeNotifications =
+    (module: LearningActionModule): LearningActionModule =>
+    (registrar) => {
+      let active = true;
+      const epoch = registrar.lifecycle.epoch;
+      const cleanup = module({
+        ...registrar,
+        handle: (method, action) =>
+          registrar.handle(method, (context, input) => {
+            contexts.set(context.userId, context);
+            return action(context, input);
+          }),
+        handleInternal: (method, action) =>
+          registrar.handleInternal(method, (context, input) => {
+            contexts.set(context.userId, context);
+            return action(context, input);
+          }),
+        publish: (event) => {
+          if (!active || !registrar.lifecycle.isCurrent(epoch)) return;
+          try {
+            registrar.publish(event);
+          } catch {
+            /* Committed outcomes survive subscriber failure. */
+          }
+          try {
+            notifyCommittedEvent(event);
+          } catch {
+            /* Notifications are optional. */
+          }
+        },
+      });
+      return async () => {
+        active = false;
+        await cleanup?.();
+      };
+    };
 
   let sessionStore: ReturnType<
     typeof tutorPractice.createTutorPracticeSessionStore
@@ -388,7 +708,7 @@ export const loadLearningActionModules = async (): Promise<
     typeof artifactStoreModule.createArtifactStore
   > | null = null;
 
-  return [
+  const modules: LearningActionModule[] = [
     contextActions.registerContextActions,
     (registrar) => {
       const host = contextIngestion.createContextIngestionHost();
@@ -419,9 +739,50 @@ export const loadLearningActionModules = async (): Promise<
           );
         },
       });
-      return sessionActions.registerSessionActions(registrar, {
-        store: sessionStore,
+      const activeSessionStore = sessionStore;
+      const cleanupActions = sessionActions.registerSessionActions(registrar, {
+        store: activeSessionStore,
       });
+      let ticking: Promise<void> | null = null;
+      const interval = setInterval(() => {
+        if (ticking) return;
+        const context = [...contexts.values()].find(
+          (context) =>
+            !context.signal.aborted &&
+            context.isCurrent() &&
+            registrar.lifecycle.isCurrent(context.epoch),
+        );
+        if (!context) return;
+        const controller = new AbortController();
+        let unregister: () => void;
+        try {
+          unregister = registrar.lifecycle.registerOperation(
+            `study-timers:${context.userId}`,
+            randomUUID(),
+            controller,
+          );
+        } catch {
+          return;
+        }
+        ticking = activeSessionStore.timer
+          .reconcileDueStudyDeadlines({
+            ...context,
+            signal: AbortSignal.any([context.signal, controller.signal]),
+            isCurrent: () => !controller.signal.aborted && context.isCurrent(),
+          })
+          .then(() => undefined)
+          .catch(() => undefined)
+          .finally(() => {
+            unregister();
+            ticking = null;
+          });
+      }, 1_000);
+      interval.unref();
+      return async () => {
+        clearInterval(interval);
+        await ticking;
+        await cleanupActions();
+      };
     },
     (registrar) => {
       if (!sessionStore)
@@ -568,5 +929,16 @@ export const loadLearningActionModules = async (): Promise<
     memoryActions.registerMemoryActions,
     todayActions.registerTodayActions,
     notificationActions.registerNotificationActions,
+  ];
+  return [
+    (registrar) => {
+      contexts.clear();
+      producer = createProductNotificationProducer(registrar);
+      return async () => {
+        await producer.dispose();
+        contexts.clear();
+      };
+    },
+    ...modules.map(withOutcomeNotifications),
   ];
 };
