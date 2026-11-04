@@ -4,6 +4,8 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { productEventV1Schema } from '@scholaros/services/learning/product-contracts';
+import { idSchema } from '@scholaros/services/learning/product-contracts';
+import { authClient } from '../../lib/auth/client';
 import {
   academicEndpointFileSchema,
   rendererAcademicMethods,
@@ -24,6 +26,42 @@ let stopping = false;
 let connected: AcademicEndpointSchema | null = null;
 let authIdentity: string | null | undefined;
 let currentAccountId: string | null = null;
+export type AcademicClientLifecycle = {
+  onIdentityChange?: () => Promise<void>;
+  beforeSessionDelete?: (sessionId: string) => Promise<void>;
+  beforeDisconnect?: () => Promise<void>;
+};
+
+let lifecycle: AcademicClientLifecycle = {};
+let identityBarrier: Promise<void> = Promise.resolve();
+let identityEpoch = 0;
+let settledIdentityEpoch = 0;
+let observedCookie: string | undefined;
+let stopAuthSubscription: (() => void) | undefined;
+let userLookup = 0;
+let appliedUserLookup = 0;
+
+const invalidateIdentity = () => {
+  currentAccountId = null;
+  const epoch = ++identityEpoch;
+  // Invalidate synchronously, but let an internal account read unwind a pending mount.
+  const disposal = lifecycle.onIdentityChange?.();
+  identityBarrier = Promise.all([identityBarrier, disposal]).then(() => {
+    if (epoch === identityEpoch) settledIdentityEpoch = epoch;
+  });
+  void identityBarrier.catch(() => undefined);
+};
+
+const observeCookie = () => {
+  const cookie = authClient.getCookie();
+  if (observedCookie !== undefined && observedCookie !== cookie) {
+    observedCookie = cookie;
+    authIdentity = undefined;
+    invalidateIdentity();
+  }
+  observedCookie = cookie;
+  return cookie;
+};
 const directory = () => path.join(app.getPath('userData'), 'academic-service');
 const findService = async () => {
   const endpointFile = academicEndpointFileSchema.parse(
@@ -69,10 +107,19 @@ const getAuthIdentity = (user: unknown) => {
 const publishAuthIdentity = (user: unknown) => {
   const nextIdentity = getAuthIdentity(user);
   if (nextIdentity === authIdentity) return;
+  if (authIdentity !== undefined) invalidateIdentity();
   authIdentity = nextIdentity;
-  deliverToTrustedWindows('better-auth:user-updated', null);
+  const epoch = identityEpoch;
+  void identityBarrier
+    .then(() => {
+      if (epoch === identityEpoch)
+        deliverToTrustedWindows('better-auth:user-updated', null);
+    })
+    .catch(() => undefined);
 };
 const publish = (channel: AcademicEventChannel, value: unknown) => {
+  observeCookie();
+  if (identityEpoch !== settledIdentityEpoch) return;
   if (channel === 'scholar:productEvent') {
     const parsedEvent = productEventV1Schema.safeParse(value);
     if (!parsedEvent.success || parsedEvent.data.accountId !== currentAccountId)
@@ -93,8 +140,8 @@ const publish = (channel: AcademicEventChannel, value: unknown) => {
   deliverToTrustedWindows(channel, value);
 };
 const publishReconnect = (user: unknown) => {
-  currentAccountId = getUserId(user);
   publishAuthIdentity(user);
+  currentAccountId = getUserId(user);
   deliverToTrustedWindows('scholar:coursesChange', {
     accountId: currentAccountId,
     courseId: null,
@@ -136,8 +183,15 @@ const ensureService = (): Promise<AcademicEndpointSchema> =>
           connected = null;
           if (!stopping)
             void ensureService()
-              .then(async (endpoint) => {
-                const user = await academicRequest(endpoint, 'getCurrentUser');
+              .then(async () => {
+                const user = await requestAcademicService('getCurrentUser');
+                const epoch = identityEpoch;
+                await identityBarrier;
+                if (
+                  epoch !== identityEpoch ||
+                  getUserId(user) !== currentAccountId
+                )
+                  return;
                 publishReconnect(user);
               })
               .catch(() => undefined);
@@ -152,12 +206,44 @@ export const requestAcademicService = async (
   method: AcademicMethod,
   input?: unknown,
 ) => {
+  const cookie = observeCookie();
+  if (method === 'signOut') {
+    invalidateIdentity();
+    authIdentity = null;
+  }
+  const epoch = identityEpoch;
+  if (method === 'signOut' || method === 'deleteStudySession')
+    await identityBarrier;
+  if (method === 'deleteStudySession') {
+    const sessionId = idSchema.parse(
+      input && typeof input === 'object' && 'sessionId' in input
+        ? input.sessionId
+        : undefined,
+    );
+    await lifecycle.beforeSessionDelete?.(sessionId);
+  }
   if (method === 'getCurrentUser' || method === 'signOut')
     currentAccountId = null;
-  const result = await academicRequest(await ensureService(), method, input);
+  const lookup = method === 'getCurrentUser' ? ++userLookup : 0;
+  const endpoint = await ensureService();
+  if (
+    method !== 'releaseActivityRun' &&
+    (cookie !== observeCookie() ||
+      (method !== 'getCurrentUser' && epoch !== identityEpoch))
+  )
+    throw new Error('Your session changed; sign in again.');
+  const result = await academicRequest(endpoint, method, input);
+  if (cookie !== observeCookie() && method !== 'releaseActivityRun')
+    throw new Error('Your session changed; sign in again.');
   if (method === 'getCurrentUser') {
-    currentAccountId = getUserId(result);
+    if (
+      (lookup < appliedUserLookup || epoch !== identityEpoch) &&
+      getAuthIdentity(result) !== authIdentity
+    )
+      throw new Error('Your session changed; sign in again.');
+    appliedUserLookup = Math.max(appliedUserLookup, lookup);
     publishAuthIdentity(result);
+    currentAccountId = getUserId(result);
   }
   if (method === 'signOut') {
     currentAccountId = null;
@@ -166,26 +252,55 @@ export const requestAcademicService = async (
   return result;
 };
 
-export const registerAcademicClient = async () => {
+export const registerAcademicClient = async (
+  options: AcademicClientLifecycle = {},
+) => {
+  lifecycle = options;
+  observeCookie();
+  stopAuthSubscription?.();
+  stopAuthSubscription = authClient.$store.atoms.session.subscribe(() => {
+    observeCookie();
+  });
   for (const method of rendererAcademicMethods) {
     ipcMain.handle(`scholar:${method}`, async (event, input: unknown) => {
       requireTrustedSender(event);
-      const result = await requestAcademicService(method, input);
+      const cookie = observeCookie();
+      const epoch = identityEpoch;
+      if (method !== 'getCurrentUser') await identityBarrier;
       requireTrustedSender(event);
+      if (
+        cookie !== observeCookie() ||
+        (method !== 'getCurrentUser' && epoch !== identityEpoch)
+      )
+        throw new Error('Your session changed; sign in again.');
+      const result = await requestAcademicService(method, input);
+      await identityBarrier;
+      requireTrustedSender(event);
+      if (
+        cookie !== observeCookie() ||
+        (method !== 'getCurrentUser' &&
+          method !== 'signOut' &&
+          epoch !== identityEpoch)
+      )
+        throw new Error('Your session changed; sign in again.');
       return result;
     });
   }
   await ensureService();
 };
 
-export const disconnectAcademicService = () => {
+export const disconnectAcademicService = async () => {
+  await lifecycle.beforeDisconnect?.();
+  await identityBarrier;
   stopping = true;
   currentAccountId = null;
   stopSubscription?.();
   stopSubscription = null;
+  stopAuthSubscription?.();
+  stopAuthSubscription = undefined;
 };
 export const stopAcademicService = async () => {
-  disconnectAcademicService();
+  await disconnectAcademicService();
   const endpoint = await findService().catch(() => null);
   if (endpoint) await academicRequest(endpoint, 'shutdown');
 };

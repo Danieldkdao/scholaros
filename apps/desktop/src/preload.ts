@@ -3,7 +3,12 @@ import { dictationEventSchema } from '@scholaros/services/learning/speech-contra
 import { productEventV1Schema } from '@scholaros/services/learning/product-contracts';
 import { setupRenderer } from '@better-auth/electron/preload';
 import { contextBridge, ipcRenderer } from 'electron';
-import { academicReconnectSchema } from './services/academic/contracts';
+import {
+  academicReconnectSchema,
+  activityRuntimeChangeSchema,
+  type ActivityRuntimeChange,
+} from './services/academic/contracts';
+import { idSchema } from '@scholaros/services/learning/product-contracts';
 import type {
   BackgroundSyncChange,
   PreviewState,
@@ -12,6 +17,7 @@ import type {
 } from './features/onboarding/types';
 
 setupRenderer();
+const earlyActivityChanges = new Map<string, ActivityRuntimeChange[]>();
 const bridge: ScholarBridge = {
   onProductEvent: (listener) => {
     const handler = (_event: unknown, value: unknown) => {
@@ -230,12 +236,68 @@ const bridge: ScholarBridge = {
     ipcRenderer.invoke('scholar:deleteLocalAcademicData', input),
   chooseContextFiles: (input) =>
     ipcRenderer.invoke('scholar:native:chooseContextFiles', input),
-  mountActivity: (input) =>
-    ipcRenderer.invoke('scholar:native:mountActivity', input),
+  mountActivity: async (input) => {
+    const early: ActivityRuntimeChange[] = [];
+    const handler = (_event: unknown, value: unknown) => {
+      const parsed = activityRuntimeChangeSchema.safeParse(value);
+      if (!parsed.success) return;
+      const change = parsed.data;
+      if (
+        change.sessionId === input.sessionId &&
+        change.artifactId === input.artifactId &&
+        change.versionId === input.versionId &&
+        change.attemptId === input.attemptId &&
+        early.length < 32
+      )
+        early.push(change);
+    };
+    // The runtime can report ready before the mount invoke resolves.
+    ipcRenderer.on('scholar:native:activityChange', handler);
+    try {
+      const result: unknown = await ipcRenderer.invoke(
+        'scholar:native:mountActivity',
+        input,
+      );
+      const runId = idSchema.parse(
+        result && typeof result === 'object' && 'runId' in result
+          ? result.runId
+          : undefined,
+      );
+      if (earlyActivityChanges.size >= 32) earlyActivityChanges.clear();
+      earlyActivityChanges.set(
+        runId,
+        early.filter((change) => change.runId === runId),
+      );
+      return { runId };
+    } finally {
+      ipcRenderer.removeListener('scholar:native:activityChange', handler);
+    }
+  },
+  onActivityChange: (runId, listener) => {
+    idSchema.parse(runId);
+    let active = true;
+    const handler = (_event: unknown, value: unknown) => {
+      if (!active) return;
+      const parsed = activityRuntimeChangeSchema.safeParse(value);
+      if (parsed.success && parsed.data.runId === runId) listener(parsed.data);
+    };
+    ipcRenderer.on('scholar:native:activityChange', handler);
+    const early = earlyActivityChanges.get(runId) ?? [];
+    earlyActivityChanges.delete(runId);
+    early.forEach((change) => listener(change));
+    return () => {
+      active = false;
+      ipcRenderer.removeListener('scholar:native:activityChange', handler);
+    };
+  },
   updateActivityBounds: (input) =>
     ipcRenderer.invoke('scholar:native:updateActivityBounds', input),
-  closeActivity: (input) =>
-    ipcRenderer.invoke('scholar:native:closeActivity', input),
+  closeActivity: async (input) => {
+    await ipcRenderer.invoke('scholar:native:closeActivity', input);
+    earlyActivityChanges.delete(input.runId);
+  },
+  retryActivityCheckpoint: (input) =>
+    ipcRenderer.invoke('scholar:native:retryActivityCheckpoint', input),
   startDictation: (input) =>
     ipcRenderer.invoke('scholar:native:startDictation', input),
   appendDictationAudio: (input) =>

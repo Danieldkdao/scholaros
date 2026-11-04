@@ -19,6 +19,7 @@ import type {
 } from '@scholaros/services/learning/speech-contracts';
 import type {
   AcademicReconnect,
+  ActivityRuntimeChange,
   AuthMode,
   CloseActivityInput,
   ContextFileSelectionInput,
@@ -336,6 +337,11 @@ export type ScholarBridge = LearningBridge & {
   mountActivity: (input: MountActivityInput) => Promise<{ runId: string }>;
   updateActivityBounds: (input: UpdateActivityBoundsInput) => Promise<void>;
   closeActivity: (input: CloseActivityInput) => Promise<void>;
+  retryActivityCheckpoint: (input: CloseActivityInput) => Promise<void>;
+  onActivityChange: (
+    runId: string,
+    listener: (change: ActivityRuntimeChange) => void,
+  ) => () => void;
   startDictation: (
     input: DictationStartInput,
   ) => Promise<{ operationId: string }>;

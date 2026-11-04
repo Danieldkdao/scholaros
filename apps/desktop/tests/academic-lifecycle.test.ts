@@ -1,8 +1,32 @@
 import { beforeEach, expect, it, vi } from 'vitest';
+import { createActivityContentDigest } from '../src/features/study/services/activity-policy';
+import type {
+  ActivityManagerDependencies,
+  ActivityMountInput,
+  AuthorizedActivityRun as RuntimeAuthorizedActivityRun,
+} from '../src/features/study/services/activity-runtime';
 const mocks = vi.hoisted(() => ({
   serviceMode: false,
   authCookie: 'test-session-a',
   windows: 0,
+  hostWindows: [] as {
+    webContents: {
+      mainFrame: { url: string };
+      send: ReturnType<typeof vi.fn>;
+      isDestroyed: () => boolean;
+    };
+    isDestroyed: () => boolean;
+    close: ReturnType<typeof vi.fn>;
+    emit: (name: string, event?: unknown) => void;
+  }[],
+  activityDependencies: null as ActivityManagerDependencies | null,
+  createActivityManager: vi.fn(),
+  mountActivity: vi.fn(),
+  updateActivityBounds: vi.fn(),
+  hideActivity: vi.fn(),
+  retryActivity: vi.fn(),
+  closeActivity: vi.fn(),
+  disposeActivities: vi.fn(),
   listeners: new Map<string, ((event?: unknown) => void)[]>(),
   ipcHandlers: new Map<string, (event: unknown, input?: unknown) => unknown>(),
   ready: vi.fn(),
@@ -25,10 +49,12 @@ const mocks = vi.hoisted(() => ({
   requestAuth: vi.fn(async () => undefined),
   getTrustedWindow: vi.fn(() => ({ id: 'trusted-window' })),
   installTrustedFocusedWebContentsGuard: vi.fn(),
-  requireTrustedSender: vi.fn((event: { trusted?: boolean }) => {
-    if (!event.trusted) throw new Error('Untrusted application frame.');
-    return event;
-  }),
+  requireTrustedSender: vi.fn(
+    (event: { trusted?: boolean; window?: unknown }) => {
+      if (!event.trusted) throw new Error('Untrusted application frame.');
+      return event.window ?? mocks.hostWindows[0];
+    },
+  ),
   runService: vi.fn(),
   loadLearningModules: vi.fn(async () => [vi.fn()]),
 }));
@@ -57,9 +83,30 @@ vi.mock('electron', () => ({
     static getAllWindows() {
       return [];
     }
-    webContents = {};
+    webContents = {
+      mainFrame: { url: 'file:///scholaros/index.html' },
+      send: vi.fn(),
+      isDestroyed: () => false,
+    };
+    windowListeners = new Map<string, ((event?: unknown) => void)[]>();
+    isDestroyed = () => false;
+    close = vi.fn();
+    on(name: string, callback: (event?: unknown) => void) {
+      this.windowListeners.set(name, [
+        ...(this.windowListeners.get(name) ?? []),
+        callback,
+      ]);
+    }
+    once(name: string, callback: (event?: unknown) => void) {
+      this.on(name, callback);
+    }
+    emit(name: string, event?: unknown) {
+      for (const callback of this.windowListeners.get(name) ?? [])
+        callback(event);
+    }
     constructor() {
       mocks.windows++;
+      mocks.hostWindows.push(this);
     }
     loadFile() {}
     loadURL() {}
@@ -96,10 +143,16 @@ vi.mock('../src/lib/window-navigation', () => ({
 }));
 vi.mock('../src/lib/trusted-windows', () => ({
   getTrustedWindow: mocks.getTrustedWindow,
+  getTrustedWindows: () => mocks.hostWindows,
+  isTrustedWebContents: (contents: unknown) =>
+    mocks.hostWindows.some((window) => window.webContents === contents),
   installTrustedFocusedWebContentsGuard:
     mocks.installTrustedFocusedWebContentsGuard,
   registerTrustedWindow: vi.fn(() => vi.fn()),
   requireTrustedSender: mocks.requireTrustedSender,
+}));
+vi.mock('../src/features/study/services/activity-runtime', () => ({
+  createActivityManager: mocks.createActivityManager,
 }));
 vi.mock('../src/services/academic/client', () => ({
   registerAcademicClient: mocks.register,
@@ -123,6 +176,42 @@ beforeEach(() => {
   mocks.listeners.clear();
   mocks.ipcHandlers.clear();
   mocks.windows = 0;
+  mocks.hostWindows = [];
+  mocks.activityDependencies = null;
+  mocks.createActivityManager.mockImplementation((dependencies) => {
+    mocks.activityDependencies = dependencies;
+    return {
+      mount: mocks.mountActivity,
+      updateBounds: mocks.updateActivityBounds,
+      hide: mocks.hideActivity,
+      retryCheckpoint: mocks.retryActivity,
+      close: mocks.closeActivity,
+      dispose: mocks.disposeActivities,
+    };
+  });
+  mocks.mountActivity.mockImplementation(async (input: ActivityMountInput) => {
+    const request = {
+      sessionId: input.sessionId,
+      artifactId: input.artifactId,
+      versionId: input.versionId,
+      attemptId: input.attemptId,
+      requestId: '11111111-1111-4111-8111-111111111111',
+    };
+    const run = await mocks
+      .activityDependencies!.authorizeRun(request)
+      .catch(async (error) => {
+        await mocks.activityDependencies!.releaseRun({
+          requestId: request.requestId,
+        });
+        throw error;
+      });
+    if (!run) throw new Error('Not authorized');
+    mocks.activityDependencies!.onRuntimeReady?.(run.runId);
+    return { runId: run.runId };
+  });
+  mocks.disposeActivities.mockResolvedValue(undefined);
+  mocks.closeActivity.mockResolvedValue(undefined);
+  mocks.retryActivity.mockResolvedValue(undefined);
   mocks.serviceMode = false;
   mocks.authCookie = 'test-session-a';
   mocks.ready.mockResolvedValue(undefined);
@@ -181,6 +270,709 @@ const activeStudySnapshot = () => ({
   activeTurn: null,
   sourceReferences: [],
   revision: 1,
+});
+const activityInput = () => ({
+  sessionId: 'session-a',
+  artifactId: 'artifact-a',
+  versionId: 'version-a',
+  attemptId: 'attempt-a',
+  presentation: 'inline',
+  readOnly: false,
+  bounds: { x: 10, y: 20, width: 400, height: 300 },
+});
+const activityAuthorization = (): RuntimeAuthorizedActivityRun => {
+  const bundle = {
+    html: '<p>Explore</p>',
+    css: 'p { display: block; }',
+    sdk: 'globalThis.sdk = true;',
+    javascript: 'globalThis.started = true;',
+  };
+  return {
+    ...bundle,
+    sessionId: 'session-a',
+    artifactId: 'artifact-a',
+    versionId: 'version-a',
+    attemptId: 'attempt-a',
+    runId: 'run-a',
+    runtimeVersion: 'activity-runtime-v1',
+    contentDigest: 'a'.repeat(64),
+    runtimeDigest: createActivityContentDigest(bundle),
+    stateRevision: 3,
+    initialState: { answer: 2 },
+  };
+};
+const mockActivityService = (authMode = 'online') => {
+  mocks.request.mockImplementation(async (method) => {
+    if (method === 'getCurrentUser') return { id: 'student-a', authMode };
+    if (method === 'getStudySession') return activeStudySnapshot();
+    if (method === 'authorizeActivityRun') return activityAuthorization();
+    if (method === 'releaseActivityRun') return undefined;
+    throw new Error(`Unexpected service method: ${method}`);
+  });
+};
+const activityEvent = (window = mocks.hostWindows[0]!) => ({
+  trusted: true,
+  window,
+  sender: window.webContents,
+  senderFrame: window.webContents.mainFrame,
+});
+it('mounts a native activity contract with host-derived offline read-only and rejects hostile senders', async () => {
+  mockActivityService('offline-local');
+  await import('../src/main');
+  await vi.waitFor(() => expect(mocks.windows).toBe(1));
+  const mount = mocks.ipcHandlers.get('scholar:native:mountActivity');
+  expect(mount).toBeTypeOf('function');
+  await expect(mount!({ trusted: false }, activityInput())).rejects.toThrow(
+    'Untrusted',
+  );
+  expect(mocks.mountActivity).not.toHaveBeenCalled();
+  const event = activityEvent();
+  await expect(mount!(event, activityInput())).resolves.toEqual({
+    runId: 'run-a',
+  });
+  expect(mocks.createActivityManager).toHaveBeenCalledOnce();
+  expect(mocks.mountActivity).toHaveBeenCalledWith({
+    hostWindow: event.window,
+    sessionId: 'session-a',
+    artifactId: 'artifact-a',
+    versionId: 'version-a',
+    attemptId: 'attempt-a',
+    readOnly: true,
+    bounds: activityInput().bounds,
+  });
+  expect(mocks.request).toHaveBeenCalledWith('authorizeActivityRun', {
+    sessionId: 'session-a',
+    artifactId: 'artifact-a',
+    versionId: 'version-a',
+    attemptId: 'attempt-a',
+    requestId: '11111111-1111-4111-8111-111111111111',
+  });
+  expect(
+    mocks.activityDependencies!.requireTrustedSender(event.sender as never),
+  ).toBe(true);
+  expect(mocks.activityDependencies!.requireTrustedSender({} as never)).toBe(
+    false,
+  );
+  expect(mocks.activityDependencies!.getTrustedRenderers()).toEqual([
+    event.sender,
+  ]);
+  await vi.waitFor(() =>
+    expect(event.sender.send).toHaveBeenCalledWith(
+      'scholar:native:activityChange',
+      {
+        kind: 'ready',
+        runId: 'run-a',
+        sessionId: 'session-a',
+        artifactId: 'artifact-a',
+        versionId: 'version-a',
+        attemptId: 'attempt-a',
+        runtimeVersion: 'activity-runtime-v1',
+        contentDigest: 'a'.repeat(64),
+        stateRevision: 3,
+      },
+    ),
+  );
+});
+it('projects validated artifact checkpoint revisions and routes host retry without renderer state', async () => {
+  mockActivityService();
+  await import('../src/main');
+  await vi.waitFor(() => expect(mocks.windows).toBe(1));
+  const event = activityEvent();
+  await mocks.ipcHandlers.get('scholar:native:mountActivity')!(
+    event,
+    activityInput(),
+  );
+  const proposal = {
+    sessionId: 'session-a',
+    artifactId: 'artifact-a',
+    versionId: 'version-a',
+    attemptId: 'attempt-a',
+    runId: 'run-a',
+    sequence: 2,
+    baseStateRevision: 3,
+    state: { answer: 4 },
+  };
+  mocks.request.mockImplementation(async (method) => {
+    if (method === 'getCurrentUser') return { id: 'student-a' };
+    if (method === 'getStudySession') return activeStudySnapshot();
+    if (method === 'checkpointArtifactState')
+      return {
+        artifactId: 'artifact-a',
+        versionId: 'version-a',
+        attemptId: 'attempt-a',
+        state: proposal.state,
+        stateRevision: 4,
+        updatedAt: '2026-11-03T00:00:00.000Z',
+      };
+    if (method === 'releaseActivityRun') return undefined;
+    throw new Error(`Unexpected method: ${method}`);
+  });
+  await expect(
+    mocks.activityDependencies!.persistState(proposal),
+  ).resolves.toEqual({ revision: 4 });
+  expect(mocks.request).toHaveBeenCalledWith(
+    'checkpointArtifactState',
+    proposal,
+  );
+  const retry = mocks.ipcHandlers.get('scholar:native:retryActivityCheckpoint');
+  expect(retry).toBeTypeOf('function');
+  await expect(retry!(event, { runId: 'run-a' })).resolves.toBeUndefined();
+  expect(mocks.retryActivity).toHaveBeenCalledWith({ runId: 'run-a' });
+  await expect(retry!(event, { runId: 'run-a', state: {} })).rejects.toThrow();
+  mocks.activityDependencies!.onStateAcknowledged?.('run-a', 4);
+  mocks.activityDependencies!.onStateFailure?.('run-a');
+  await vi.waitFor(() =>
+    expect(event.sender.send).toHaveBeenCalledWith(
+      'scholar:native:activityChange',
+      expect.objectContaining({
+        kind: 'checkpoint-failed',
+        runId: 'run-a',
+        stateRevision: 4,
+        errorCode: 'storage-failed',
+      }),
+    ),
+  );
+  await mocks.activityDependencies!.releaseRun({
+    runId: 'run-a',
+    requestId: '11111111-1111-4111-8111-111111111111',
+  });
+  expect(mocks.request).toHaveBeenCalledWith('releaseActivityRun', {
+    runId: 'run-a',
+    requestId: '11111111-1111-4111-8111-111111111111',
+  });
+});
+it('fences bounds, hide, retry and close by originating window and exact run', async () => {
+  mockActivityService();
+  await import('../src/main');
+  await vi.waitFor(() => expect(mocks.windows).toBe(1));
+  const event = activityEvent();
+  await mocks.ipcHandlers.get('scholar:native:mountActivity')!(
+    event,
+    activityInput(),
+  );
+  const other = {
+    ...event.window,
+    webContents: { ...event.sender, send: vi.fn() },
+  };
+  mocks.hostWindows.push(other);
+  const otherEvent = activityEvent(other);
+  for (const channel of [
+    'updateActivityBounds',
+    'retryActivityCheckpoint',
+    'closeActivity',
+  ]) {
+    const invoke = mocks.ipcHandlers.get(`scholar:native:${channel}`);
+    expect(invoke).toBeTypeOf('function');
+    const input =
+      channel === 'updateActivityBounds'
+        ? { runId: 'run-a', bounds: activityInput().bounds, visible: true }
+        : { runId: 'run-a' };
+    await expect(invoke!(otherEvent, input)).rejects.toThrow('scope');
+    await expect(
+      invoke!(event, { ...input, runId: 'other-run' }),
+    ).rejects.toThrow('scope');
+    await expect(invoke!({ trusted: false }, input)).rejects.toThrow(
+      'Untrusted',
+    );
+  }
+  const bounds = mocks.ipcHandlers.get('scholar:native:updateActivityBounds')!;
+  await bounds(event, {
+    runId: 'run-a',
+    bounds: activityInput().bounds,
+    visible: true,
+  });
+  expect(mocks.updateActivityBounds).toHaveBeenCalledWith(
+    'run-a',
+    activityInput().bounds,
+    true,
+  );
+  await bounds(event, {
+    runId: 'run-a',
+    bounds: activityInput().bounds,
+    visible: false,
+  });
+  expect(mocks.hideActivity).toHaveBeenCalledWith('run-a');
+  expect(mocks.mountActivity).toHaveBeenCalledOnce();
+  await mocks.ipcHandlers.get('scholar:native:closeActivity')!(event, {
+    runId: 'run-a',
+  });
+  expect(mocks.closeActivity).toHaveBeenCalledWith('run-a');
+  expect(other.webContents.send).not.toHaveBeenCalled();
+});
+it.each([
+  { stateRevision: -1 },
+  { stateRevision: 1.5 },
+  { stateRevision: Number.MAX_SAFE_INTEGER + 1 },
+  { artifactId: 'other-artifact' },
+  { versionId: 'other-version' },
+  { attemptId: 'other-attempt' },
+])(
+  'rejects malformed or cross-scope checkpoint responses: %o',
+  async (invalid) => {
+    mockActivityService();
+    await import('../src/main');
+    await vi.waitFor(() => expect(mocks.windows).toBe(1));
+    await mocks.ipcHandlers.get('scholar:native:mountActivity')!(
+      activityEvent(),
+      activityInput(),
+    );
+    mocks.request.mockImplementation(async (method) => {
+      if (method === 'getCurrentUser') return { id: 'student-a' };
+      if (method === 'getStudySession') return activeStudySnapshot();
+      return {
+        artifactId: 'artifact-a',
+        versionId: 'version-a',
+        attemptId: 'attempt-a',
+        state: {},
+        stateRevision: 4,
+        updatedAt: '2026-11-03T00:00:00.000Z',
+        ...invalid,
+      };
+    });
+    await expect(
+      mocks.activityDependencies!.persistState({
+        sessionId: 'session-a',
+        artifactId: 'artifact-a',
+        versionId: 'version-a',
+        attemptId: 'attempt-a',
+        runId: 'run-a',
+        sequence: 2,
+        baseStateRevision: 3,
+        state: {},
+      }),
+    ).rejects.toThrow();
+  },
+);
+it.each([
+  'identity',
+  'session-delete',
+  'disconnect',
+  'quit',
+  'window-close',
+  'window-destroyed',
+])(
+  'awaits activity disposal at the real %s lifecycle boundary',
+  async (boundary) => {
+    mockActivityService();
+    await import('../src/main');
+    await vi.waitFor(() => expect(mocks.windows).toBe(1));
+    const event = activityEvent();
+    await mocks.ipcHandlers.get('scholar:native:mountActivity')!(
+      event,
+      activityInput(),
+    );
+    let finish!: () => void;
+    mocks.disposeActivities.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const lifecycle = mocks.register.mock.calls[0]![0] as {
+      onIdentityChange: () => Promise<void>;
+      beforeSessionDelete: (sessionId: string) => Promise<void>;
+      beforeDisconnect: () => Promise<void>;
+    };
+    const preventDefault = vi.fn();
+    let operation: Promise<void> | undefined;
+    if (boundary === 'identity') operation = lifecycle.onIdentityChange();
+    if (boundary === 'session-delete')
+      operation = lifecycle.beforeSessionDelete('session-a');
+    if (boundary === 'disconnect') operation = lifecycle.beforeDisconnect();
+    if (boundary === 'quit') emit('before-quit', { preventDefault });
+    if (boundary === 'window-close')
+      event.window.emit('close', { preventDefault });
+    if (boundary === 'window-destroyed') {
+      event.window.emit('closed');
+      emit('window-all-closed');
+    }
+    await vi.waitFor(() =>
+      expect(mocks.disposeActivities).toHaveBeenCalledOnce(),
+    );
+    expect(mocks.stop).not.toHaveBeenCalled();
+    expect(mocks.disconnect).not.toHaveBeenCalled();
+    expect(event.window.close).not.toHaveBeenCalled();
+    if (boundary === 'quit' || boundary === 'window-close')
+      expect(preventDefault).toHaveBeenCalledOnce();
+    let settled = false;
+    const settlement = operation?.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    if (operation) expect(settled).toBe(false);
+    finish();
+    await settlement;
+    if (boundary === 'quit')
+      await vi.waitFor(() => expect(mocks.stop).toHaveBeenCalledOnce());
+    if (boundary === 'window-close')
+      await vi.waitFor(() => expect(event.window.close).toHaveBeenCalledOnce());
+    if (boundary === 'window-destroyed')
+      await vi.waitFor(() => expect(mocks.quit).toHaveBeenCalledOnce());
+  },
+);
+it('does not stop the service or exit when activity release fails on Quit', async () => {
+  mockActivityService();
+  await import('../src/main');
+  await vi.waitFor(() => expect(mocks.windows).toBe(1));
+  await mocks.ipcHandlers.get('scholar:native:mountActivity')!(
+    activityEvent(),
+    activityInput(),
+  );
+  mocks.disposeActivities.mockRejectedValueOnce(new Error('Release failed'));
+  emit('before-quit', { preventDefault: vi.fn() });
+  await vi.waitFor(() => expect(mocks.errorBox).toHaveBeenCalled());
+  expect(mocks.stop).not.toHaveBeenCalled();
+  expect(mocks.quit).not.toHaveBeenCalled();
+});
+it('rejects a cookie switched before queued mount authorization starts', async () => {
+  mockActivityService();
+  await import('../src/main');
+  await vi.waitFor(() => expect(mocks.windows).toBe(1));
+  const mounting = mocks.ipcHandlers.get('scholar:native:mountActivity')!(
+    activityEvent(),
+    activityInput(),
+  );
+  mocks.authCookie = 'test-session-b';
+  await expect(mounting).rejects.toThrow('session changed');
+  expect(mocks.mountActivity).not.toHaveBeenCalled();
+});
+it('closes an asynchronously mounted run instead of returning it after the account changes during session revalidation', async () => {
+  let accountId = 'student-a';
+  let mounted = false;
+  mocks.request.mockImplementation(async (method) => {
+    if (method === 'getCurrentUser') return { id: accountId };
+    if (method === 'getStudySession') {
+      if (mounted) accountId = 'student-b';
+      return activeStudySnapshot();
+    }
+    if (method === 'authorizeActivityRun') return activityAuthorization();
+    if (method === 'releaseActivityRun') return undefined;
+    throw new Error(`Unexpected method: ${method}`);
+  });
+  mocks.mountActivity.mockImplementationOnce(async () => {
+    await mocks.activityDependencies!.authorizeRun({
+      sessionId: 'session-a',
+      artifactId: 'artifact-a',
+      versionId: 'version-a',
+      attemptId: 'attempt-a',
+      requestId: '11111111-1111-4111-8111-111111111111',
+    });
+    mounted = true;
+    return { runId: 'run-a' };
+  });
+  await import('../src/main');
+  await vi.waitFor(() => expect(mocks.windows).toBe(1));
+  await expect(
+    mocks.ipcHandlers.get('scholar:native:mountActivity')!(
+      activityEvent(),
+      activityInput(),
+    ),
+  ).rejects.toThrow('session changed');
+  expect(mocks.closeActivity).toHaveBeenCalledWith('run-a');
+});
+it('drops an event when the account changes while its scoped study snapshot is resolving', async () => {
+  mockActivityService();
+  await import('../src/main');
+  await vi.waitFor(() => expect(mocks.windows).toBe(1));
+  const event = activityEvent();
+  await mocks.ipcHandlers.get('scholar:native:mountActivity')!(
+    event,
+    activityInput(),
+  );
+  await vi.waitFor(() => expect(event.sender.send).toHaveBeenCalled());
+  event.sender.send.mockClear();
+  let accountId = 'student-a';
+  mocks.request.mockImplementation(async (method) => {
+    if (method === 'getCurrentUser') return { id: accountId };
+    if (method === 'getStudySession') {
+      accountId = 'student-b';
+      return activeStudySnapshot();
+    }
+    throw new Error(`Unexpected method: ${method}`);
+  });
+  mocks.activityDependencies!.onStateFailure?.('run-a');
+  await vi.waitFor(() => expect(accountId).toBe('student-b'));
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  expect(event.sender.send).not.toHaveBeenCalled();
+});
+it.each(['bundle', 'state'])(
+  'rejects an oversized %s from the socket before binding a runtime',
+  async (field) => {
+    const authorization = activityAuthorization();
+    if (field === 'bundle') {
+      authorization.sdk = 'x'.repeat(512 * 1024);
+      authorization.runtimeDigest = createActivityContentDigest(authorization);
+    } else authorization.initialState = { answer: 'x'.repeat(64 * 1024) };
+    mocks.request.mockImplementation(async (method) => {
+      if (method === 'getCurrentUser') return { id: 'student-a' };
+      if (method === 'getStudySession') return activeStudySnapshot();
+      if (method === 'authorizeActivityRun') return authorization;
+      if (method === 'releaseActivityRun') return undefined;
+      throw new Error(`Unexpected method: ${method}`);
+    });
+    await import('../src/main');
+    await vi.waitFor(() => expect(mocks.windows).toBe(1));
+    await expect(
+      mocks.ipcHandlers.get('scholar:native:mountActivity')!(
+        activityEvent(),
+        activityInput(),
+      ),
+    ).rejects.toThrow();
+    expect(mocks.request).toHaveBeenCalledWith('releaseActivityRun', {
+      requestId: '11111111-1111-4111-8111-111111111111',
+    });
+  },
+);
+it.each([
+  { artifactId: 'other-artifact' },
+  { versionId: 'other-version' },
+  { sessionId: 'other-session' },
+  { attemptId: 'other-attempt' },
+  { runtimeVersion: 1 },
+  { runtimeDigest: 'b'.repeat(64) },
+  { contentDigest: 'invalid' },
+  { stateRevision: -1 },
+  { initialState: undefined },
+])(
+  'rejects unknown or cross-scope socket authorizations and releases the authorization request: %o',
+  async (invalid) => {
+    mocks.request.mockImplementation(async (method) => {
+      if (method === 'getCurrentUser') return { id: 'student-a' };
+      if (method === 'getStudySession') return activeStudySnapshot();
+      if (method === 'authorizeActivityRun')
+        return { ...activityAuthorization(), ...invalid };
+      if (method === 'releaseActivityRun') return undefined;
+      throw new Error(`Unexpected method: ${method}`);
+    });
+    await import('../src/main');
+    await vi.waitFor(() => expect(mocks.windows).toBe(1));
+    await expect(
+      mocks.ipcHandlers.get('scholar:native:mountActivity')!(
+        activityEvent(),
+        activityInput(),
+      ),
+    ).rejects.toThrow();
+    expect(mocks.request).toHaveBeenCalledWith('releaseActivityRun', {
+      requestId: '11111111-1111-4111-8111-111111111111',
+    });
+  },
+);
+it.each(['account', 'cookie', 'document', 'session'])(
+  'closes a pending mount instead of returning a stale run after its %s changes',
+  async (changed) => {
+    let accountId = 'student-a';
+    let deleted = false;
+    mocks.request.mockImplementation(async (method) => {
+      if (method === 'getCurrentUser') return { id: accountId };
+      if (method === 'getStudySession')
+        return deleted ? null : activeStudySnapshot();
+      if (method === 'authorizeActivityRun') return activityAuthorization();
+      if (method === 'releaseActivityRun') return undefined;
+      throw new Error(`Unexpected method: ${method}`);
+    });
+    let finish!: () => void;
+    mocks.mountActivity.mockImplementationOnce(async () => {
+      await mocks.activityDependencies!.authorizeRun({
+        sessionId: 'session-a',
+        artifactId: 'artifact-a',
+        versionId: 'version-a',
+        attemptId: 'attempt-a',
+        requestId: '11111111-1111-4111-8111-111111111111',
+      });
+      await new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      return { runId: 'run-a' };
+    });
+    await import('../src/main');
+    await vi.waitFor(() => expect(mocks.windows).toBe(1));
+    const event = activityEvent();
+    const mounting = mocks.ipcHandlers.get('scholar:native:mountActivity')!(
+      event,
+      activityInput(),
+    );
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+    if (changed === 'account') accountId = 'student-b';
+    if (changed === 'cookie') mocks.authCookie = 'test-session-b';
+    if (changed === 'document')
+      event.sender.mainFrame = { url: 'file:///scholaros/index.html' };
+    if (changed === 'session') deleted = true;
+    const rejection = expect(mounting).rejects.toThrow();
+    finish();
+    await rejection;
+    expect(mocks.closeActivity).toHaveBeenCalledWith('run-a');
+    expect(event.sender.send).not.toHaveBeenCalled();
+  },
+);
+it('does not return a runtime that closed before mount settled', async () => {
+  mockActivityService();
+  mocks.mountActivity.mockImplementationOnce(async () => {
+    await mocks.activityDependencies!.authorizeRun({
+      sessionId: 'session-a',
+      artifactId: 'artifact-a',
+      versionId: 'version-a',
+      attemptId: 'attempt-a',
+      requestId: '11111111-1111-4111-8111-111111111111',
+    });
+    mocks.activityDependencies!.onClosed?.({
+      runId: 'run-a',
+      reason: 'activity-bootstrap-timeout',
+    });
+    return { runId: 'run-a' };
+  });
+  await import('../src/main');
+  await vi.waitFor(() => expect(mocks.windows).toBe(1));
+  await expect(
+    mocks.ipcHandlers.get('scholar:native:mountActivity')!(
+      activityEvent(),
+      activityInput(),
+    ),
+  ).rejects.toThrow();
+  expect(mocks.closeActivity).toHaveBeenCalledWith('run-a');
+});
+it('does not forward interaction payloads or changes from an unknown run', async () => {
+  mockActivityService();
+  await import('../src/main');
+  await vi.waitFor(() => expect(mocks.windows).toBe(1));
+  const event = activityEvent();
+  await mocks.ipcHandlers.get('scholar:native:mountActivity')!(
+    event,
+    activityInput(),
+  );
+  await vi.waitFor(() => expect(event.sender.send).toHaveBeenCalled());
+  event.sender.send.mockClear();
+  mocks.activityDependencies!.onRuntimeReady?.('other-run');
+  mocks.activityDependencies!.onStateAcknowledged?.('other-run', 4);
+  mocks.activityDependencies!.onStateFailure?.('other-run');
+  mocks.activityDependencies!.onClosed?.({
+    runId: 'other-run',
+    reason: 'closed',
+  });
+  await expect(
+    mocks.activityDependencies!.onInteraction?.({
+      runId: 'other-run',
+      action: 'explore',
+      value: 'private',
+    }),
+  ).rejects.toThrow('scope');
+  await mocks.activityDependencies!.onInteraction?.({
+    runId: 'run-a',
+    action: 'explore',
+    value: 'private',
+  });
+  expect(event.sender.send).not.toHaveBeenCalled();
+});
+it.each(['reply', 'cookie-error'])(
+  'unwinds a pending authorization %s with the runtime cancellation contract before identity disposal settles',
+  async (outcome) => {
+    let finishAuthorization!: (run: RuntimeAuthorizedActivityRun) => void;
+    let failAuthorization!: (error: Error) => void;
+    mocks.request.mockImplementation(async (method) => {
+      if (method === 'getCurrentUser') return { id: 'student-a' };
+      if (method === 'getStudySession') return activeStudySnapshot();
+      if (method === 'authorizeActivityRun')
+        return new Promise<RuntimeAuthorizedActivityRun>((resolve, reject) => {
+          finishAuthorization = resolve;
+          failAuthorization = reject;
+        });
+      if (method === 'releaseActivityRun') return undefined;
+      throw new Error(`Unexpected method: ${method}`);
+    });
+    await import('../src/main');
+    await vi.waitFor(() => expect(mocks.windows).toBe(1));
+    const mounting = Promise.resolve(
+      mocks.ipcHandlers.get('scholar:native:mountActivity')!(
+        activityEvent(),
+        activityInput(),
+      ),
+    );
+    const rejected = expect(mounting).rejects.toThrow(
+      'The activity mount authorization became stale.',
+    );
+    await vi.waitFor(() => expect(finishAuthorization).toBeTypeOf('function'));
+    mocks.disposeActivities.mockImplementationOnce(async () => {
+      const error = await mounting.then(
+        () => null,
+        (cause: unknown) => cause,
+      );
+      if (
+        !(error instanceof Error) ||
+        error.message !== 'The activity mount authorization became stale.'
+      )
+        throw new Error(
+          'The runtime would surface an unexpected pending-mount failure.',
+        );
+    });
+    const lifecycle = mocks.register.mock.calls[0]![0] as {
+      onIdentityChange: () => Promise<void>;
+    };
+    const disposing = lifecycle.onIdentityChange();
+    const completed = Promise.all([
+      rejected,
+      expect(disposing).resolves.toBeUndefined(),
+    ]);
+    if (outcome === 'reply') finishAuthorization(activityAuthorization());
+    else failAuthorization(new Error('Your session changed; sign in again.'));
+    await completed;
+    expect(mocks.request).toHaveBeenCalledWith('releaseActivityRun', {
+      requestId: '11111111-1111-4111-8111-111111111111',
+    });
+  },
+);
+it('settles the scoped closed event before removing its run and returning native close', async () => {
+  mockActivityService();
+  await import('../src/main');
+  await vi.waitFor(() => expect(mocks.windows).toBe(1));
+  const event = activityEvent();
+  await mocks.ipcHandlers.get('scholar:native:mountActivity')!(
+    event,
+    activityInput(),
+  );
+  await vi.waitFor(() => expect(event.sender.send).toHaveBeenCalled());
+  event.sender.send.mockClear();
+  let unblock!: (snapshot: ReturnType<typeof activeStudySnapshot>) => void;
+  let sessionReads = 0;
+  let closed = false;
+  mocks.request.mockImplementation(async (method) => {
+    if (method === 'getCurrentUser') return { id: 'student-a' };
+    if (method === 'getStudySession') {
+      if (closed && ++sessionReads === 1)
+        return new Promise((resolve) => {
+          unblock = resolve;
+        });
+      return activeStudySnapshot();
+    }
+    throw new Error(`Unexpected method: ${method}`);
+  });
+  mocks.closeActivity.mockImplementationOnce(async () => {
+    closed = true;
+    mocks.activityDependencies!.onClosed?.({
+      runId: 'run-a',
+      reason: 'closed',
+    });
+  });
+  let settled = false;
+  const closing = Promise.resolve(
+    mocks.ipcHandlers.get('scholar:native:closeActivity')!(event, {
+      runId: 'run-a',
+    }),
+  ).then(() => {
+    settled = true;
+  });
+  await vi.waitFor(() => expect(unblock).toBeTypeOf('function'));
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  const returnedBeforeEvent = settled;
+  unblock(activeStudySnapshot());
+  await closing;
+  expect(returnedBeforeEvent).toBe(false);
+  expect(event.sender.send).toHaveBeenCalledWith(
+    'scholar:native:activityChange',
+    expect.objectContaining({
+      kind: 'closed',
+      runId: 'run-a',
+      errorCode: 'cancelled',
+    }),
+  );
 });
 it('runs the service without a desktop window or renderer authentication bridges', async () => {
   mocks.serviceMode = true;
