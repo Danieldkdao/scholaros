@@ -136,6 +136,26 @@ export const productEventResources = [
   'device',
 ] as const;
 export type ProductEventResource = (typeof productEventResources)[number];
+// Transient delivery of text that has already passed safety checks and been
+// committed. Durable messages remain the authority for citations and activities.
+export const approvedTutorOutputSchema = z.strictObject({
+  turnId: idSchema,
+  generationEpoch: revisionSchema,
+  messageId: idSchema,
+  messageSequence: revisionSchema,
+  createdAt: instantSchema,
+  gradeDerived: z.boolean(),
+  gradeConsentRevision: revisionSchema.nullable(),
+  partIndex: z.number().int().min(0).max(99),
+  sequence: z.number().int().min(0).max(2000),
+  textDelta: z.string().max(4096),
+  done: z.boolean(),
+});
+export type ApprovedTutorOutputSchema = z.infer<
+  typeof approvedTutorOutputSchema
+>;
+export type ApprovedTutorOutput = z.infer<typeof approvedTutorOutputSchema>;
+
 export const productEventV1Schema = z.strictObject({
   version: z.literal(1),
   accountId: idSchema,
@@ -144,6 +164,7 @@ export const productEventV1Schema = z.strictObject({
   targetId: idSchema.nullable(),
   outcome: z.enum(productEventOutcomes).optional(),
   operationId: idSchema.optional(),
+  approvedTutorOutput: approvedTutorOutputSchema.optional(),
 });
 export type ProductEventV1Schema = z.infer<typeof productEventV1Schema>;
 export type ProductEventV1 = z.infer<typeof productEventV1Schema>;

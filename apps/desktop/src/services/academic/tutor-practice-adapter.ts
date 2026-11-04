@@ -1,3 +1,4 @@
+import { publishApprovedTutorOutput } from '../../features/study/services/approved-output';
 import { and, eq, isNull } from 'drizzle-orm';
 import {
   learningRequestSchema,
@@ -23,6 +24,8 @@ import {
   CourseAssignmentTable,
   CourseTable,
   StudyMessageTable,
+  StudySessionTable,
+  SettingTable,
   StudyTurnTable,
 } from '../../db/schema';
 import { searchStudySources } from '../../features/context/services/library-retrieval';
@@ -764,6 +767,62 @@ export const registerTutorPracticeActions = (
       await requireSession(context, sessionId);
       await sessionStore.commitStudyTurn(context, input, beforePublish);
       const snapshot = await requireSession(context, sessionId);
+      if (snapshot.session.generationEpoch === input.generationEpoch) {
+        const message = snapshot.messages.find(
+          (candidate) =>
+            candidate.turnId === input.turnId && candidate.role === 'tutor',
+        );
+        if (message)
+          publishApprovedTutorOutput(
+            context,
+            {
+              sessionId,
+              generationEpoch: input.generationEpoch,
+              revision: snapshot.revision,
+              message,
+            },
+            registrar.publish,
+            () => {
+              const currentSession = db
+                .select()
+                .from(StudySessionTable)
+                .where(
+                  and(
+                    eq(StudySessionTable.id, sessionId),
+                    eq(StudySessionTable.userId, context.userId),
+                    isNull(StudySessionTable.deletedAt),
+                  ),
+                )
+                .get();
+              const currentMessage = db
+                .select()
+                .from(StudyMessageTable)
+                .where(
+                  and(
+                    eq(StudyMessageTable.id, message.id),
+                    eq(StudyMessageTable.userId, context.userId),
+                  ),
+                )
+                .get();
+              if (
+                currentSession?.generationEpoch !== input.generationEpoch ||
+                currentMessage?.status !== 'accepted'
+              )
+                return false;
+              if (!message.gradeDerived) return true;
+              const settings = db
+                .select()
+                .from(SettingTable)
+                .where(eq(SettingTable.userId, context.userId))
+                .get();
+              const grades = settings?.productPreferences?.grades;
+              return (
+                grades?.enabled === true &&
+                grades.revision === message.gradeConsentRevision
+              );
+            },
+          );
+      }
       return { committed: true, revision: snapshot.revision };
     },
     appendStudyTurnParts: (context, input) =>

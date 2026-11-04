@@ -409,6 +409,104 @@ describe('real tutor and practice academic registration', () => {
     ).toEqual([]);
   });
 
+  it('creates a real sandboxed concept activity without course materials and streams only its committed explanation', async () => {
+    const artifactStore = createArtifactStore({ db });
+    const candidate = {
+      title: 'Number explorer',
+      objective: 'Explore numbers.',
+      html: '<label for="number">Number</label><input id="number" type="number" value="1"><output id="result" aria-live="polite">1</output>',
+      css: '',
+      javascript:
+        'const input = document.querySelector("#number"); const output = document.querySelector("#result"); input.addEventListener("input", () => { output.textContent = input.value; });',
+      accessibleExplanation: 'Change the number to inspect its value.',
+      runtimeVersion: 1 as const,
+      sourceReferences: [],
+    };
+    const createConcept: TutorPracticeDependencies['createActivity'] = async (
+      authorized,
+      input,
+    ) => {
+      expect(input.references).toEqual([]);
+      expect(events.some((event) => event.approvedTutorOutput)).toBe(false);
+      const decision = assessCandidate(authorized, {
+        sessionId: input.sessionId,
+        turnId: input.turnId,
+        candidate,
+        policy: input.policy,
+        sourceReferences: [],
+      });
+      const created = await artifactStore.createArtifactVersion(authorized, {
+        sessionId: input.sessionId,
+        turnId: input.turnId,
+        requestId: input.requestId,
+        candidate,
+        policyDecision: {
+          allowed: decision.allowed,
+          reasonCode: decision.reasonCode,
+          revision: decision.revision,
+        },
+      });
+      return {
+        artifactId: created.version.artifactId,
+        versionId: created.version.versionId,
+        attemptId: created.attemptId,
+      };
+    };
+    cleanup = registerTutorPracticeActions(
+      {
+        ...registrar,
+        publish: (event) => {
+          if (event.approvedTutorOutput) {
+            const persisted = db
+              .select()
+              .from(StudyMessageTable)
+              .where(
+                eq(StudyMessageTable.id, event.approvedTutorOutput.messageId),
+              )
+              .get();
+            expect(persisted?.role).toBe('tutor');
+            expect(
+              persisted?.parts.some(({ kind }) => kind === 'activity'),
+            ).toBe(true);
+            expect(
+              db
+                .select()
+                .from(StudyTurnTable)
+                .where(eq(StudyTurnTable.id, event.approvedTutorOutput.turnId))
+                .get()?.status,
+            ).toBe('complete');
+          }
+          events.push(event);
+        },
+      },
+      {
+        sessionStore,
+        createActivity: createConcept,
+        requestLearning: async (request, signal) => ({
+          ...(await tutorResponse(request, signal)),
+          proposedEffects: [{ kind: 'create-activity', candidate }],
+        }),
+      },
+    );
+    try {
+      const session = await createSession();
+      await send(session.id);
+      await vi.waitFor(() =>
+        expect(
+          events.some(({ approvedTutorOutput }) => approvedTutorOutput?.done),
+        ).toBe(true),
+      );
+      expect(
+        (await snapshot(session.id))?.messages
+          .flatMap(({ parts }) => parts)
+          .some(({ kind }) => kind === 'activity'),
+      ).toBe(true);
+      expect(db.select().from(ArtifactTable).all()).toHaveLength(1);
+    } finally {
+      artifactStore.dispose();
+    }
+  });
+
   it('persists approved activity effects while the real P20 turn is active and appends only after publication', async () => {
     db.insert(CourseAssignmentTable)
       .values({
