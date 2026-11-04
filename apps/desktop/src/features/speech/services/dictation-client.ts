@@ -297,28 +297,36 @@ export const createDictationClient = (
         );
         if (!parsedResponse.success)
           throw new DictationClientError('provider-failed');
+        if (operations.has(parsedResponse.data.operationId))
+          throw new DictationClientError('revision-conflict');
+        const operation: ActiveDictation = {
+          operationId: parsedResponse.data.operationId,
+          sessionId: parsedInput.data.sessionId,
+          composerRevision: parsedInput.data.composerRevision,
+          nextAudioSequence: 0,
+          audioDigests: new Map(),
+          pendingAudioDigests: new Map(),
+          pendingAudioPromises: new Map(),
+          lastEventSequence: -1,
+          readySeen: false,
+          stopRequested: false,
+          finalAccepted: false,
+          eventsStarted: false,
+          lifecycleController: new AbortController(),
+          eventController: null,
+        };
+        operations.set(operation.operationId, operation);
+        if (requestSignal.aborted) {
+          await cancelDictation(operation.operationId).catch(() => undefined);
+          throw new DictationClientError('cancelled');
+        }
         return parsedResponse.data;
       })();
       const startResponse = await raceWithAbort(startRequest, requestSignal);
-      if (requestSignal.aborted) throw new DictationClientError('cancelled');
-      if (operations.has(startResponse.operationId))
-        throw new DictationClientError('revision-conflict');
-      operations.set(startResponse.operationId, {
-        operationId: startResponse.operationId,
-        sessionId: parsedInput.data.sessionId,
-        composerRevision: parsedInput.data.composerRevision,
-        nextAudioSequence: 0,
-        audioDigests: new Map(),
-        pendingAudioDigests: new Map(),
-        pendingAudioPromises: new Map(),
-        lastEventSequence: -1,
-        readySeen: false,
-        stopRequested: false,
-        finalAccepted: false,
-        eventsStarted: false,
-        lifecycleController: new AbortController(),
-        eventController: null,
-      });
+      if (requestSignal.aborted) {
+        await cancelDictation(startResponse.operationId).catch(() => undefined);
+        throw new DictationClientError('cancelled');
+      }
       return startResponse;
     } catch (error) {
       if (error instanceof DictationClientError) throw error;

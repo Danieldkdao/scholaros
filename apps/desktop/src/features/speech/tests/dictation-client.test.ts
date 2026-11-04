@@ -148,21 +148,23 @@ describe('authenticated desktop Meta dictation client', () => {
     ).rejects.toMatchObject({ code: 'session-changed' });
   });
 
-  it('settles a cancelled start promptly and ignores a late start response', async () => {
-    let resolveStart!: (response: Response) => void;
-    const startResponse = new Promise<Response>((resolve) => {
+  it('settles canceled starts promptly and cancels a late operation response', async () => {
+    let resolveStart: (response: Response) => void = () => undefined;
+    const pendingStartResponse = new Promise<Response>((resolve) => {
       resolveStart = resolve;
     });
-    const fetchAuthorized = vi.fn<AuthorizedDictationFetch>(
-      () => startResponse,
+    const fetchAuthorized = vi.fn<AuthorizedDictationFetch>(async (path) =>
+      path === '/api/dictation'
+        ? pendingStartResponse
+        : Response.json({ operationId: 'operation-a' }),
     );
     const client = createDictationClient(fetchAuthorized);
-    const startResult = client.startDictation(startInput);
-    const startOutcome = startResult.then(
+    const startOutcome = client.startDictation(startInput).then(
       () => ({ kind: 'resolved' as const }),
       (error: unknown) => ({ kind: 'rejected' as const, error }),
     );
 
+    await vi.waitFor(() => expect(fetchAuthorized).toHaveBeenCalledOnce());
     await client.cancelAll();
     const outcomeBeforeResponse = await Promise.race([
       startOutcome,
@@ -171,6 +173,7 @@ describe('authenticated desktop Meta dictation client', () => {
       ),
     ]);
     resolveStart(Response.json({ operationId: 'operation-a' }));
+    await vi.waitFor(() => expect(fetchAuthorized).toHaveBeenCalledTimes(2));
     const outcomeAfterResponse = await startOutcome;
 
     expect(outcomeBeforeResponse).toMatchObject({
@@ -180,6 +183,17 @@ describe('authenticated desktop Meta dictation client', () => {
     expect(outcomeAfterResponse).toMatchObject({
       kind: 'rejected',
       error: { code: 'cancelled' },
+    });
+    expect(fetchAuthorized.mock.calls.map(([path]) => path)).toEqual([
+      '/api/dictation',
+      '/api/dictation/control?operationId=operation-a',
+    ]);
+    expect(fetchAuthorized.mock.calls[1]?.[1]).toMatchObject({
+      method: 'DELETE',
+      headers: {
+        'X-Dictation-Session-Id': 'session-test',
+        'X-Dictation-Composer-Revision': '4',
+      },
     });
     expect(client.activeOperationCount()).toBe(0);
   });
