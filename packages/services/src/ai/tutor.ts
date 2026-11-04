@@ -264,10 +264,6 @@ export const assessPracticeCandidateForLearning = async (
   signal: AbortSignal,
 ) => {
   signalFrom(signal);
-  const selectedProvider = (serverEnv as unknown as Record<string, unknown>)
-    .INFERENCE_PROVIDER;
-  if (selectedProvider !== undefined && selectedProvider !== 'meta')
-    throw new LearningDispatchError('feature-unavailable');
   let assessment;
   try {
     assessment = await assessLearningCandidate(

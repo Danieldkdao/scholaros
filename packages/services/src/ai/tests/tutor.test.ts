@@ -389,55 +389,59 @@ describe('Meta practice handlers', () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
-  it('generates host-private practice and assesses the full candidate with Meta Standard', async () => {
-    const outputs: unknown[] = [
-      practiceModelCandidate,
-      safeIntegrityAssessment,
-      { allowed: true, reasonCode: 'safe' },
-    ];
-    const fetchMock = vi.fn(async (_url: string, _init: RequestInit) =>
-      metaChatResponse(outputs.shift()),
-    );
-    vi.stubGlobal('fetch', fetchMock);
+  it.each([undefined, 'retired-alternative'])(
+    'generates and assesses private practice with Meta regardless of stale selector %s',
+    async (selectedProvider) => {
+      Object.assign(serverEnv, { INFERENCE_PROVIDER: selectedProvider });
+      const outputs: unknown[] = [
+        practiceModelCandidate,
+        safeIntegrityAssessment,
+        { allowed: true, reasonCode: 'safe' },
+      ];
+      const fetchMock = vi.fn(async (_url: string, _init: RequestInit) =>
+        metaChatResponse(outputs.shift()),
+      );
+      vi.stubGlobal('fetch', fetchMock);
 
-    const result = await generatePracticeCandidateForLearning(
-      practiceGenerationRequest,
-      new AbortController().signal,
-    );
-    await assessPracticeCandidateForLearning(
-      practiceGenerationRequest,
-      result.candidate,
-      new AbortController().signal,
-    );
+      const result = await generatePracticeCandidateForLearning(
+        practiceGenerationRequest,
+        new AbortController().signal,
+      );
+      await assessPracticeCandidateForLearning(
+        practiceGenerationRequest,
+        result.candidate,
+        new AbortController().signal,
+      );
 
-    expect(result.candidate.questions).toHaveLength(1);
-    expect(result.candidate.hostAnswerKey).toHaveLength(1);
-    expect(JSON.stringify(result.candidate.questions)).not.toContain(
-      'correctOptionId',
-    );
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-    expect(
-      fetchMock.mock.calls.map(
-        ([, options]) => JSON.parse(String(options.body)).model,
-      ),
-    ).toEqual(['muse-spark-1.3', 'muse-spark-1.3', 'muse-spark-1.3']);
-    const integrityRequest = JSON.stringify(
-      JSON.parse(String(fetchMock.mock.calls[1]![1].body)),
-    );
-    expect(integrityRequest).not.toContain('hostAnswerKey');
-    expect(integrityRequest).not.toContain('correctOptionId');
-    expect(integrityRequest).toContain(
-      'Which structure regulates cell transport?',
-    );
-    expect(integrityRequest).toContain(
-      'One earlier practice attempt covered transport.',
-    );
-    const privateAssessment = JSON.stringify(
-      JSON.parse(String(fetchMock.mock.calls[2]![1].body)),
-    );
-    expect(privateAssessment).toContain('hostAnswerKey');
-    expect(privateAssessment).toContain('correctOptionId');
-  });
+      expect(result.candidate.questions).toHaveLength(1);
+      expect(result.candidate.hostAnswerKey).toHaveLength(1);
+      expect(JSON.stringify(result.candidate.questions)).not.toContain(
+        'correctOptionId',
+      );
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(
+        fetchMock.mock.calls.map(
+          ([, options]) => JSON.parse(String(options.body)).model,
+        ),
+      ).toEqual(['muse-spark-1.3', 'muse-spark-1.3', 'muse-spark-1.3']);
+      const integrityRequest = JSON.stringify(
+        JSON.parse(String(fetchMock.mock.calls[1]![1].body)),
+      );
+      expect(integrityRequest).not.toContain('hostAnswerKey');
+      expect(integrityRequest).not.toContain('correctOptionId');
+      expect(integrityRequest).toContain(
+        'Which structure regulates cell transport?',
+      );
+      expect(integrityRequest).toContain(
+        'One earlier practice attempt covered transport.',
+      );
+      const privateAssessment = JSON.stringify(
+        JSON.parse(String(fetchMock.mock.calls[2]![1].body)),
+      );
+      expect(privateAssessment).toContain('hostAnswerKey');
+      expect(privateAssessment).toContain('correctOptionId');
+    },
+  );
 
   it('evaluates short explanations through the P23 evaluator on Meta Standard', async () => {
     const question: PracticeQuestionDTO = {
@@ -582,11 +586,7 @@ describe('Meta practice handlers', () => {
       ),
     ).rejects.toMatchObject({ code: 'scope-denied' });
 
-    Object.assign(serverEnv, {
-      META_MODEL: 'muse-spark-1.3',
-      INFERENCE_PROVIDER: 'baseten',
-      BASETEN_API_KEY: 'legacy-test-key',
-    });
+    serverEnv.META_API_KEY = undefined;
     await expect(
       assessPracticeCandidateForLearning(
         practiceGenerationRequest,
@@ -595,6 +595,7 @@ describe('Meta practice handlers', () => {
       ),
     ).rejects.toMatchObject({ code: 'feature-unavailable' });
 
+    serverEnv.META_API_KEY = 'x';
     serverEnv.META_MODEL = 'muse-spark-1.3-contributor';
     await expect(
       assessPracticeCandidateForLearning(
