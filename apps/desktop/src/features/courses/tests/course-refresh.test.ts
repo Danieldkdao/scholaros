@@ -1878,26 +1878,43 @@ it('keeps source error details out of refresh activity events', async () => {
   expect(activity?.events).toContain('Some course data could not be read.');
 });
 
-it('reports a bounded actionable provider failure without exposing private source details', async () => {
-  insertConnection('lms', host);
-  mocks.scan.mockResolvedValueOnce({
-    outcome: 'blocked',
-    entries: [],
-    observed: null,
-    notesOmitted: false,
-    followed: null,
-    truncated: false,
-    message:
-      'Meta API HTTP 429 quota exceeded student-one session-token-private',
-  });
-  const result = await startConnectionRefresh(student, 'lms');
-  const activity = academicTasks
-    .getActivity(student)
-    .find((run) => run.key === 'connection:lms');
-  expect(result.status).toBe('partial');
-  expect(activity?.events).toContain(
+it.each([
+  [
+    'Meta API HTTP 429 quota exceeded',
     'The AI provider usage limit was reached. Retry after the limit resets.',
-  );
-  expect(activity?.events.join(' ')).not.toContain('session-token-private');
-  expect(activity?.events.join(' ')).not.toContain('student-one');
-});
+  ],
+  [
+    'The AI provider credentials were rejected.',
+    'The AI provider credentials were rejected. Check the server Meta API configuration.',
+  ],
+  [
+    'The AI service returned unreadable course data.',
+    'The AI service returned unreadable course data. Retry the refresh.',
+  ],
+  [
+    'The configured model cannot perform this operation.',
+    'Course reading is unavailable with the configured Meta model.',
+  ],
+])(
+  'reports a bounded actionable provider failure %s without private details',
+  async (failure, expected) => {
+    insertConnection('lms', host);
+    mocks.scan.mockResolvedValueOnce({
+      outcome: 'blocked',
+      entries: [],
+      observed: null,
+      notesOmitted: false,
+      followed: null,
+      truncated: false,
+      message: `${failure} student-one session-token-private`,
+    });
+    const result = await startConnectionRefresh(student, 'lms');
+    const activity = academicTasks
+      .getActivity(student)
+      .find((run) => run.key === 'connection:lms');
+    expect(result.status).toBe('partial');
+    expect(activity?.events).toContain(expected);
+    expect(activity?.events.join(' ')).not.toContain('session-token-private');
+    expect(activity?.events.join(' ')).not.toContain('student-one');
+  },
+);

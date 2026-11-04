@@ -112,12 +112,18 @@ const refreshReadFailureMessage = (error: unknown) => {
     return 'The AI provider usage limit was reached. Retry after the limit resets.';
   if (/timed? ?out|timeout/i.test(message))
     return 'Reading the course source timed out. Retry the refresh.';
+  if (/provider credentials were rejected/i.test(message))
+    return 'The AI provider credentials were rejected. Check the server Meta API configuration.';
   if (/sign in|password/i.test(message))
     return 'Sign in to this resource in your study browser, then refresh.';
-  if (/unsupported.*(?:model|capabil)|model.*unavailable/i.test(message))
+  if (
+    /unsupported.*(?:model|capabil)|model.*unavailable|configured model cannot/i.test(
+      message,
+    )
+  )
     return 'Course reading is unavailable with the configured Meta model.';
   if (
-    /no (?:object|output) generated|invalid.*(?:response|schema)|(?:response|extraction).*(?:invalid|parse)/i.test(
+    /no (?:object|output) generated|unreadable course data|invalid.*(?:response|schema)|(?:response|extraction).*(?:invalid|parse)/i.test(
       message,
     )
   )
