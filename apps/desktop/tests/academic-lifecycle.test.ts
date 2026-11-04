@@ -73,6 +73,7 @@ const mocks = vi.hoisted(() => ({
     filePaths: ['/tmp/a.pdf'],
   })),
   notificationIsSupported: vi.fn(() => true),
+  openExternal: vi.fn(async () => undefined),
   askForMicrophone: vi.fn(async () => true),
   setupAuth: vi.fn(),
   setupAuthMain: vi.fn(),
@@ -90,6 +91,7 @@ const mocks = vi.hoisted(() => ({
   loadLearningModules: vi.fn(async () => [vi.fn()]),
 }));
 vi.mock('electron', () => ({
+  shell: { openExternal: mocks.openExternal },
   app: {
     commandLine: {
       hasSwitch: (name: string) =>
@@ -1699,6 +1701,10 @@ it('persists the actual notification permission decision without treating suppor
     expect.objectContaining({ userId: 'student-a' }),
     'denied',
   );
+  if (process.platform === 'darwin')
+    expect(mocks.openExternal).toHaveBeenCalledWith(
+      'x-apple.systempreferences:com.apple.Notifications-Settings.extension',
+    );
   const lifecycle = mocks.register.mock.calls[0][0] as AcademicClientLifecycle;
   await lifecycle.beforeDisconnect?.();
 });
