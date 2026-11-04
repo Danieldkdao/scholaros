@@ -1,6 +1,9 @@
 import { app } from 'electron';
 import path from 'node:path';
-import type { LearningActionModule } from './learning-actions';
+import {
+  loadLearningActionModules,
+  type LearningActionModule,
+} from './learning-actions';
 import { createAcademicServer } from './transport';
 import type { AcademicAction } from './contracts';
 
@@ -9,7 +12,7 @@ type AcademicServiceOptions = {
 };
 
 export const runAcademicService = async ({
-  learningModules = [],
+  learningModules,
 }: AcademicServiceOptions = {}) => {
   if (!app.hasSingleInstanceLock())
     throw new Error('The academic service requires the single-instance lock.');
@@ -25,7 +28,7 @@ export const runAcademicService = async ({
     await registerAcademicActions({
       register: (method, action) => actions.set(method, action),
       publish: server.publish,
-      learningModules,
+      learningModules: learningModules ?? (await loadLearningActionModules()),
     });
     actions.set('shutdown', () => {
       setTimeout(() => app.quit(), 20);

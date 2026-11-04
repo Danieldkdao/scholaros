@@ -146,6 +146,7 @@ vi.mock('electron', async () => {
     app: {
       getPath: () => mocks.directory,
       getAppPath: () => process.cwd(),
+      hasSingleInstanceLock: () => true,
       on: (
         name: string,
         listener: (event: { preventDefault: () => void }) => void,
@@ -679,6 +680,72 @@ describe('real account-local cleanup composition', () => {
         )
         .get('student-a'),
     ).toEqual({ count: 0 });
+  });
+
+  it('starts the default service with real learning modules and round-trips a persisted tutor turn over its private socket', async () => {
+    await registerTestAcademicActions();
+    await invoke('signOut');
+    const { runAcademicService } =
+      await import('../src/services/academic/runtime');
+    const { academicRequest } =
+      await import('../src/services/academic/transport');
+    mocks.authFetch.mockImplementationOnce(async (_url, options) => {
+      const request = JSON.parse(options.body);
+      return Response.json({
+        version: 1,
+        requestId: request.requestId,
+        generationId: randomUUID(),
+        parts: [{ kind: 'text', text: 'Fixture socket tutor explanation.' }],
+        citations: [],
+        proposedEffects: [],
+        usage: { inputTokens: 1, outputTokens: 1 },
+        configurationRevision: 'fixture-meta-only',
+      });
+    });
+    const service = await runAcademicService();
+    try {
+      const session = (await academicRequest(
+        service.endpoint,
+        'createStudySession',
+        {
+          requestId: randomUUID(),
+          courseId: 'cleanup-course-a',
+          activity: 'understand-topic',
+          targetAssignmentId: null,
+          contextItemIds: [],
+          durationMinutes: null,
+          title: 'Socket fixture',
+        },
+      )) as { id: string };
+      const admitted = (await academicRequest(
+        service.endpoint,
+        'sendStudyTurn',
+        {
+          sessionId: session.id,
+          requestId: randomUUID(),
+          expectedDraftRevision: 0,
+          text: 'Explain waves conceptually.',
+          attachmentIds: [],
+        },
+      )) as { turnId: string };
+      await vi.waitFor(() =>
+        expect(
+          sqlite
+            .prepare('SELECT status FROM study_turns WHERE id = ?')
+            .get(admitted.turnId),
+        ).toMatchObject({ status: 'complete' }),
+      );
+      await expect(
+        academicRequest(service.endpoint, 'claimDueNotifications', {
+          operation: 'get-permission',
+          userId: 'student-a',
+        }),
+      ).resolves.toBe('unknown');
+    } finally {
+      mocks.appListeners.get('will-quit')!({ preventDefault: vi.fn() });
+      await vi.waitFor(() => expect(mocks.appQuit).toHaveBeenCalled());
+      await service.close();
+    }
   });
 
   it('deletes actual SQLite and original data for only the authenticated account and then invalidates', async () => {
