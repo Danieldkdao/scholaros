@@ -23,6 +23,7 @@ import {
   createArtifactStore,
   type ArtifactStore,
 } from '../services/artifact-store';
+import { createActivityCandidateDigest } from '../services/artifact-validation';
 
 const accountId = 'user-1';
 const courseId = 'course-1';
@@ -759,22 +760,66 @@ it('keeps unsupported runtime versions and prior state available for recovery', 
       state: { frequency: 5 },
     },
   );
-  db.update(ArtifactVersionTable)
-    .set({ runtimeVersion: 2 })
+  const storedVersion = db
+    .select()
+    .from(ArtifactVersionTable)
     .where(eq(ArtifactVersionTable.id, createdArtifact.version.versionId))
-    .run();
+    .get()!;
+  const storedState = db
+    .select()
+    .from(ArtifactStateTable)
+    .where(eq(ArtifactStateTable.attemptId, createdArtifact.attemptId))
+    .get()!;
+  const unsupportedVersionId = randomUUID();
+  const unsupportedDigest = createActivityCandidateDigest({
+    ...safeGraphCandidateFixture,
+    runtimeVersion: 2,
+  });
+
+  // Model a snapshot written by a newer host without changing accepted bytes.
+  db.transaction((tx) => {
+    tx.insert(ArtifactVersionTable)
+      .values({
+        ...storedVersion,
+        id: unsupportedVersionId,
+        runtimeVersion: 2,
+        contentDigest: unsupportedDigest,
+      })
+      .run();
+    tx.insert(ArtifactStateTable)
+      .values({
+        ...storedState,
+        id: randomUUID(),
+        versionId: unsupportedVersionId,
+      })
+      .run();
+    tx.update(ArtifactTable)
+      .set({ currentVersionId: unsupportedVersionId, revision: 2 })
+      .where(eq(ArtifactTable.id, createdArtifact.version.artifactId))
+      .run();
+  });
+  store.dispose();
+  sqlite.close();
+  sqlite = new Database(join(directory, 'fixture.sqlite'));
+  sqlite.pragma('foreign_keys = ON');
+  db = drizzle({ client: sqlite, schema });
+  store = createArtifactStore({ db });
 
   expect(
     await store.getArtifactVersion(createAuthorizedContext(), {
       artifactId: createdArtifact.version.artifactId,
-      versionId: createdArtifact.version.versionId,
+      versionId: unsupportedVersionId,
     }),
-  ).toMatchObject({ available: false, runtimeVersion: 2 });
+  ).toMatchObject({
+    available: false,
+    runtimeVersion: 2,
+    contentDigest: unsupportedDigest,
+  });
   await expect(
     store.authorizeActivityRun(createAuthorizedContext(), {
       sessionId,
       artifactId: createdArtifact.version.artifactId,
-      versionId: createdArtifact.version.versionId,
+      versionId: unsupportedVersionId,
       attemptId: createdArtifact.attemptId,
       requestId: randomUUID(),
     }),
@@ -782,7 +827,7 @@ it('keeps unsupported runtime versions and prior state available for recovery', 
   await expect(
     store.resetArtifactAttempt(createAuthorizedContext(), {
       artifactId: createdArtifact.version.artifactId,
-      versionId: createdArtifact.version.versionId,
+      versionId: unsupportedVersionId,
       attemptId: createdArtifact.attemptId,
       requestId: randomUUID(),
     }),
@@ -790,10 +835,25 @@ it('keeps unsupported runtime versions and prior state available for recovery', 
   expect(
     await store.getArtifactState(createAuthorizedContext(), {
       artifactId: createdArtifact.version.artifactId,
+      versionId: unsupportedVersionId,
+      attemptId: createdArtifact.attemptId,
+    }),
+  ).toEqual({ ...savedState, versionId: unsupportedVersionId });
+  expect(
+    await store.getArtifactState(createAuthorizedContext(), {
+      artifactId: createdArtifact.version.artifactId,
       versionId: createdArtifact.version.versionId,
       attemptId: createdArtifact.attemptId,
     }),
   ).toEqual(savedState);
+  expect(
+    db
+      .select()
+      .from(ArtifactVersionTable)
+      .where(eq(ArtifactVersionTable.id, storedVersion.id))
+      .get(),
+  ).toEqual(storedVersion);
+  expect(db.select().from(ArtifactStateTable).all()).toHaveLength(2);
 });
 
 it('resets into a new attempt while retaining the previous attempt history', async () => {

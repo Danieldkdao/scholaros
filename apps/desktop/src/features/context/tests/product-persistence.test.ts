@@ -13,6 +13,17 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { expect, it, vi } from 'vitest';
 
+const databaseFixture = vi.hoisted(() => ({
+  db: null as ReturnType<typeof drizzle> | null,
+}));
+vi.mock('../../../db', () => ({
+  get db() {
+    if (!databaseFixture.db)
+      throw new Error('No persistence fixture database.');
+    return databaseFixture.db;
+  },
+}));
+
 const legacyMaterialText = 'Mitosis preserves the parent cell lineage.';
 const legacyMaterialHash = createHash('sha256')
   .update(legacyMaterialText)
@@ -200,7 +211,7 @@ it('preserves existing course, material, FTS, and watch checkpoints through prod
       processed_fingerprint: 'revision-old',
     });
 
-    vi.doMock('../../../db', () => ({ db }));
+    databaseFixture.db = db;
     try {
       const [materialStore, materialReads, materialContent] = await Promise.all(
         [
@@ -268,7 +279,7 @@ it('preserves existing course, material, FTS, and watch checkpoints through prod
         }),
       ).toHaveLength(1);
     } finally {
-      vi.doUnmock('../../../db');
+      databaseFixture.db = null;
     }
 
     sqlite

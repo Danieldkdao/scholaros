@@ -2,7 +2,10 @@ import { createServer } from 'node:http';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import Database from 'better-sqlite3';
+import { drizzle } from 'drizzle-orm/better-sqlite3';
+import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   localBrowser,
   Stagehand,
@@ -15,11 +18,24 @@ import {
   readPageMutationState,
 } from '../../watch/services/page-observer';
 import { scanCourseCollection } from '../../courses/lib/course-content-scan';
+import {
+  getNavigationLocations,
+  saveNavigationLocation,
+} from '../../context/services/navigation-store';
 import type { AgentRequestSchema } from '@scholaros/services/ai/schemas';
 import type { ObservedPage } from '../lib/academic-discovery';
 
 const bridgeMocks = vi.hoisted(() => ({
   accountRequest: vi.fn(async () => ({ materials: [], coverage: 'complete' })),
+}));
+const databaseFixture = vi.hoisted(() => ({
+  db: null as ReturnType<typeof drizzle> | null,
+}));
+vi.mock('../../../db', () => ({
+  get db() {
+    if (!databaseFixture.db) throw new Error('No browser fixture database.');
+    return databaseFixture.db;
+  },
 }));
 vi.mock('../../../lib/auth/main', () => ({
   accountRequest: bridgeMocks.accountRequest,
@@ -139,6 +155,27 @@ const assignmentExtraction = (sourceUrl: string) => {
 };
 
 describe.skipIf(!enabled)('Stagehand browser compatibility', () => {
+  let directory: string;
+  let sqlite: Database.Database | undefined;
+
+  beforeEach(async () => {
+    directory = await mkdtemp(join(tmpdir(), 'scholaros-browser-modes-'));
+    sqlite = new Database(join(directory, 'fixture.sqlite'));
+    sqlite.pragma('foreign_keys = ON');
+    databaseFixture.db = drizzle(sqlite);
+    migrate(databaseFixture.db, {
+      migrationsFolder: join(process.cwd(), 'src/db/migrations'),
+    });
+    bridgeMocks.accountRequest.mockClear();
+  });
+
+  afterEach(async () => {
+    databaseFixture.db = null;
+    sqlite?.close();
+    sqlite = undefined;
+    await rm(directory, { recursive: true, force: true });
+  });
+
   it('uses the custom structured callback on its explicit page and cleans up a closed operation', async () => {
     const profile = await mkdtemp(join(tmpdir(), 'scholaros-stagehand-'));
     const server = createServer((request, response) => {
@@ -327,17 +364,53 @@ describe.skipIf(!enabled)('Stagehand browser compatibility', () => {
         courseUrl: assignmentPage.url,
         observedResourceRelationships: [],
       };
+      const identityScope = {
+        accountId: 'synthetic-student',
+        connectionId: 'synthetic-canvas',
+        courseId: 'biology-101',
+      };
+      sqlite!
+        .prepare(`
+          INSERT INTO academic_connections (
+            id, user_id, name, url, host, kind, status, is_course_resource
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `)
+        .run(
+          identityScope.connectionId,
+          identityScope.accountId,
+          'Fixture campus',
+          origin,
+          '127.0.0.1',
+          'resource',
+          'verified',
+          1,
+        );
+      sqlite!
+        .prepare(`
+          INSERT INTO courses (
+            id, user_id, connection_id, source_key, source_name, source_host,
+            name, url, first_seen_at, last_seen_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `)
+        .run(
+          identityScope.courseId,
+          identityScope.accountId,
+          identityScope.connectionId,
+          'fixture:biology-101',
+          'Fixture campus',
+          '127.0.0.1',
+          'Biology 101',
+          assignmentPage.url,
+          assignmentPage.retrievedAt,
+          assignmentPage.retrievedAt,
+        );
       const scanErrors: string[] = [];
       const scanWith = (navigation: typeof decisionAdapter) =>
         scanCourseCollection({
           from: assignmentPage,
           kind: 'assignments',
           host: '127.0.0.1',
-          identityScope: {
-            accountId: 'synthetic-student',
-            connectionId: 'synthetic-canvas',
-            courseId: 'biology-101',
-          },
+          identityScope,
           courseName: 'Biology 101',
           excludedUrls: [],
           notes: '',
@@ -349,6 +422,12 @@ describe.skipIf(!enabled)('Stagehand browser compatibility', () => {
             navigation,
           },
           onError: (error) => scanErrors.push(error),
+          onNavigationVerified: (location) =>
+            saveNavigationLocation(
+              identityScope.accountId,
+              identityScope.connectionId,
+              { ...location, courseId: identityScope.courseId },
+            ),
           request: async (request: AgentRequestSchema) => {
             throw new Error(`Unexpected ${request.kind} fallback request.`);
           },
@@ -387,6 +466,25 @@ describe.skipIf(!enabled)('Stagehand browser compatibility', () => {
       expect(inoutScan.items.map((item) => item.content)).toEqual(
         decisionScan.items.map((item) => item.content),
       );
+      const navigationQuery = {
+        userId: identityScope.accountId,
+        connectionId: identityScope.connectionId,
+        courseId: identityScope.courseId,
+        purpose: 'assignments' as const,
+      };
+      expect(getNavigationLocations(navigationQuery)).toMatchObject([
+        {
+          userId: identityScope.accountId,
+          connectionId: identityScope.connectionId,
+          courseId: identityScope.courseId,
+          destinationUrl: assignmentPage.url,
+          status: 'verified',
+          failureCount: 0,
+        },
+      ]);
+      expect(
+        getNavigationLocations({ ...navigationQuery, userId: 'other-student' }),
+      ).toBeNull();
 
       await installPageObserver(page);
       const observerBeforeMutation = await readPageMutationState(page);
