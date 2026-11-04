@@ -487,10 +487,9 @@ export const StudyComposer = ({
           ? 'Wait for selected files to finish processing.'
           : hasUnavailableAttachment
             ? 'Remove or replace unreadable files before sending.'
-            : !hasPayload
-              ? 'Enter a message or attach a readable file.'
-              : null;
-  const sendDisabled = submitting || Boolean(sendingDisabledReason);
+            : null;
+  const sendDisabled =
+    submitting || !hasPayload || Boolean(sendingDisabledReason);
 
   const submit = async () => {
     if (readOnlyRef.current || submittingRef.current || sendDisabled) return;
@@ -619,7 +618,7 @@ export const StudyComposer = ({
 
   return (
     <form
-      className="flex w-full flex-col gap-2 border-t bg-background p-4"
+      className="flex w-full shrink-0 flex-col gap-2 p-4"
       aria-label="Study message composer"
       onSubmit={(event) => {
         event.preventDefault();
@@ -733,17 +732,20 @@ export const StudyComposer = ({
       <label htmlFor="study-message-input" className="sr-only">
         Message
       </label>
-      <InputGroup className="h-auto w-full flex-col items-stretch gap-2 rounded-xl p-2">
+      <InputGroup className="h-auto w-full flex-col items-stretch gap-2 rounded-xl border-0 bg-transparent p-2 shadow-none dark:bg-transparent">
         <InputGroupTextarea
           ref={textareaRef}
           id="study-message-input"
           aria-label="Message"
           aria-describedby={
-            sendingDisabledReason
-              ? 'study-composer-status study-send-reason'
-              : 'study-composer-status'
+            [
+              error || saving || submitting ? 'study-composer-status' : null,
+              sendingDisabledReason ? 'study-send-reason' : null,
+            ]
+              .filter(Boolean)
+              .join(' ') || undefined
           }
-          className="min-h-20 max-h-56 w-full resize-y text-base"
+          className="min-h-20 max-h-56 w-full resize-none border-0 bg-transparent text-base shadow-none dark:bg-transparent"
           maxLength={8000}
           rows={3}
           readOnly={readOnly}
@@ -812,14 +814,16 @@ export const StudyComposer = ({
                     : 'Speech input is unavailable in this build.'
                 }
               >
-                <InputGroupButton
-                  type="button"
-                  size="icon-sm"
-                  aria-label="Dictation unavailable"
-                  disabled
-                >
-                  <MicIcon aria-hidden="true" />
-                </InputGroupButton>
+                <span className="inline-flex" tabIndex={0}>
+                  <InputGroupButton
+                    type="button"
+                    size="icon-sm"
+                    aria-label="Dictation unavailable"
+                    disabled
+                  >
+                    <MicIcon aria-hidden="true" />
+                  </InputGroupButton>
+                </span>
               </TooltipWrapper>
             )}
           </div>
@@ -880,24 +884,26 @@ export const StudyComposer = ({
           {sendingDisabledReason}
         </p>
       )}
-      <p
-        id="study-composer-status"
-        role="status"
-        aria-live="polite"
-        className={cn(
-          'flex items-center gap-2 text-base',
-          error ? 'text-destructive' : 'text-muted-foreground',
-        )}
-      >
-        <ComposerStatusIcon
-          aria-hidden="true"
+      {(error || saving || submitting) && (
+        <p
+          id="study-composer-status"
+          role="status"
+          aria-live="polite"
           className={cn(
-            'size-4 shrink-0',
-            composerStatus.isWorking && 'motion-safe:animate-spin',
+            'flex items-center gap-2 text-base',
+            error ? 'text-destructive' : 'text-muted-foreground',
           )}
-        />
-        <span>{composerStatus.label}</span>
-      </p>
+        >
+          <ComposerStatusIcon
+            aria-hidden="true"
+            className={cn(
+              'size-4 shrink-0',
+              composerStatus.isWorking && 'motion-safe:animate-spin',
+            )}
+          />
+          <span>{composerStatus.label}</span>
+        </p>
+      )}
       {activeTurnStatus?.isWorking && (
         <p className="sr-only" aria-live="polite">
           {ActiveTurnStatusIcon && (

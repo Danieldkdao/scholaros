@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Square, X } from 'lucide-react';
 import { Button } from '@scholaros/ui/components/button';
 import {
@@ -38,6 +38,16 @@ export const DictationControl = ({
   disabled = false,
 }: DictationControlProps) => {
   const [isDisclosureOpen, setDisclosureOpen] = useState(false);
+  const [online, setOnline] = useState(() => navigator.onLine);
+  useEffect(() => {
+    const update = () => setOnline(navigator.onLine);
+    window.addEventListener('online', update);
+    window.addEventListener('offline', update);
+    return () => {
+      window.removeEventListener('online', update);
+      window.removeEventListener('offline', update);
+    };
+  }, []);
   const [hasAcknowledgedTransmission, setHasAcknowledgedTransmission] =
     useState(false);
   const dictation = useDictation({
@@ -62,6 +72,13 @@ export const DictationControl = ({
         ? 'Requesting microphone permission'
         : 'Start dictation';
   const showLoading = isRequesting || isStopping;
+  const unavailableReason = !online
+    ? 'Reconnect to transcribe speech.'
+    : disabled
+      ? 'Dictation is unavailable while the session is busy.'
+      : dictation.status === 'denied' || dictation.status === 'unsupported'
+        ? presentation.label
+        : null;
 
   const beginDictation = () => {
     setDisclosureOpen(false);
@@ -77,25 +94,35 @@ export const DictationControl = ({
     setDisclosureOpen(true);
   };
 
+  const button = (
+    <Button
+      aria-label={buttonLabel}
+      disabled={Boolean(unavailableReason) || isRequesting || isStopping}
+      onClick={isRecording ? () => void dictation.stop() : requestDictation}
+      size="icon"
+      variant="ghost"
+    >
+      <LoadingSwap isLoading={showLoading}>
+        {isRecording ? (
+          <Square aria-hidden="true" />
+        ) : (
+          <StatusIcon aria-hidden="true" />
+        )}
+      </LoadingSwap>
+    </Button>
+  );
+
   return (
     <div className="flex items-center gap-2">
-      <TooltipWrapper content={buttonLabel}>
-        <Button
-          aria-label={buttonLabel}
-          disabled={disabled || isRequesting || isStopping}
-          onClick={isRecording ? () => void dictation.stop() : requestDictation}
-          size="icon"
-          variant="ghost"
-        >
-          <LoadingSwap isLoading={showLoading}>
-            {isRecording ? (
-              <Square aria-hidden="true" />
-            ) : (
-              <StatusIcon aria-hidden="true" />
-            )}
-          </LoadingSwap>
-        </Button>
-      </TooltipWrapper>
+      {unavailableReason ? (
+        <TooltipWrapper content={unavailableReason}>
+          <span className="inline-flex" tabIndex={0}>
+            {button}
+          </span>
+        </TooltipWrapper>
+      ) : (
+        button
+      )}
       {isActive && (
         <TooltipWrapper content="Cancel dictation">
           <Button
@@ -108,12 +135,15 @@ export const DictationControl = ({
           </Button>
         </TooltipWrapper>
       )}
-      <div className="flex items-center gap-2 text-base text-muted-foreground">
-        <StatusIcon aria-hidden="true" className="size-4 shrink-0" />
-        <span aria-live="polite" role="status">
+      {dictation.status !== 'idle' && (
+        <span
+          className="text-base text-muted-foreground"
+          aria-live="polite"
+          role="status"
+        >
           {presentation.label}
         </span>
-      </div>
+      )}
       <Dialog onOpenChange={setDisclosureOpen} open={isDisclosureOpen}>
         <DialogContent showCloseButton={false}>
           <DialogHeader>

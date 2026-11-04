@@ -229,18 +229,34 @@ it('explains transmission before requesting microphone permission', async () => 
   expect(container.textContent).toContain('Microphone permission was denied');
 });
 
-it('does not request microphone access while offline', async () => {
+it('disables dictation while offline without requesting microphone access', async () => {
   const { bridge } = installDictationBridge();
   const getUserMedia = vi.fn();
   vi.stubGlobal('navigator', { onLine: false, mediaDevices: { getUserMedia } });
   const { container } = await mountControl();
-
+  const button = container.querySelector<HTMLButtonElement>(
+    'button[aria-label="Start dictation"]',
+  )!;
+  expect(button.disabled).toBe(true);
   await clickButton('Start dictation');
-  await clickButton('Start recording');
-
+  expect(document.body.textContent).not.toContain(
+    'Dictation sends audio to Meta',
+  );
   expect(bridge.requestMicrophonePermission).not.toHaveBeenCalled();
   expect(getUserMedia).not.toHaveBeenCalled();
-  expect(container.textContent).toContain('Reconnect to transcribe speech');
+  expect(container.textContent).not.toContain('Dictation is ready.');
+});
+
+it('shows one enabled microphone without a ready badge or tooltip when idle', async () => {
+  installDictationBridge();
+  const { container } = await mountControl();
+  const button = container.querySelector<HTMLButtonElement>(
+    'button[aria-label="Start dictation"]',
+  )!;
+  expect(button.disabled).toBe(false);
+  expect(button.getAttribute('data-slot')).toBe('button');
+  expect(container.querySelector('[role="status"]')).toBeNull();
+  expect(container.textContent).not.toContain('Dictation is ready.');
 });
 
 it('stops capture if the connection drops while listening', async () => {

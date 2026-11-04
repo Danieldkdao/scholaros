@@ -551,11 +551,10 @@ describe('StudyComposer', () => {
     );
 
     await act(async () => resolveSave({ draftRevision: 1 }));
-    await vi.waitFor(() =>
-      expect(node.querySelector('[role="status"]')?.textContent).toContain(
-        'Draft saved',
-      ),
-    );
+    await vi.waitFor(() => {
+      expect(node.querySelector('[role="status"]')).toBeNull();
+      expect(node.textContent).not.toContain('Draft saved');
+    });
     expect(onSaveDraft).toHaveBeenCalledOnce();
   });
 
@@ -586,4 +585,20 @@ describe('StudyComposer', () => {
     expect(onSaveDraft).toHaveBeenCalledOnce();
     expect(onSaveDraft).toHaveBeenCalledWith('Pending offline draft', 2);
   });
+});
+
+it('keeps the idle composer plain without redundant help or saved indicators', async () => {
+  const node = await mount(defaultProps());
+  expect(node.textContent).not.toContain(
+    'Enter a message or attach a readable file.',
+  );
+  expect(node.textContent).not.toContain('Draft saved');
+  expect(node.querySelector('textarea')?.className).toContain('resize-none');
+  expect(node.querySelector('[data-slot="input-group"]')?.className).toContain(
+    'border-0',
+  );
+  expect(
+    node.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')
+      ?.disabled,
+  ).toBe(true);
 });
