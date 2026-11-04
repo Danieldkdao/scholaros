@@ -13,12 +13,16 @@ vi.mock('../../../lib/auth/client', () => ({
   authClient: { getCookie: mocks.getCookie },
 }));
 
-const { clearBrowserNavigationModeCache, getBrowserNavigationMode } =
-  await import('../services/browser-mode');
+const {
+  BrowserCapabilityChangedError,
+  getBrowserNavigationMode,
+  invalidateBrowserNavigationMode,
+  toBrowserCapabilityError,
+} = await import('../services/browser-mode');
 
 beforeEach(() => {
   vi.clearAllMocks();
-  clearBrowserNavigationModeCache();
+  invalidateBrowserNavigationMode();
   mocks.getCookie.mockReturnValue('student-session-a');
   mocks.isSessionCurrent.mockReturnValue(true);
   mocks.request.mockResolvedValue({ browserNavigationMode: 'decision' });
@@ -71,5 +75,21 @@ describe('server-selected browser navigation mode', () => {
         isCurrent: () => false,
       }),
     ).rejects.toThrow(/session changed/i);
+  });
+
+  it('preserves typed capability changes and refetches only after invalidation', async () => {
+    const options = {
+      signal: new AbortController().signal,
+      isCurrent: () => true,
+    };
+    await getBrowserNavigationMode(options);
+
+    const error = toBrowserCapabilityError(new Error('capability-changed'));
+    expect(error).toBeInstanceOf(BrowserCapabilityChangedError);
+    expect(error).toMatchObject({ code: 'capability-changed' });
+    mocks.request.mockResolvedValueOnce({ browserNavigationMode: 'inout' });
+
+    await expect(getBrowserNavigationMode(options)).resolves.toBe('inout');
+    expect(mocks.request).toHaveBeenCalledTimes(2);
   });
 });

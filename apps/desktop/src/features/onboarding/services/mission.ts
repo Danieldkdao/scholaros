@@ -18,6 +18,11 @@ export type MissionSnapshot = {
 };
 
 type MissionTarget = { id: string; label: string; url: string };
+type MissionExhaustionContext = {
+  snapshot: MissionSnapshot;
+  targets: MissionTarget[];
+  evidence: EvidencePage[];
+};
 
 export type MissionChoice = {
   operation: 'NAVIGATE' | 'DONE' | 'BLOCKED';
@@ -44,6 +49,9 @@ type MissionDependencies = {
   signal: AbortSignal;
   maxSteps?: number;
   disclose?: () => Promise<'opened' | 'not-found' | 'refused'>;
+  isHostVerifiedCollectionExhausted?: (
+    context: MissionExhaustionContext,
+  ) => boolean;
 };
 
 export type MissionOutcome = 'done' | 'blocked' | 'empty' | 'budget';
@@ -82,6 +90,7 @@ export const runReadOnlyMission = async ({
   signal,
   maxSteps = 7,
   disclose,
+  isHostVerifiedCollectionExhausted,
 }: MissionDependencies): Promise<MissionResult> => {
   const entry = resolveMissionEntry(connection, hosts);
   if (entry.kind === 'unsupported') throw new Error(entry.message);
@@ -148,7 +157,13 @@ export const runReadOnlyMission = async ({
       break;
     }
     if (choice.operation === 'DONE') {
-      outcome = 'done';
+      outcome = isHostVerifiedCollectionExhausted?.({
+        snapshot: current,
+        targets,
+        evidence,
+      })
+        ? 'done'
+        : 'blocked';
       break;
     }
     const selected = targets.find((target) => target.id === choice.target);

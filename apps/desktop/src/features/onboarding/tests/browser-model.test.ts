@@ -16,6 +16,7 @@ vi.mock('../../../lib/auth/client', () => ({
 }));
 
 import { createBrowserModel } from '../services/browser-model';
+import { BrowserCapabilityChangedError } from '../services/browser-mode';
 
 const callbackParams = {
   messages: [{ role: 'user', content: [{ type: 'text', text: 'Read page.' }] }],
@@ -105,5 +106,17 @@ describe('desktop Stagehand model transport', () => {
     controller.abort();
     await expect(generate(callbackParams)).rejects.toThrow();
     expect(mocks.request).not.toHaveBeenCalled();
+  });
+
+  it('preserves a typed server capability change instead of returning a generic error', async () => {
+    const generate = createBrowserModel({
+      signal: new AbortController().signal,
+      isCurrent: mocks.current,
+    });
+    mocks.request.mockRejectedValueOnce(new Error('capability-changed'));
+
+    await expect(generate(callbackParams)).rejects.toBeInstanceOf(
+      BrowserCapabilityChangedError,
+    );
   });
 });

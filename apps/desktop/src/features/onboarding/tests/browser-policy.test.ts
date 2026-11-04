@@ -2,8 +2,12 @@ import { configureBrowserPolicy } from '../lib/browser-policy';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   academicPageIdentity,
+  isCourseNavigationTarget,
   isAcademicUrl,
   isReadNavigation,
+  isReadOnlyEmbed,
+  hasCourseRouteIdentity,
+  safeAcademicUrlPath,
 } from '../lib/browser-policy';
 
 const schoology = 'usd497.schoology.com';
@@ -85,6 +89,19 @@ describe('connected entry pages are usable on any platform', () => {
 });
 
 describe('read-only protections survive generalization', () => {
+  it('allows a published Slides embed without starting playback', () => {
+    expect(
+      isReadOnlyEmbed(
+        'https://docs.google.com/presentation/d/e/published-deck/pubembed?start=false&loop=false',
+      ),
+    ).toBe(true);
+    expect(
+      isReadOnlyEmbed(
+        'https://docs.google.com/presentation/d/e/published-deck/pubembed?start=true',
+      ),
+    ).toBe(false);
+  });
+
   it.each([
     '/logout',
     '/sign-out',
@@ -228,6 +245,13 @@ it('refuses unknown action selectors while permitting explicit read operations',
       'school.example',
     ]),
   ).toBe(true);
+  for (const action of ['list', 'read', 'get']) {
+    expect(
+      isReadNavigation(`https://school.example/api?action=${action}`, [
+        'school.example',
+      ]),
+    ).toBe(true);
+  }
 });
 
 beforeEach(() =>
@@ -305,13 +329,160 @@ it('allows exam and test preparation URLs by default and applies only user-selec
     '/courses/1/quizzes',
     '/exams',
     '/assessments',
+    '/courses/1/materials/2',
+    '/courses/1/assignments/42',
     '/submission',
-    '/api?action=doSomething',
+    '/api?action=listCourses',
   ]) {
     expect(readOn(canvas, `https://${canvas}${path}`)).toBe(true);
   }
+  expect(
+    readOn(canvas, 'https://canvas.school.edu/api?action=doSomething'),
+  ).toBe(false);
   configureBrowserPolicy(['quiz']);
   expect(readOn(canvas, `https://${canvas}/quiz/1`)).toBe(false);
   expect(readOn(canvas, `https://${canvas}/exams`)).toBe(true);
   configureBrowserPolicy([]);
+});
+
+describe('mandatory GET mutation protections', () => {
+  it.each([
+    '/logout',
+    '/courses/1/delete',
+    '/courses/1/assignments/42/submit',
+    '/?action=delete',
+    '/api?method=POST',
+    '/api?cmd=remove',
+    '/api?op=unknown',
+    '/api?task=unknown',
+    '/api?action=unknownOperation',
+  ])(
+    'blocks destructive or uncertain GET actions without user word blocks: %s',
+    (path) => {
+      configureBrowserPolicy([]);
+      expect(readOn(canvas, `https://${canvas}${path}`)).toBe(false);
+    },
+  );
+
+  it('keeps read-only action parameters and ordinary assessment pages available', () => {
+    configureBrowserPolicy([]);
+    expect(
+      readOn(canvas, 'https://canvas.school.edu/api?action=readAssignments'),
+    ).toBe(true);
+    expect(
+      readOn(canvas, 'https://canvas.school.edu/api?task=listCourses'),
+    ).toBe(true);
+    expect(readOn(canvas, 'https://canvas.school.edu/courses/1/exams/2')).toBe(
+      true,
+    );
+    expect(
+      readOn(canvas, 'https://canvas.school.edu/courses/1/quizzes/3'),
+    ).toBe(true);
+  });
+});
+
+describe('course membership evidence', () => {
+  it('distinguishes a course-list route from a course-specific route', () => {
+    expect(hasCourseRouteIdentity('https://canvas.school.edu/courses')).toBe(
+      false,
+    );
+    expect(
+      hasCourseRouteIdentity('https://canvas.school.edu/course?id=101'),
+    ).toBe(true);
+    expect(
+      hasCourseRouteIdentity(
+        'https://canvas.school.edu/courses/101/assignments?courseId=202',
+      ),
+    ).toBe(true);
+    expect(
+      hasCourseRouteIdentity(
+        'https://canvas.school.edu/courses/101/assignments',
+      ),
+    ).toBe(true);
+  });
+
+  it('omits credential-bearing route segments from diagnostics', () => {
+    expect(
+      safeAcademicUrlPath('https://canvas.school.edu/courses/101/analytics'),
+    ).toBe('/courses/101/analytics');
+    expect(
+      safeAcademicUrlPath(
+        'https://canvas.school.edu/courses/101/ticket/secret',
+      ),
+    ).toBeNull();
+  });
+
+  const scope = {
+    courseUrl: 'https://canvas.school.edu/courses/101',
+    observedResourceRelationships: [
+      {
+        parentUrl: 'https://canvas.school.edu/courses/101/modules',
+        targetUrl: 'https://docs.example.edu/biology/lab-guide',
+      },
+    ],
+  } as const;
+
+  it('allows the verified course tree and resources observed from it', () => {
+    expect(
+      isCourseNavigationTarget(
+        'https://canvas.school.edu/courses/101/assignments',
+        scope,
+        ['canvas.school.edu', 'docs.example.edu'],
+      ),
+    ).toBe(true);
+    expect(
+      isCourseNavigationTarget(
+        'https://docs.example.edu/biology/lab-guide',
+        scope,
+        ['canvas.school.edu', 'docs.example.edu'],
+      ),
+    ).toBe(true);
+  });
+
+  it('rejects same-host sibling courses and unproven direct, cached, or redirect URLs', () => {
+    for (const url of [
+      'https://canvas.school.edu/courses/202/assignments',
+      'https://canvas.school.edu/courses/303/assignments',
+      'https://canvas.school.edu/courses/101/assignments?courseId=202',
+      'https://docs.example.edu/biology/other-course',
+    ])
+      expect(
+        isCourseNavigationTarget(url, scope, [
+          'canvas.school.edu',
+          'docs.example.edu',
+        ]),
+      ).toBe(false);
+  });
+
+  it('rejects query-identified sibling course pages at shared paths', () => {
+    const queryScope = {
+      ...scope,
+      courseUrl: 'https://canvas.school.edu/course?id=101',
+    };
+    expect(
+      isCourseNavigationTarget(
+        'https://canvas.school.edu/course?id=202',
+        queryScope,
+        ['canvas.school.edu'],
+      ),
+    ).toBe(false);
+  });
+
+  it('requires an observed reachable parent for external resource relationships', () => {
+    expect(
+      isCourseNavigationTarget(
+        'https://docs.example.edu/biology/lab-guide',
+        {
+          ...scope,
+          observedResourceRelationships: [
+            {
+              parentUrl: 'https://canvas.school.edu/courses/202',
+              targetUrl: 'https://docs.example.edu/biology/lab-guide',
+            },
+          ],
+        },
+        ['canvas.school.edu', 'docs.example.edu'],
+      ),
+    ).toBe(false);
+  });
 });

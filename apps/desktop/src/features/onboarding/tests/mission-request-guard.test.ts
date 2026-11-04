@@ -211,7 +211,13 @@ describe('mission request protections', () => {
       (entry) => blocked.push(entry),
     );
     expect(blocked).toEqual([
-      { host: 'usentry.io', resourceType: 'XHR', signInWall: false },
+      {
+        host: 'usentry.io',
+        resourceType: 'XHR',
+        method: 'POST',
+        urlPath: '/api/1/envelope/',
+        signInWall: false,
+      },
     ]);
   });
 
@@ -225,7 +231,12 @@ describe('mission request protections', () => {
       (entry) => blocked.push(entry),
     );
     expect(blocked).toEqual([
-      { host: schoology, resourceType: 'Document', signInWall: true },
+      {
+        host: schoology,
+        resourceType: 'Document',
+        method: 'GET',
+        signInWall: true,
+      },
     ]);
   });
 
