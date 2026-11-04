@@ -3,6 +3,10 @@ import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { expect, it, vi } from 'vitest';
 import type { NotificationSettings as NotificationSettingsValue } from '@scholaros/services/learning/notification-contracts';
+import {
+  getSettingsSaveState,
+  retrySettingsSave,
+} from '../../dashboard/settings-save-queue';
 import { NotificationSettings } from '../components/notification-settings';
 import { createDefaultNotificationSettings } from '../services/notification-policy';
 import type { NotificationPermission } from '../services/notification-policy';
@@ -163,6 +167,188 @@ it('uses full-width time inputs and persists quiet-hour edits automatically', as
     }),
   );
   expect(container.querySelector('button[type="submit"]')).toBeNull();
+  await act(async () => root.unmount());
+});
+
+it('serializes notification edits with the latest saved revision', async () => {
+  const accountId = `notification-revision-${crypto.randomUUID()}`;
+  const pending: Array<{
+    settings: NotificationSettingsValue;
+    resolve: (saved: NotificationSettingsValue) => void;
+  }> = [];
+  const save = vi.fn(
+    (settings: NotificationSettingsValue) =>
+      new Promise<NotificationSettingsValue>((resolve) => {
+        pending.push({ settings, resolve });
+      }),
+  );
+  const { container, root } = await mount(
+    createDefaultNotificationSettings(),
+    save,
+    undefined,
+    undefined,
+    accountId,
+  );
+
+  await click(container.querySelector('[aria-label="Sync completed"]')!);
+  await vi.waitFor(() => expect(pending).toHaveLength(1));
+  await click(container.querySelector('[aria-label="Sync failed"]')!);
+  expect(pending).toHaveLength(1);
+
+  await act(async () =>
+    pending[0]!.resolve({ ...pending[0]!.settings, revision: 1 }),
+  );
+  await vi.waitFor(() => expect(pending).toHaveLength(2));
+  expect(pending[1]!.settings.revision).toBe(1);
+  expect(pending[1]!.settings.categories).toMatchObject({
+    'sync-completed': true,
+    'sync-failed': true,
+  });
+
+  await act(async () =>
+    pending[1]!.resolve({ ...pending[1]!.settings, revision: 2 }),
+  );
+  await act(async () => root.unmount());
+});
+
+it('persists the latest notification edits while an earlier save is pending', async () => {
+  const accountId = `notification-pending-draft-${crypto.randomUUID()}`;
+  const pending: Array<{
+    settings: NotificationSettingsValue;
+    resolve: (saved: NotificationSettingsValue) => void;
+  }> = [];
+  const save = vi.fn(
+    (settings: NotificationSettingsValue) =>
+      new Promise<NotificationSettingsValue>((resolve) => {
+        pending.push({ settings, resolve });
+      }),
+  );
+  const { container, root } = await mount(
+    createDefaultNotificationSettings(),
+    save,
+    undefined,
+    undefined,
+    accountId,
+  );
+
+  await click(container.querySelector('[aria-label="Sync completed"]')!);
+  await vi.waitFor(() => expect(pending).toHaveLength(1));
+  await click(container.querySelector('[aria-label="Sync failed"]')!);
+
+  expect(
+    getSettingsSaveState(accountId).draft.notificationSettings?.categories,
+  ).toMatchObject({
+    'sync-completed': true,
+    'sync-failed': true,
+  });
+
+  await act(async () =>
+    pending[0]!.resolve({ ...pending[0]!.settings, revision: 1 }),
+  );
+  await vi.waitFor(() => expect(pending).toHaveLength(2));
+  await act(async () =>
+    pending[1]!.resolve({ ...pending[1]!.settings, revision: 2 }),
+  );
+  await act(async () => root.unmount());
+});
+
+it('restores and retries a failed notification draft after the leaf remounts', async () => {
+  const accountId = `notification-retry-${crypto.randomUUID()}`;
+  const save = vi
+    .fn<
+      (
+        settings: NotificationSettingsValue,
+      ) => Promise<NotificationSettingsValue>
+    >()
+    .mockRejectedValueOnce(new Error('notification service offline'))
+    .mockImplementation(async (settings) => ({
+      ...settings,
+      revision: settings.revision + 1,
+    }));
+  const first = await mount(
+    createDefaultNotificationSettings(),
+    save,
+    undefined,
+    undefined,
+    accountId,
+  );
+
+  await click(first.container.querySelector('[aria-label="Sync completed"]')!);
+  await vi.waitFor(() =>
+    expect(getSettingsSaveState(accountId).groups.notifications?.error).toBe(
+      'notification service offline',
+    ),
+  );
+  await act(async () => first.root.unmount());
+
+  const reopened = await mount(
+    createDefaultNotificationSettings(),
+    save,
+    undefined,
+    undefined,
+    accountId,
+  );
+  expect(
+    reopened.container
+      .querySelector('[aria-label="Sync completed"]')
+      ?.getAttribute('aria-checked'),
+  ).toBe('true');
+  await act(async () => {
+    await retrySettingsSave(accountId, 'notifications');
+  });
+  expect(save).toHaveBeenCalledTimes(2);
+  expect(
+    getSettingsSaveState(accountId).groups.notifications?.error,
+  ).toBeNull();
+
+  await act(async () => reopened.root.unmount());
+});
+
+it('keeps pending notification edits retryable when the account changes mid-save', async () => {
+  const accountId = `notification-account-fence-${crypto.randomUUID()}`;
+  const pending: Array<{
+    settings: NotificationSettingsValue;
+    resolve: (saved: NotificationSettingsValue) => void;
+  }> = [];
+  const save = vi.fn(
+    (settings: NotificationSettingsValue) =>
+      new Promise<NotificationSettingsValue>((resolve) => {
+        pending.push({ settings, resolve });
+      }),
+  );
+  const { container, root } = await mount(
+    createDefaultNotificationSettings(),
+    save,
+    undefined,
+    undefined,
+    accountId,
+  );
+
+  await click(container.querySelector('[aria-label="Sync completed"]')!);
+  await vi.waitFor(() => expect(pending).toHaveLength(1));
+  await act(async () =>
+    root.render(
+      createElement(NotificationSettings, {
+        accountId: `${accountId}-other`,
+        settings: createDefaultNotificationSettings(),
+        onSave: save,
+        requestPermission: async () => 'unknown' as const,
+      }),
+    ),
+  );
+  await act(async () =>
+    pending[0]!.resolve({ ...pending[0]!.settings, revision: 1 }),
+  );
+
+  await vi.waitFor(() =>
+    expect(
+      getSettingsSaveState(accountId).groups.notifications?.error,
+    ).toContain('Your session changed'),
+  );
+  expect(
+    getSettingsSaveState(accountId).draft.notificationSettings?.categories,
+  ).toMatchObject({ 'sync-completed': true });
+
   await act(async () => root.unmount());
 });
 

@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react';
 import { CircleAlert } from 'lucide-react';
 import {
   Field,
@@ -27,10 +33,19 @@ import {
   SelectValue,
 } from '@scholaros/ui/components/select';
 import { Switch } from '@scholaros/ui/components/switch';
-import { notificationCategories } from '@scholaros/services/learning/notification-contracts';
+import {
+  notificationCategories,
+  notificationSettingsSchema,
+} from '@scholaros/services/learning/notification-contracts';
 import type { NotificationSettings as NotificationSettingsValue } from '@scholaros/services/learning/notification-contracts';
 import { formatNotificationCategory } from '../lib/formatters';
 import type { NotificationPermission } from '../services/notification-policy';
+import {
+  getSettingsSaveState,
+  queueNotificationSettingsSave,
+  reconcileSettingsSaveDraft,
+  subscribeSettingsSaveState,
+} from '../../dashboard/settings-save-queue';
 
 type NotificationSettingsProps = {
   accountId: string;
@@ -93,7 +108,11 @@ export const NotificationSettings = ({
   requestPermission,
   permissionState,
 }: NotificationSettingsProps) => {
-  const [settings, setSettings] = useState(persistedSettings);
+  const initialDraft =
+    getSettingsSaveState(accountId).draft.notificationSettings;
+  const [settings, setSettings] = useState(
+    () => initialDraft ?? persistedSettings,
+  );
   const [permission, setPermission] = useState<NotificationPermission | null>(
     permissionState ?? null,
   );
@@ -102,10 +121,27 @@ export const NotificationSettings = ({
   const accountIdRef = useRef(accountId);
   const previousAccountIdRef = useRef(accountId);
   const revisionRef = useRef(persistedSettings.revision);
-  const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const changeRevisionRef = useRef(0);
+  const mountedRef = useRef(false);
+  const subscribe = useCallback(
+    (listener: () => void) => subscribeSettingsSaveState(accountId, listener),
+    [accountId],
+  );
+  const getSnapshot = useCallback(
+    () => getSettingsSaveState(accountId),
+    [accountId],
+  );
+  const saveState = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  const notificationSaveState = saveState.groups.notifications;
 
   accountIdRef.current = accountId;
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (previousAccountIdRef.current === accountId) return;
@@ -115,9 +151,29 @@ export const NotificationSettings = ({
     setSettings(persistedSettings);
     setPermission(permissionState ?? null);
     setCheckingPermission(false);
-    saveQueueRef.current = Promise.resolve();
     changeRevisionRef.current += 1;
   }, [accountId, permissionState, persistedSettings]);
+
+  useEffect(() => {
+    reconcileSettingsSaveDraft(accountId, {
+      notificationSettings: persistedSettings,
+    });
+  }, [accountId, persistedSettings, saveState.groups.notifications]);
+
+  useEffect(() => {
+    const draft = notificationSaveState?.draft.notificationSettings;
+    if (draft) {
+      settingsRef.current = draft;
+      setSettings(draft);
+    } else if (
+      (notificationSaveState?.pending ?? 0) === 0 &&
+      !notificationSaveState?.error
+    ) {
+      settingsRef.current = persistedSettings;
+      revisionRef.current = persistedSettings.revision;
+      setSettings(persistedSettings);
+    }
+  }, [accountId, notificationSaveState, persistedSettings]);
 
   useEffect(() => {
     if (permissionState !== undefined) setPermission(permissionState);
@@ -128,28 +184,36 @@ export const NotificationSettings = ({
     const changeRevision = ++changeRevisionRef.current;
     settingsRef.current = nextSettings;
     setSettings(nextSettings);
-    saveQueueRef.current = saveQueueRef.current
-      .catch(() => undefined)
-      .then(async () => {
-        if (accountIdRef.current !== requestAccountId) return;
+    void queueNotificationSettingsSave(
+      requestAccountId,
+      nextSettings,
+      async (draft) => {
+        if (accountIdRef.current !== requestAccountId)
+          throw new Error('Your session changed; sign in again.');
+        const parsedSettings = notificationSettingsSchema.safeParse(
+          draft.notificationSettings,
+        );
+        if (!parsedSettings.success)
+          throw new Error('Notification settings are invalid.');
         const savedSettings = await onSave({
-          ...nextSettings,
+          ...parsedSettings.data,
           revision: revisionRef.current,
         });
-        if (accountIdRef.current !== requestAccountId) return;
+        if (accountIdRef.current !== requestAccountId)
+          throw new Error('Your session changed; sign in again.');
         revisionRef.current = savedSettings.revision;
         if (changeRevisionRef.current === changeRevision) {
           settingsRef.current = savedSettings;
-          setSettings(savedSettings);
+          if (mountedRef.current) setSettings(savedSettings);
         } else {
           settingsRef.current = {
             ...settingsRef.current,
             revision: savedSettings.revision,
           };
-          setSettings(settingsRef.current);
+          if (mountedRef.current) setSettings(settingsRef.current);
         }
-      })
-      .catch(() => undefined);
+      },
+    ).catch(() => undefined);
   };
 
   const updateSettings = (
