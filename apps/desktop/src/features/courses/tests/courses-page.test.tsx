@@ -108,6 +108,7 @@ beforeEach(() => {
   };
   Element.prototype.scrollIntoView = () => undefined;
   window.scholar = {
+    onAcademicReconnect: vi.fn(() => () => {}),
     onCoursesChange: vi.fn(() => () => {}),
     getCurrentUser: vi.fn(async () => ({ id: 'student' })),
     getState: vi.fn(async () => state()),

@@ -89,6 +89,8 @@ beforeEach(() => {
   Element.prototype.releasePointerCapture = () => undefined;
   window.scrollTo = () => undefined;
   window.scholar = {
+    onAcademicReconnect: vi.fn(() => () => {}),
+    onProductEvent: vi.fn(() => () => {}),
     onCoursesChange: vi.fn(() => () => {}),
     getCurrentUser: vi.fn(async () => ({ id: 'student' })),
     getState: vi.fn(async () => ({
@@ -107,6 +109,19 @@ beforeEach(() => {
       lastSuccessfulAt: null,
     })),
     getCourse: vi.fn(async () => detail),
+    getLearningProgress: vi.fn(async ({ courseId }: { courseId?: string }) => ({
+      courseId: courseId ?? null,
+      strengths: [],
+      practiceTopics: [],
+      recentChanges: [],
+      unknownCount: 0,
+      revision: 0,
+    })),
+    listContextItems: vi.fn(async () => ({
+      items: [],
+      nextCursor: null,
+      revision: 0,
+    })),
     refreshCourse: vi.fn(async () => detail),
     openSource: vi.fn(async () => undefined),
   } as unknown as typeof window.scholar;
@@ -172,16 +187,23 @@ it('reads the course from the address bar and offers a way back', async () => {
   expect(document.querySelector('a[href="/dashboard/courses"]')).not.toBeNull();
 });
 
-it('shows the three tabs with the overview first', async () => {
+it('shows the four course tabs with the overview first', async () => {
   await open();
   expect(
     [...document.querySelectorAll('[role="tab"]')].map((item) =>
       item.textContent?.trim(),
     ),
-  ).toEqual(['Overview', 'Announcements', 'Assignments']);
+  ).toEqual(['Overview', 'Announcements', 'Assignments', 'Materials']);
   expect(tab('Overview').getAttribute('aria-selected')).toBe('true');
   await openTab('Assignments');
   expect(tab('Assignments').getAttribute('aria-selected')).toBe('true');
+  await openTab('Materials');
+  expect(tab('Materials').getAttribute('aria-selected')).toBe('true');
+  expect(window.scholar.listContextItems).toHaveBeenCalledWith({
+    courseId: 'course-1',
+    limit: 25,
+  });
+  expect(text()).toContain('No course materials yet');
 });
 
 it('shows only the overview fields the source really provided', async () => {
@@ -472,7 +494,7 @@ it('opens a validated course edit dialog from its actions menu', async () => {
   );
 });
 
-it('requires confirmation before deleting and preserves the record on failure', async () => {
+it('requires confirmation before hiding a source course and preserves it on failure', async () => {
   window.scholar.deleteCourseRecord = vi.fn(async () => {
     throw new Error('Storage unavailable');
   });
@@ -482,16 +504,19 @@ it('requires confirmation before deleting and preserves the record on failure', 
   );
   await click(
     [...document.querySelectorAll('[role="menuitem"]')].find((node) =>
-      node.textContent?.includes('Delete'),
+      node.textContent?.includes('Hide'),
     )!,
   );
   expect(window.scholar.deleteCourseRecord).not.toHaveBeenCalled();
   expect(document.querySelector('[role="alertdialog"]')?.textContent).toContain(
-    'Delete Biology 101?',
+    'Hide Biology 101?',
+  );
+  expect(document.querySelector('[role="alertdialog"]')?.textContent).toContain(
+    'Restore them later from Hidden records',
   );
   await click(
     [...document.querySelectorAll('[role="alertdialog"] button')].find(
-      (node) => node.textContent?.trim() === 'Delete',
+      (node) => node.textContent?.trim() === 'Hide',
     )!,
   );
   expect(window.scholar.deleteCourseRecord).toHaveBeenCalledWith({

@@ -16,6 +16,7 @@ import {
   queueSettingsSave,
 } from '../settings-save-queue';
 import type { CurrentUser, OnboardingState } from '../../onboarding/types';
+import type { LearningProgress } from '@scholaros/services/learning/memory-contracts';
 import type { NotificationSettings as NotificationSettingsValue } from '@scholaros/services/learning/notification-contracts';
 import type { NotificationPermission } from '../../notifications/services/notification-policy';
 import { createDefaultNotificationSettings } from '../../notifications/services/notification-policy';
@@ -59,6 +60,15 @@ const finishedUser: CurrentUser = {
   email: 'ada@example.edu',
   image: null,
   hasCompletedOnboarding: true,
+};
+
+const emptyProgress: LearningProgress = {
+  courseId: null,
+  strengths: [],
+  practiceTopics: [],
+  recentChanges: [],
+  unknownCount: 0,
+  revision: 0,
 };
 
 type TestSettingsBridge = Omit<
@@ -173,8 +183,6 @@ const navigate = async (path: string) => {
 
 const heading = () => document.querySelector('h1');
 
-const pageRegion = () => heading()?.parentElement;
-
 const navLinks = () => [
   ...document.querySelectorAll<HTMLElement>('[data-slot="sidebar-content"] a'),
 ];
@@ -214,6 +222,8 @@ beforeEach(() => {
   }));
   bridge.saveWatchSettings = vi.fn(async (settings) => settings);
   bridge.onWatchChange = vi.fn(() => () => undefined);
+  bridge.onAcademicReconnect = vi.fn(() => () => undefined);
+  bridge.onProductEvent = vi.fn(() => () => undefined);
   bridge.onCoursesChange = vi.fn(() => () => undefined);
   bridge.onBackgroundSyncChange = vi.fn(() => () => undefined);
   bridge.onConnectChange = vi.fn(() => () => undefined);
@@ -223,6 +233,36 @@ beforeEach(() => {
     awaiting: null,
     events: [],
     results: [],
+  }));
+  bridge.getCourses = vi.fn(async () => ({
+    courses: [],
+    sources: [],
+    lastSuccessfulAt: null,
+  }));
+  bridge.listContextItems = vi.fn(async () => ({
+    items: [],
+    nextCursor: null,
+    revision: 0,
+  }));
+  bridge.listStudySessions = vi.fn(async () => ({
+    items: [],
+    nextCursor: null,
+    revision: 0,
+  }));
+  bridge.getLearningProgress = vi.fn<typeof bridge.getLearningProgress>(
+    async ({ courseId }) => ({ ...emptyProgress, courseId: courseId ?? null }),
+  );
+  bridge.getTodayOverview = vi.fn(async () => ({
+    attention: [],
+    freshness: [],
+    upcoming: [],
+    announcements: [],
+    recentCourses: [],
+    recentMaterials: [],
+    recentSessions: [],
+    progress: emptyProgress,
+    recommendations: [],
+    revision: 0,
   }));
   bridge.getNotificationSettings = vi.fn(async () =>
     createDefaultNotificationSettings(),
@@ -258,12 +298,24 @@ describe('dashboard shell', () => {
   it.each([
     ['/dashboard/courses', 'Courses'],
     ['/dashboard/study', 'Study'],
-    ['/dashboard/planner', 'Planner'],
+    ['/dashboard/context', 'Context'],
     ['/dashboard/connections', 'Connections'],
     ['/dashboard/settings', 'Settings'],
   ])('renders %s as a refreshed deep link', async (path, title) => {
     await openRoute(path);
     expect(heading()?.textContent).toBe(title);
+  });
+
+  it('redirects the retired Planner deep link to Context without a Planner sidebar entry', async () => {
+    await openRoute('/dashboard/planner');
+    expect(activeRouter?.state.location.pathname).toBe('/dashboard/context');
+    expect(heading()?.textContent).toBe('Context');
+    expect(currentNavLink()?.getAttribute('href')).toBe('/dashboard/context');
+    expect(
+      navLinks().some(
+        (link) => link.getAttribute('href') === '/dashboard/planner',
+      ),
+    ).toBe(false);
   });
 
   it('focuses the watcher section after loading its settings deep link', async () => {
@@ -369,7 +421,7 @@ describe('dashboard shell', () => {
   it.each([
     ['/dashboard/courses', 'Courses'],
     ['/dashboard/study', 'Study'],
-    ['/dashboard/planner', 'Planner'],
+    ['/dashboard/context', 'Context'],
     ['/dashboard/connections', 'Connections'],
   ])('opens %s from its sidebar link', async (path, title) => {
     await openRoute('/dashboard');
@@ -386,7 +438,7 @@ describe('dashboard shell', () => {
     await openRoute('/dashboard');
     const shell = document.querySelector('[data-slot="sidebar-wrapper"]');
     expect(shell).toBeTruthy();
-    await navigate('/dashboard/planner');
+    await navigate('/dashboard/context');
     expect(document.querySelector('[data-slot="sidebar-wrapper"]')).toBe(shell);
   });
 
@@ -406,34 +458,38 @@ describe('dashboard shell', () => {
   });
 
   it('keeps the branding link out of the current page on nested pages', async () => {
-    await openRoute('/dashboard/planner');
+    await openRoute('/dashboard/context');
     const brand = document.querySelector('[data-slot="sidebar-header"] a');
     expect(brand).toBeTruthy();
     expect(brand?.getAttribute('aria-current')).toBeNull();
   });
 
   it('keeps the header to the sidebar toggle and theme control', async () => {
-    await openRoute('/dashboard/planner');
+    await openRoute('/dashboard/context');
     const header = document.querySelector('[data-slot="dashboard-header"]');
     expect(header?.querySelector('[data-slot="sidebar-trigger"]')).toBeTruthy();
     expect(header?.querySelector('button[aria-haspopup="menu"]')).toBeTruthy();
-    expect(heading()?.textContent).toBe('Planner');
+    expect(heading()?.textContent).toBe('Context');
   });
 
-  it('keeps every page body down to its title', async () => {
-    // Only the remaining placeholder pages have no content beyond their title.
-    for (const path of [
-      '/dashboard',
-      '/dashboard/study',
-      '/dashboard/planner',
-    ]) {
+  it.each([
+    ['/dashboard', 'Today', 'No courses saved yet', 'getTodayOverview'],
+    ['/dashboard/study', 'Study', 'No study sessions yet', 'listStudySessions'],
+    [
+      '/dashboard/context',
+      'Context',
+      'Your Context is empty',
+      'listContextItems',
+    ],
+  ] as const)(
+    'renders the real content and empty state at %s',
+    async (path, title, emptyState, readMethod) => {
       await openRoute(path);
-      expect(pageRegion()?.children).toHaveLength(1);
-      expect(pageRegion()?.textContent?.trim()).toBe(heading()?.textContent);
-      act(() => root?.unmount());
-      document.body.replaceChildren();
-    }
-  });
+      expect(heading()?.textContent).toBe(title);
+      expect(document.body.textContent).toContain(emptyState);
+      expect(bridge[readMethod]).toHaveBeenCalled();
+    },
+  );
 
   it('leaves the retired setup and discovery content out of the shell', async () => {
     await openRoute('/dashboard');
