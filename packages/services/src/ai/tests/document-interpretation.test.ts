@@ -1,8 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  generateDocumentInterpretation,
   inspectDocumentInput,
   validateDocumentInterpretation,
 } from '../document-interpretation';
+
+const { generateTextMock } = vi.hoisted(() => ({ generateTextMock: vi.fn() }));
+vi.mock('ai', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('ai')>()),
+  generateText: generateTextMock,
+}));
 
 const { serverEnv } = vi.hoisted(() => ({
   serverEnv: {
@@ -196,6 +203,72 @@ describe('document interpretation validation', () => {
               status: 'readable',
               text: 'Invented page.',
               uncertainty: null,
+            },
+          ],
+        },
+      ),
+    ).toThrow();
+  });
+});
+
+describe('document interpretation uncertainty contract', () => {
+  it('asks the provider for an explicit uncertainty explanation instead of accepting unreadable null', async () => {
+    generateTextMock.mockResolvedValueOnce({
+      output: {
+        pages: [
+          {
+            page: 1,
+            status: 'unreadable',
+            text: '',
+            uncertainty: 'No legible text is present.',
+          },
+        ],
+      },
+    });
+    const result = await generateDocumentInterpretation(
+      {
+        requestId: 'synthetic-unreadable',
+        pageNumbers: [1],
+        files: [
+          {
+            bytes: png(20, 20),
+            mimeType: 'image/png',
+            filename: 'synthetic.png',
+          },
+        ],
+      },
+      new AbortController().signal,
+    );
+    expect(result).toMatchObject({
+      status: 'unreadable',
+      pages: [{ text: '', uncertainty: 'No legible text is present.' }],
+    });
+    expect(generateTextMock.mock.calls.at(-1)?.[0].instructions).toContain(
+      'For every partial, uncertain, or unreadable page, uncertainty must be a nonempty explanation',
+    );
+  });
+  it.each(['partial', 'uncertain', 'unreadable'])(
+    'still rejects a %s page without an uncertainty explanation',
+    (status) => {
+      expect(() =>
+        validateDocumentInterpretation(
+          { pageNumbers: [1] },
+          { pages: [{ page: 1, status, text: '', uncertainty: null }] },
+        ),
+      ).toThrow();
+    },
+  );
+  it('still rejects invented text attached to an unreadable result', () => {
+    expect(() =>
+      validateDocumentInterpretation(
+        { pageNumbers: [1] },
+        {
+          pages: [
+            {
+              page: 1,
+              status: 'unreadable',
+              text: 'Invented content',
+              uncertainty: 'Unclear',
             },
           ],
         },
