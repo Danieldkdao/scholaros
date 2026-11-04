@@ -419,7 +419,15 @@ const evaluateShortExplanation = async (
       }),
       output: Output.object({ schema: practiceEvaluationModelOutputSchema }),
       reasoning: 'low',
-      maxOutputTokens: 1_000,
+      // The allowance covers hidden reasoning and the strict structured feedback.
+      maxOutputTokens: 4_000,
+      providerOptions: {
+        openai: {
+          forceReasoning: true,
+          systemMessageMode: 'developer',
+          store: false,
+        },
+      },
       maxRetries: 0,
       abortSignal: signal,
       telemetry: { isEnabled: false },

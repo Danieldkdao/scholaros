@@ -236,6 +236,66 @@ describe('practice answer evaluation', () => {
     ).rejects.toMatchObject({ code: 'invalid-input' });
   });
 
+  it('uses Meta-compatible reasoning options and a bounded combined output allowance', async () => {
+    vi.mocked(generateText).mockResolvedValue({
+      output: {
+        outcome: 'correct',
+        explanation: 'The explanation identifies transport regulation.',
+      },
+    } as never);
+    const explanationInput: PracticeAnswerEvaluationInput = {
+      ...input,
+      question: { ...question, kind: 'short-explanation', options: null },
+      answer: 'It selectively regulates transport.',
+      answerKey: {
+        questionId: question.id,
+        kind: 'short-explanation',
+        rubricCriteria: ['Explains selective transport'],
+        acceptedAlternatives: [],
+        explanation: 'Selective transport maintains the interior.',
+      },
+    };
+    await evaluatePracticeAnswer(explanationInput, signal, model);
+    expect(generateText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reasoning: 'low',
+        maxOutputTokens: 4000,
+        maxRetries: 0,
+        abortSignal: signal,
+        providerOptions: {
+          openai: {
+            forceReasoning: true,
+            systemMessageMode: 'developer',
+            store: false,
+          },
+        },
+        telemetry: { isEnabled: false },
+      }),
+    );
+  });
+  it('never turns truncated structured explanation output into a grade', async () => {
+    vi.mocked(generateText).mockResolvedValue({
+      output: undefined,
+      finishReason: 'length',
+    } as never);
+    const explanationInput: PracticeAnswerEvaluationInput = {
+      ...input,
+      question: { ...question, kind: 'short-explanation', options: null },
+      answer: 'It selectively regulates transport.',
+      answerKey: {
+        questionId: question.id,
+        kind: 'short-explanation',
+        rubricCriteria: ['Explains selective transport'],
+        acceptedAlternatives: [],
+        explanation: 'Selective transport maintains the interior.',
+      },
+    };
+    await expect(
+      evaluatePracticeAnswer(explanationInput, signal, model),
+    ).rejects.toMatchObject({ code: 'invalid-output' });
+    expect(generateText).toHaveBeenCalledOnce();
+  });
+
   it('uses the bounded Meta rubric and preserves uncertainty for explanations', async () => {
     vi.mocked(generateText).mockResolvedValue({
       output: {
