@@ -144,3 +144,6 @@ export const formatNotificationCopy = (category: NotificationCategory) => {
       };
   }
 };
+
+export const formatQuietHour = (minute: number) =>
+  `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`;

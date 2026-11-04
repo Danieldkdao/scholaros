@@ -23,7 +23,7 @@ vi.mock('electron', async () => {
   return { app, default: { app } };
 });
 
-const { createNotificationHostAdapter } =
+const { createNotificationHostAdapter, readExistingNotificationPermission } =
   await import('../notification-host-adapter');
 const { db } = await import('../../../db');
 const {
@@ -676,4 +676,102 @@ it('rejects direct click handling after disposal even before a delivery run', as
   await expect(adapter.handleClick(accountId, event.id)).resolves.toBe(false);
   expect(service.request).toHaveBeenCalledTimes(callsBeforeClick);
   expect(route).not.toHaveBeenCalled();
+});
+
+it('defers startup claims until a ready permission reader and then delivers without a prompt', async () => {
+  registerRealService([context]);
+  const queued = await prepareRealNotification(context);
+  setNotificationPermissionState(context, 'unknown');
+  let ready = false;
+  const readPermission = vi.fn(async () => 'granted');
+  const native = dependencies({
+    permission: () =>
+      readExistingNotificationPermission({
+        isSupported: () => true,
+        isCurrent: context.isCurrent,
+        readPermission: () => (ready ? readPermission() : null),
+      }),
+  });
+  const adapter = createNotificationHostAdapter(native);
+  await adapter.deliverDueNotifications(context);
+  expect(
+    service.request.mock.calls.some(([, input]) => input.operation === 'claim'),
+  ).toBe(false);
+  expect(getNotificationEventForUser(accountId, queued.eventId)?.status).toBe(
+    'queued',
+  );
+  expect(readPermission).not.toHaveBeenCalled();
+  ready = true;
+  await adapter.deliverDueNotifications(context);
+  expect(native.show).toHaveBeenCalledOnce();
+  expect(getNotificationEventForUser(accountId, queued.eventId)?.status).toBe(
+    'delivered',
+  );
+  await adapter.dispose();
+});
+
+it.each([
+  ['granted', 'granted'],
+  ['denied', 'denied'],
+  ['default', 'unknown'],
+  ['unknown', 'unknown'],
+  [true, 'unknown'],
+  [null, 'unknown'],
+])('never elevates a permission observation %s', async (observed, expected) => {
+  await expect(
+    readExistingNotificationPermission({
+      isSupported: () => true,
+      isCurrent: () => true,
+      readPermission: async () => observed,
+    }),
+  ).resolves.toBe(expected);
+});
+
+it('defers on unavailable, failed or stale permission reads and never probes unsupported devices', async () => {
+  const read = vi.fn(async () => 'granted');
+  await expect(
+    readExistingNotificationPermission({
+      isSupported: () => false,
+      isCurrent: () => true,
+      readPermission: read,
+    }),
+  ).resolves.toBe('unsupported');
+  expect(read).not.toHaveBeenCalled();
+  await expect(
+    readExistingNotificationPermission({
+      isSupported: () => true,
+      isCurrent: () => true,
+      readPermission: () => null,
+    }),
+  ).rejects.toThrow();
+  await expect(
+    readExistingNotificationPermission({
+      isSupported: () => true,
+      isCurrent: () => false,
+      readPermission: read,
+    }),
+  ).rejects.toThrow();
+  expect(read).not.toHaveBeenCalled();
+  await expect(
+    readExistingNotificationPermission({
+      isSupported: () => true,
+      isCurrent: () => true,
+      readPermission: async () => {
+        throw new Error('destroyed-window');
+      },
+    }),
+  ).rejects.toThrow();
+  let current = true;
+  let release!: (value: string) => void;
+  const reading = readExistingNotificationPermission({
+    isSupported: () => true,
+    isCurrent: () => current,
+    readPermission: () =>
+      new Promise<string>((resolve) => {
+        release = resolve;
+      }),
+  });
+  current = false;
+  release('granted');
+  await expect(reading).rejects.toThrow();
 });

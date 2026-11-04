@@ -38,7 +38,7 @@ import {
   notificationSettingsSchema,
 } from '@scholaros/services/learning/notification-contracts';
 import type { NotificationSettings as NotificationSettingsValue } from '@scholaros/services/learning/notification-contracts';
-import { formatNotificationCategory } from '../lib/formatters';
+import { formatNotificationCategory, formatQuietHour } from '../lib/formatters';
 import type { NotificationPermission } from '../services/notification-policy';
 import {
   getSettingsSaveState,
@@ -75,9 +75,6 @@ const getTimeZoneOptions = () => {
 };
 
 const timeZoneOptions = getTimeZoneOptions();
-
-const formatQuietHour = (minute: number) =>
-  `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`;
 
 const parseQuietHour = (value: string) => {
   const match = /^(\d{2}):(\d{2})$/.exec(value);

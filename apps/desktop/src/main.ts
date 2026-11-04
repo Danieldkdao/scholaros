@@ -27,6 +27,7 @@ import {
 import type { AuthorizedContext } from '@scholaros/services/learning/product-contracts';
 import {
   createNotificationHostAdapter,
+  readExistingNotificationPermission,
   type NotificationHostAdapter,
 } from './services/academic/notification-host-adapter';
 import {
@@ -256,6 +257,29 @@ const bindNotificationUser = async (input: unknown) => {
   };
   const visible = new Map<string, Notification>();
   const host = createNotificationHostAdapter({
+    permission: async (userId) => {
+      const window = getTrustedWindows().find(
+        (candidate) =>
+          !candidate.isDestroyed() &&
+          !candidate.webContents.isDestroyed() &&
+          !candidate.webContents.isLoadingMainFrame(),
+      );
+      return readExistingNotificationPermission({
+        isSupported: () => Notification.isSupported(),
+        isCurrent: () =>
+          userId === context.userId &&
+          context.isCurrent() &&
+          (!window ||
+            (!window.isDestroyed() &&
+              !window.webContents.isDestroyed() &&
+              !window.webContents.isLoadingMainFrame() &&
+              getTrustedWindows().includes(window))),
+        readPermission: () =>
+          window
+            ? window.webContents.executeJavaScript('Notification.permission')
+            : null,
+      });
+    },
     isFocused: () => getTrustedWindows().some((window) => window.isFocused()),
     show: async ({ eventId, title, body, onClick }) => {
       if (!context.isCurrent() || !Notification.isSupported()) return 'failed';
@@ -1333,6 +1357,13 @@ const createWindow = (routePath?: string) => {
         )
         .catch(() => undefined);
   };
+  mainWindow.webContents.on('did-finish-load', () => {
+    const owner = notificationOwner;
+    if (owner?.context.isCurrent())
+      void owner.host
+        .deliverDueNotifications(owner.context)
+        .catch(() => undefined);
+  });
   mainWindow.on('focus', updateNotificationFocus);
   mainWindow.on('blur', updateNotificationFocus);
 

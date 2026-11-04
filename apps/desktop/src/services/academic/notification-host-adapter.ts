@@ -21,6 +21,30 @@ import { notificationPermissionStates } from '../../features/notifications/servi
 import type { NotificationPermission } from '../../features/notifications/services/notification-policy';
 import { requestAcademicService } from './client';
 
+type ExistingNotificationPermissionRead = {
+  isSupported: () => boolean;
+  isCurrent: () => boolean;
+  readPermission: () => Promise<unknown> | null;
+};
+
+export const readExistingNotificationPermission = async ({
+  isSupported,
+  isCurrent,
+  readPermission,
+}: ExistingNotificationPermissionRead): Promise<NotificationPermission> => {
+  if (!isCurrent()) throw new Error('Notification owner changed.');
+  if (!isSupported()) return 'unsupported';
+  const reading = readPermission();
+  // No ready trusted window means defer before claiming durable events.
+  if (reading === null)
+    throw new Error('Notification permission is not ready.');
+  const permission = await reading;
+  if (!isCurrent()) throw new Error('Notification owner changed.');
+  return permission === 'granted' || permission === 'denied'
+    ? permission
+    : 'unknown';
+};
+
 export type NotificationHostAdapterDependencies =
   NotificationDeliveryDependencies;
 export type NotificationHostAdapter = {
@@ -60,8 +84,14 @@ const notificationEventSchema: z.ZodType<NotificationEventSelectData> =
   });
 const notificationEventsSchema: z.ZodType<NotificationEventSelectData[]> =
   z.array(notificationEventSchema);
+export type NotificationEventSchema = z.infer<typeof notificationEventSchema>;
+export type NotificationEventsSchema = z.infer<typeof notificationEventsSchema>;
 const notificationPermissionSchema = z.enum(notificationPermissionStates);
 const booleanResultSchema = z.boolean();
+export type NotificationPermissionSchema = z.infer<
+  typeof notificationPermissionSchema
+>;
+export type BooleanResultSchema = z.infer<typeof booleanResultSchema>;
 let activeDeliveryRun: Promise<void> | null = null;
 let activeDeliveryContext: AuthorizedContext | null = null;
 
