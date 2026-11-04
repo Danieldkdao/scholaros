@@ -216,6 +216,21 @@ const operationHeaders = (operation: ActiveDictation) => ({
   'X-Dictation-Composer-Revision': String(operation.composerRevision),
 });
 
+const raceWithAbort = <Value>(promise: Promise<Value>, signal: AbortSignal) => {
+  if (signal.aborted)
+    return Promise.reject(new DictationClientError('cancelled'));
+
+  let onAbort: (() => void) | null = null;
+  const abortPromise = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(new DictationClientError('cancelled'));
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+
+  return Promise.race([promise, abortPromise]).finally(() => {
+    if (onAbort) signal.removeEventListener('abort', onAbort);
+  });
+};
+
 const decodeSseFrame = (frame: string) => {
   if (frame.startsWith(':')) return null;
   const data = frame
@@ -258,6 +273,7 @@ export const createDictationClient = (
   ): Promise<StartResponse> => {
     const parsedInput = dictationStartInputSchema.safeParse(input);
     if (!parsedInput.success) throw new DictationClientError('invalid-input');
+    if (signal?.aborted) throw new DictationClientError('cancelled');
     if (operations.size > 0 || startingController)
       throw new DictationClientError('busy');
     const controller = new AbortController();
@@ -268,22 +284,27 @@ export const createDictationClient = (
       AbortSignal.timeout(startRequestTimeoutMs),
     ]);
     try {
-      const response = await authorizedFetch(apiStartPath, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ version: 1, ...parsedInput.data }),
-        signal: requestSignal,
-      });
-      if (!response.ok) await readResponseError(response);
-      const parsedResponse = startResponseSchema.safeParse(
-        await readJson(response, 'provider-failed'),
-      );
-      if (!parsedResponse.success)
-        throw new DictationClientError('provider-failed');
-      if (operations.has(parsedResponse.data.operationId))
+      const startRequest = (async () => {
+        const response = await authorizedFetch(apiStartPath, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ version: 1, ...parsedInput.data }),
+          signal: requestSignal,
+        });
+        if (!response.ok) await readResponseError(response);
+        const parsedResponse = startResponseSchema.safeParse(
+          await readJson(response, 'provider-failed'),
+        );
+        if (!parsedResponse.success)
+          throw new DictationClientError('provider-failed');
+        return parsedResponse.data;
+      })();
+      const startResponse = await raceWithAbort(startRequest, requestSignal);
+      if (requestSignal.aborted) throw new DictationClientError('cancelled');
+      if (operations.has(startResponse.operationId))
         throw new DictationClientError('revision-conflict');
-      operations.set(parsedResponse.data.operationId, {
-        operationId: parsedResponse.data.operationId,
+      operations.set(startResponse.operationId, {
+        operationId: startResponse.operationId,
         sessionId: parsedInput.data.sessionId,
         composerRevision: parsedInput.data.composerRevision,
         nextAudioSequence: 0,
@@ -298,7 +319,7 @@ export const createDictationClient = (
         lifecycleController: new AbortController(),
         eventController: null,
       });
-      return parsedResponse.data;
+      return startResponse;
     } catch (error) {
       if (error instanceof DictationClientError) throw error;
       if (requestSignal.aborted) throw new DictationClientError('cancelled');
@@ -418,24 +439,30 @@ export const createDictationClient = (
       let pendingText = '';
       let lastSequence = operation.lastEventSequence;
       try {
-        const response = await authorizedFetch(
-          getPathWithOperation('/api/dictation/events', operationId),
-          {
-            method: 'GET',
-            headers: {
-              ...operationHeaders(operation),
-              Accept: 'text/event-stream',
+        const response = await raceWithAbort(
+          authorizedFetch(
+            getPathWithOperation('/api/dictation/events', operationId),
+            {
+              method: 'GET',
+              headers: {
+                ...operationHeaders(operation),
+                Accept: 'text/event-stream',
+              },
+              cache: 'no-store',
+              signal,
             },
-            cache: 'no-store',
-            signal,
-          },
+          ),
+          signal,
         );
+        if (signal.aborted) throw new DictationClientError('cancelled');
         if (!response.ok) await readResponseError(response);
         if (!response.body) throw new DictationClientError('provider-failed');
         reader = response.body.getReader();
         const decoder = new TextDecoder('utf-8', { fatal: true });
         for (;;) {
-          const { done, value } = await reader.read();
+          if (signal.aborted) throw new DictationClientError('cancelled');
+          const { done, value } = await raceWithAbort(reader.read(), signal);
+          if (signal.aborted) throw new DictationClientError('cancelled');
           if (done) {
             pendingText += decoder.decode();
             if (pendingText.trim())
@@ -548,6 +575,8 @@ export const createDictationClient = (
   const cancelDictation = async (operationId: string) => {
     const operation = operations.get(operationId);
     if (!operation) return;
+    removeOperation(operation);
+
     try {
       const response = await authorizedFetch(
         getPathWithOperation('/api/dictation/control', operationId),
@@ -569,8 +598,6 @@ export const createDictationClient = (
     } catch (error) {
       if (error instanceof DictationClientError) throw error;
       throw new DictationClientError('offline');
-    } finally {
-      removeOperation(operation);
     }
   };
 

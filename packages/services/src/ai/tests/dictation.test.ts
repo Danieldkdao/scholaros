@@ -22,12 +22,15 @@ class SyntheticMetaSocket extends EventEmitter {
   pendingAudioCallback: ((error?: Error) => void) | null = null;
   pendingAudioBuffer: Buffer | null = null;
 
-  constructor() {
+  constructor(autoOpen = true) {
     super();
-    queueMicrotask(() => {
-      this.readyState = 1;
-      this.emit('open');
-    });
+    if (autoOpen) queueMicrotask(() => this.open());
+  }
+
+  open() {
+    if (this.readyState === 3) return;
+    this.readyState = 1;
+    this.emit('open');
   }
 
   send(
@@ -181,13 +184,67 @@ describe('Meta realtime dictation protocol with a synthetic upstream fixture', (
       startInput,
       controller.signal,
     );
+    const startOutcome = startResult.then(
+      () => ({ kind: 'resolved' as const }),
+      (error: unknown) => ({ kind: 'rejected' as const, error }),
+    );
 
     controller.abort();
+    const outcomeBeforeCredentials = await Promise.race([
+      startOutcome,
+      new Promise<{ kind: 'pending' }>((resolve) =>
+        setTimeout(() => resolve({ kind: 'pending' }), 0),
+      ),
+    ]);
     resolveApiKey('fixture-only-secret');
 
     await expect(startResult).rejects.toMatchObject({ code: 'cancelled' });
+    expect(outcomeBeforeCredentials).toMatchObject({
+      kind: 'rejected',
+      error: { code: 'cancelled' },
+    });
     expect(getApiKey).toHaveBeenCalledOnce();
     expect(sockets).toHaveLength(0);
+  });
+
+  it('terminates provider setup and discards late events when cancelled while connecting', async () => {
+    const registry = createDictationRegistry();
+    let resolveSocket!: (socket: SyntheticMetaSocket) => void;
+    const socketCreated = new Promise<SyntheticMetaSocket>((resolve) => {
+      resolveSocket = resolve;
+    });
+    const controller = new AbortController();
+    const service = createDictationService({
+      registry,
+      getApiKey: async () => 'fixture-only-secret',
+      createWebSocket: () => {
+        const socket = new SyntheticMetaSocket(false);
+        resolveSocket(socket);
+        return socket as never;
+      },
+    });
+    const startResult = service.createDictation(
+      'account-a',
+      startInput,
+      controller.signal,
+    );
+    const socket = await socketCreated;
+
+    controller.abort();
+    await expect(startResult).rejects.toMatchObject({ code: 'cancelled' });
+
+    socket.open();
+    socket.receive({ sessionId: 'late-session' });
+    socket.receive({
+      type: 'transcript',
+      transcript: 'late final',
+      final: true,
+      audioProcessedMs: 100,
+    });
+
+    expect(socket.terminated).toBe(true);
+    expect(socket.sentFrames).toHaveLength(0);
+    expect(registry.operations.size).toBe(0);
   });
 
   it('forwards sequenced PCM and accepts only one final after cumulative partials', async () => {

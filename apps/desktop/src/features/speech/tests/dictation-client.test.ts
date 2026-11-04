@@ -148,6 +148,114 @@ describe('authenticated desktop Meta dictation client', () => {
     ).rejects.toMatchObject({ code: 'session-changed' });
   });
 
+  it('settles a cancelled start promptly and ignores a late start response', async () => {
+    let resolveStart!: (response: Response) => void;
+    const startResponse = new Promise<Response>((resolve) => {
+      resolveStart = resolve;
+    });
+    const fetchAuthorized = vi.fn<AuthorizedDictationFetch>(
+      () => startResponse,
+    );
+    const client = createDictationClient(fetchAuthorized);
+    const startResult = client.startDictation(startInput);
+    const startOutcome = startResult.then(
+      () => ({ kind: 'resolved' as const }),
+      (error: unknown) => ({ kind: 'rejected' as const, error }),
+    );
+
+    await client.cancelAll();
+    const outcomeBeforeResponse = await Promise.race([
+      startOutcome,
+      new Promise<{ kind: 'pending' }>((resolve) =>
+        setTimeout(() => resolve({ kind: 'pending' }), 0),
+      ),
+    ]);
+    resolveStart(Response.json({ operationId: 'operation-a' }));
+    const outcomeAfterResponse = await startOutcome;
+
+    expect(outcomeBeforeResponse).toMatchObject({
+      kind: 'rejected',
+      error: { code: 'cancelled' },
+    });
+    expect(outcomeAfterResponse).toMatchObject({
+      kind: 'rejected',
+      error: { code: 'cancelled' },
+    });
+    expect(client.activeOperationCount()).toBe(0);
+  });
+
+  it('invalidates local events before awaiting remote cancellation', async () => {
+    let eventSignal: AbortSignal | undefined;
+    let streamController: ReadableStreamDefaultController<Uint8Array>;
+    let resolveCancel!: (response: Response) => void;
+    const cancelResponse = new Promise<Response>((resolve) => {
+      resolveCancel = resolve;
+    });
+    const encoder = new TextEncoder();
+    const fetchAuthorized = vi.fn<AuthorizedDictationFetch>(
+      async (path, init) => {
+        if (path === '/api/dictation')
+          return Response.json({ operationId: 'operation-a' });
+        if (path.startsWith('/api/dictation/events?')) {
+          eventSignal = init.signal ?? undefined;
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                streamController = controller;
+              },
+            }),
+            { headers: { 'content-type': 'text/event-stream' } },
+          );
+        }
+        return cancelResponse;
+      },
+    );
+    const client = createDictationClient(fetchAuthorized);
+    const operation = await client.startDictation(startInput);
+    const events = client.getDictationEvents(operation.operationId);
+    const readyResult = events.next();
+    await Promise.resolve();
+    streamController!.enqueue(
+      encoder.encode(`data: ${JSON.stringify(event(1, 'ready'))}\n\n`),
+    );
+    await expect(readyResult).resolves.toMatchObject({
+      value: { kind: 'ready' },
+    });
+    const lateEventOutcome = events.next().then(
+      (result) => ({ kind: 'event' as const, result }),
+      (error: unknown) => ({ kind: 'rejected' as const, error }),
+    );
+
+    const cancelPromise = client.cancelAll();
+    await Promise.resolve();
+    const signalAbortedBeforeResponse = eventSignal?.aborted ?? false;
+    const activeCountBeforeResponse = client.activeOperationCount();
+    try {
+      streamController!.enqueue(
+        encoder.encode(
+          `data: ${JSON.stringify(event(2, 'partial', 'late hypothesis'))}\n\n`,
+        ),
+      );
+    } catch {
+      // Cancellation may already have errored the synthetic stream.
+    }
+    const outcomeBeforeResponse = await Promise.race([
+      lateEventOutcome,
+      new Promise<{ kind: 'pending' }>((resolve) =>
+        setTimeout(() => resolve({ kind: 'pending' }), 0),
+      ),
+    ]);
+    resolveCancel(Response.json({ operationId: operation.operationId }));
+    await cancelPromise;
+
+    expect(signalAbortedBeforeResponse).toBe(true);
+    expect(activeCountBeforeResponse).toBe(0);
+    expect(outcomeBeforeResponse).toMatchObject({
+      kind: 'rejected',
+      error: { code: 'cancelled' },
+    });
+  });
+
   it('uses authenticated cancellation to abort the owned SSE connection', async () => {
     let eventSignal: AbortSignal | undefined;
     const fetchAuthorized = vi.fn<AuthorizedDictationFetch>(

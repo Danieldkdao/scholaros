@@ -392,6 +392,24 @@ const consumeRateLimit = (
   current.count += 1;
 };
 
+const raceWithAbort = <Value>(
+  promise: Promise<Value>,
+  signal?: AbortSignal,
+): Promise<Value> => {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(makeError('cancelled'));
+
+  let onAbort: (() => void) | null = null;
+  const abortPromise = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(makeError('cancelled'));
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+
+  return Promise.race([promise, abortPromise]).finally(() => {
+    if (onAbort) signal.removeEventListener('abort', onAbort);
+  });
+};
+
 const createDeferred = () => {
   let resolve!: () => void;
   let reject!: (error: Error) => void;
@@ -597,7 +615,7 @@ export const createDictationService = (
     if (!idSchema.safeParse(accountId).success || !parsedInput.success)
       throw makeError('invalid-input');
     if (signal?.aborted) throw makeError('cancelled');
-    const apiKey = await getApiKey();
+    const apiKey = await raceWithAbort(Promise.resolve(getApiKey()), signal);
     if (signal?.aborted) throw makeError('cancelled');
     if (!apiKey) throw makeError('feature-unavailable');
 
@@ -840,7 +858,9 @@ export const createDictationService = (
         HANDSHAKE_TIMEOUT_MS * 2,
       );
       if (signal) {
-        const onAbort = () => fail(makeError('cancelled'));
+        const onAbort = () => {
+          void cancelOperation(registry, operation, now);
+        };
         if (signal.aborted) onAbort();
         else signal.addEventListener('abort', onAbort, { once: true });
         try {
