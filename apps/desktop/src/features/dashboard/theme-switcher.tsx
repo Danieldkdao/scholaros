@@ -11,8 +11,19 @@ import {
 } from '@scholaros/ui/components/dropdown-menu';
 import { formatTheme } from './lib/formatters';
 import { themePreference, themes } from './lib/themes';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@scholaros/ui/components/select';
 
-export const ThemeSwitcher = () => {
+export const ThemeSwitcher = ({
+  variant = 'icon',
+}: {
+  variant?: 'icon' | 'select';
+}) => {
   const { theme, setTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
 
@@ -22,6 +33,42 @@ export const ThemeSwitcher = () => {
   // reports nothing and the control falls back to the provider default.
   const current = themePreference(mounted ? theme : undefined);
   const { label, Icon } = formatTheme(current);
+  if (variant === 'select')
+    return (
+      <Select
+        value={current}
+        onValueChange={(value) => {
+          if (themes.some((option) => option === value))
+            setTheme(String(value));
+        }}
+      >
+        <SelectTrigger
+          id="settings-theme"
+          aria-label="Theme"
+          className="w-full"
+        >
+          <SelectValue>
+            <span className="flex items-center gap-2">
+              <Icon className="size-4" />
+              {label}
+            </span>
+          </SelectValue>
+        </SelectTrigger>
+        <SelectContent>
+          {themes.map((option) => {
+            const formatted = formatTheme(option);
+            return (
+              <SelectItem key={option} value={option}>
+                <div className="flex items-center gap-2">
+                  <formatted.Icon className="size-4" />
+                  {formatted.label}
+                </div>
+              </SelectItem>
+            );
+          })}
+        </SelectContent>
+      </Select>
+    );
   return (
     <DropdownMenu>
       <TooltipWrapper content={`Theme ${label}`}>

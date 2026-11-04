@@ -19,6 +19,9 @@ import type { WatchHealthSummary } from '../../features/watch/types';
 import { watchSettingsSchema } from '../../features/watch/schemas';
 import { settingsSections } from '../../db/shared';
 import { ProductSettings } from '../../features/settings/components/product-settings';
+import { AccountSettings } from '../../features/settings/components/account-settings';
+import { GradeSettingsSection } from '../../features/settings/components/grade-settings-section';
+import { MemoryPanel } from '../../features/memory/components/memory-panel';
 import { normalizeWorkspaceReplacementErrorCode } from '../../features/settings/lib/formatters';
 import type { DeviceReplacementActions } from '../../features/settings/components/device-settings';
 import { NotificationSettings } from '../../features/notifications/components/notification-settings';
@@ -476,7 +479,31 @@ const SettingsPage = () => {
           watchHealth={watchHealth}
           watchError={watchError}
           replacementActions={replacementActions}
-          leafSettings={{ notifications: notificationLeaf }}
+          accountContent={<AccountSettings />}
+          leafSettings={{
+            notifications: notificationLeaf,
+            ...(typeof bridge.getGradeSettings === 'function' &&
+            typeof bridge.saveGradeSettings === 'function'
+              ? {
+                  grades: (
+                    <GradeSettingsSection
+                      key={state.accountId}
+                      accountId={state.accountId}
+                    />
+                  ),
+                }
+              : {}),
+            ...(typeof bridge.listMemories === 'function'
+              ? {
+                  'personal-context': (
+                    <MemoryPanel
+                      key={state.accountId}
+                      accountId={state.accountId}
+                    />
+                  ),
+                }
+              : {}),
+          }}
           onSettingsSave={saveSettings}
           onWatchSave={saveWatchSettings}
           onStateChange={setState}

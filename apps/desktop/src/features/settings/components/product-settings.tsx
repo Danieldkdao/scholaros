@@ -65,6 +65,7 @@ type ProductSettingsProps = {
   watchHealth?: WatchHealthSummary | null;
   watchError?: string | null;
   leafSettings?: SettingsLeafSections;
+  accountContent?: ReactNode;
   replacementActions?: DeviceReplacementActions | null;
   onSettingsSave: (
     changes: SettingsUpdateSchema,
@@ -121,7 +122,7 @@ const SettingsSwitch = ({
   </Field>
 );
 
-const SettingsSaveSidebar = ({ accountId }: { accountId: string }) => {
+const SettingsSaveStatus = ({ accountId }: { accountId: string }) => {
   const subscribe = useCallback(
     (listener: () => void) => subscribeSettingsSaveState(accountId, listener),
     [accountId],
@@ -143,55 +144,53 @@ const SettingsSaveSidebar = ({ accountId }: { accountId: string }) => {
   const { label, Icon } = formatSettingsSaveStatus(status);
 
   return (
-    <aside
+    <footer
       aria-label="Settings save status"
       aria-busy={saveState.pending > 0}
       aria-live="polite"
-      className="sticky top-0"
+      className="flex flex-col gap-3 border-t pt-4 text-base text-muted-foreground"
       role="status"
     >
-      <Card className="text-base">
-        <CardContent className="gap-3 p-4">
-          <span className="flex items-center gap-2 text-muted-foreground">
-            <Icon
-              className={cn(
-                'size-5 shrink-0',
-                status === 'saving' && 'motion-safe:animate-spin',
-              )}
-            />
-            {label}
-          </span>
-          {failedGroups.map((group) => {
-            const groupState = saveState.groups[group]!;
-            return (
-              <div key={group} className="flex flex-col gap-2">
-                <p className="flex items-center gap-2 font-medium">
-                  <CircleAlert className="size-4 shrink-0 text-destructive" />
-                  {formatSettingsSaveGroup(group)}
-                </p>
-                <p className="text-destructive">{groupState.error}</p>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  aria-label={`Retry ${formatSettingsSaveGroup(group).toLowerCase()}`}
-                  disabled={groupState.pending > 0}
-                  onClick={() =>
-                    void retrySettingsSave(accountId, group).catch(
-                      () => undefined,
-                    )
-                  }
-                >
-                  <LoadingSwap isLoading={groupState.pending > 0}>
-                    Retry
-                  </LoadingSwap>
-                </Button>
-              </div>
-            );
-          })}
-        </CardContent>
-      </Card>
-    </aside>
+      <div className="flex flex-col gap-3">
+        <span className="flex items-center gap-2 text-muted-foreground">
+          <Icon
+            className={cn(
+              'size-5 shrink-0',
+              status === 'saving' && 'motion-safe:animate-spin',
+            )}
+          />
+          {label}
+        </span>
+        {failedGroups.map((group) => {
+          const groupState = saveState.groups[group]!;
+          return (
+            <div key={group} className="flex flex-col gap-2">
+              <p className="flex items-center gap-2 font-medium">
+                <CircleAlert className="size-4 shrink-0 text-destructive" />
+                {formatSettingsSaveGroup(group)}
+              </p>
+              <p className="text-destructive">{groupState.error}</p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                aria-label={`Retry ${formatSettingsSaveGroup(group).toLowerCase()}`}
+                disabled={groupState.pending > 0}
+                onClick={() =>
+                  void retrySettingsSave(accountId, group).catch(
+                    () => undefined,
+                  )
+                }
+              >
+                <LoadingSwap isLoading={groupState.pending > 0}>
+                  Retry
+                </LoadingSwap>
+              </Button>
+            </div>
+          );
+        })}
+      </div>
+    </footer>
   );
 };
 
@@ -269,6 +268,7 @@ export const ProductSettings = ({
   watchHealth = null,
   watchError = null,
   leafSettings = {},
+  accountContent,
   replacementActions = null,
   onSettingsSave,
   onWatchSave,
@@ -276,7 +276,17 @@ export const ProductSettings = ({
   deleteLocalData,
   onLocalDataDeleted,
 }: ProductSettingsProps) => {
-  const activeSection = section === 'watch' ? 'background' : section;
+  const availableSections = settingsSections.filter((candidate) =>
+    candidate === 'grades' ||
+    candidate === 'personal-context' ||
+    candidate === 'notifications'
+      ? leafSettings[candidate] != null
+      : true,
+  );
+  const requestedSection = section === 'watch' ? 'background' : section;
+  const activeSection = availableSections.includes(requestedSection)
+    ? requestedSection
+    : 'account';
   const focusWatch = section === 'watch';
   const watchSetupMessage = !state.settings.consent
     ? 'Approve academic access on this computer to enable watching.'
@@ -303,9 +313,9 @@ export const ProductSettings = ({
   };
 
   return (
-    <div className="grid gap-6 lg:grid-cols-[12rem_minmax(0,1fr)_16rem]">
+    <div className="grid gap-6 lg:grid-cols-[12rem_minmax(0,1fr)]">
       <nav aria-label="Settings sections" className="flex flex-col gap-1">
-        {settingsSections.map((settingsSection) => {
+        {availableSections.map((settingsSection) => {
           const { label, Icon } = formatSettingsSection(settingsSection);
           return (
             <Link
@@ -333,17 +343,18 @@ export const ProductSettings = ({
         <h2 id="settings-section-title" className="text-xl font-semibold">
           {sectionTitle(activeSection)}
         </h2>
-        {activeSection === 'account' && (
-          <Card>
-            <CardHeader>
-              <CardTitle>ScholarOS account</CardTitle>
-              <CardDescription>
-                Your account is signed in. Device browser profiles and academic
-                records remain local to each computer.
-              </CardDescription>
-            </CardHeader>
-          </Card>
-        )}
+        {activeSection === 'account' &&
+          (accountContent ?? (
+            <Card>
+              <CardHeader>
+                <CardTitle>ScholarOS account</CardTitle>
+                <CardDescription>
+                  Your account is signed in. Device browser profiles and
+                  academic records remain local to each computer.
+                </CardDescription>
+              </CardHeader>
+            </Card>
+          ))}
         {activeSection === 'device' && (
           <DeviceSettings
             state={state}
@@ -431,9 +442,11 @@ export const ProductSettings = ({
                 this build.
               </CardDescription>
             </CardHeader>
-            <CardContent className="flex items-center justify-between gap-4">
-              <span className="text-base">Theme</span>
-              <ThemeSwitcher />
+            <CardContent className="flex flex-col gap-2">
+              <label htmlFor="settings-theme" className="text-base font-medium">
+                Theme
+              </label>
+              <ThemeSwitcher variant="select" />
             </CardContent>
           </Card>
         )}
@@ -443,8 +456,8 @@ export const ProductSettings = ({
             onDeleted={onLocalDataDeleted}
           />
         )}
+        <SettingsSaveStatus accountId={accountId} />
       </section>
-      <SettingsSaveSidebar accountId={accountId} />
     </div>
   );
 };

@@ -114,7 +114,7 @@ const mount = async (
   return { container, root };
 };
 
-it('shows the complete Settings section navigation and the selected section', async () => {
+it('hides unavailable leaf tabs and preserves the selected available section', async () => {
   const { container, root } = await mount('account');
 
   expect(
@@ -128,11 +128,8 @@ it('shows the complete Settings section navigation and the selected section', as
     'account',
     'device',
     'connections',
-    'personal-context',
     'ai-navigation',
     'background',
-    'grades',
-    'notifications',
     'appearance',
     'local-data',
   ]);
@@ -288,5 +285,28 @@ it('requires confirmation and reports deletion success only after the host resol
   await vi.waitFor(() => expect(onDeleted).toHaveBeenCalledOnce());
   expect(deleteLocalData).toHaveBeenCalledTimes(2);
 
+  await act(async () => root.unmount());
+});
+
+it('renders save status as discreet content footer rather than a sidebar card', async () => {
+  const { container, root } = await mount('account');
+  const status = container.querySelector(
+    '[aria-label="Settings save status"]',
+  )!;
+  expect(status.tagName).toBe('FOOTER');
+  expect(status.closest('section')).toBeTruthy();
+  expect(status.querySelector('[data-slot="card"]')).toBeNull();
+  expect(
+    container.querySelector('aside[aria-label="Settings save status"]'),
+  ).toBeNull();
+  await act(async () => root.unmount());
+});
+
+it('uses a full-width named theme selector with the current theme label', async () => {
+  const { container, root } = await mount('appearance');
+  const trigger = container.querySelector('#settings-theme')!;
+  expect(trigger.textContent).toContain('System');
+  expect(trigger.querySelector('svg')).toBeTruthy();
+  expect(trigger.className).toContain('w-full');
   await act(async () => root.unmount());
 });
