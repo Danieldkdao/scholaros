@@ -17,6 +17,12 @@ import type {
 } from '@scholaros/services/learning/study-contracts';
 import type { StudyAttachment } from '../components/study-composer';
 import type { StudyTimerActions } from '../components/study-timer';
+import {
+  approvedPreviewMessage,
+  isApprovedPreviewCurrent,
+  receiveApprovedTutorOutput,
+  type ApprovedTutorPreview,
+} from '../lib/approved-tutor-preview';
 
 type LearningMethodName =
   | 'getStudySession'
@@ -295,6 +301,9 @@ export const useStudySession = (
   readOnlyRef.current = readOnly;
   const requestSequenceRef = useRef(0);
   const requestIdsRef = useRef(new Map<string, string>());
+  const previewRef = useRef<ApprovedTutorPreview | null>(null);
+  const [approvedPreview, setApprovedPreview] =
+    useState<ApprovedTutorPreview | null>(null);
   const stateRef = useRef<StudySessionState | null>(null);
   const [state, setState] = useState<StudySessionState>({
     accountId: null,
@@ -409,11 +418,16 @@ export const useStudySession = (
   }, [accountId, readOnly, sessionId]);
 
   useEffect(() => {
+    const subscribedScope = JSON.stringify([accountId, sessionId, readOnly]);
     let unsubscribe: () => void = () => {};
     const bridge = window.scholar as unknown as StudyBridge;
     if (typeof bridge.onProductEvent === 'function') {
       unsubscribe = bridge.onProductEvent((event) => {
-        if (event.accountId !== accountId) return;
+        if (
+          scopeRef.current !== subscribedScope ||
+          event.accountId !== accountId
+        )
+          return;
         if (
           event.resource === 'study' &&
           event.targetId &&
@@ -422,6 +436,36 @@ export const useStudySession = (
           return;
         if (!['study', 'grades', 'context', 'memory'].includes(event.resource))
           return;
+        if (event.approvedTutorOutput) {
+          const current = stateRef.current;
+          if (
+            event.resource !== 'study' ||
+            event.targetId !== sessionId ||
+            readOnlyRef.current
+          )
+            return;
+          if (
+            current?.accountId === accountId &&
+            current.sessionId === sessionId &&
+            current.snapshot
+          ) {
+            const preview = receiveApprovedTutorOutput(
+              previewRef.current,
+              event,
+              scopeRef.current,
+              current.snapshot,
+              current.gradeSettings,
+            );
+            if (preview !== previewRef.current) {
+              previewRef.current = preview;
+              setApprovedPreview(preview);
+            }
+          }
+          // Only the final delivery frame reads the durable message, including
+          // its citations and activities. Chunks never cause snapshot reloads.
+          if (event.approvedTutorOutput.done) void reload();
+          return;
+        }
         void reload();
       });
     }
@@ -430,7 +474,7 @@ export const useStudySession = (
       unsubscribe();
       requestSequenceRef.current += 1;
     };
-  }, [accountId, refreshEpoch, reload, sessionId]);
+  }, [accountId, readOnly, refreshEpoch, reload, sessionId]);
 
   const saveDraft = useCallback(
     async (text: string, expectedDraftRevision: number) => {
@@ -784,6 +828,27 @@ export const useStudySession = (
     isStateForScope && state.snapshot?.session.id === sessionId
       ? state.snapshot
       : null;
+  const currentPreview =
+    approvedPreview &&
+    snapshot &&
+    !readOnly &&
+    isApprovedPreviewCurrent(
+      approvedPreview,
+      scopeKey,
+      snapshot,
+      state.gradeSettings,
+    )
+      ? approvedPreview
+      : null;
+  const displayedSnapshot =
+    snapshot && currentPreview
+      ? {
+          ...snapshot,
+          messages: mergeMessages(snapshot.messages, [
+            approvedPreviewMessage(currentPreview, sessionId),
+          ]),
+        }
+      : snapshot;
   const loading = !isStateForScope || state.loading;
   const errorCode = isStateForScope ? state.errorCode : null;
   const refreshErrorCode = isStateForScope ? state.refreshErrorCode : null;
@@ -792,7 +857,11 @@ export const useStudySession = (
   return {
     loading,
     refreshing: isStateForScope && state.refreshing,
-    snapshot,
+    snapshot: displayedSnapshot,
+    streamingMessageId:
+      currentPreview && !currentPreview.output.done
+        ? currentPreview.output.messageId
+        : null,
     courseName: isStateForScope ? state.courseName : null,
     gradeSettings,
     errorCode,

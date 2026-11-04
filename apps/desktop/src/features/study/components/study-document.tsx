@@ -499,6 +499,7 @@ export const StudyDocument = ({
                 >
                   <StudyMessage
                     message={message}
+                    streaming={message.id === study.streamingMessageId}
                     gradeContentVisible={
                       !message.gradeDerived ||
                       Boolean(
@@ -643,7 +644,6 @@ export const StudyDocument = ({
           activeTurn={snapshot.activeTurn}
           failedTurnId={failedTurnMessage?.turnId ?? null}
           attachmentRevision={snapshot.revision}
-          onSaveDraft={study.saveDraft}
           onSend={study.sendTurn}
           onStop={async () => {
             if (snapshot.activeTurn)

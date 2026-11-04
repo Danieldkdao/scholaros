@@ -1839,3 +1839,104 @@ it('bounds the study viewport and keeps wheel input native without turn-sized bl
   expect(received).toHaveBeenCalledOnce();
   expect(wheel.defaultPrevented).toBe(false);
 });
+
+const approvedOutputEvent = (
+  overrides: Partial<NonNullable<ProductEventV1['approvedTutorOutput']>> = {},
+): ProductEventV1 => ({
+  version: 1,
+  accountId: 'student-a',
+  resource: 'study',
+  targetId: 'session-1',
+  revision: 2,
+  approvedTutorOutput: {
+    turnId: 'approved-turn',
+    generationEpoch: 1,
+    messageId: 'approved-message',
+    messageSequence: 2,
+    createdAt: '2026-11-04T12:00:00Z',
+    gradeDerived: false,
+    gradeConsentRevision: null,
+    partIndex: 0,
+    sequence: 0,
+    textDelta: 'A loop ',
+    done: false,
+    ...overrides,
+  },
+});
+
+it('renders approved output increments without per-chunk reads and reconciles the final durable message', async () => {
+  const getStudySession = vi.fn(async () => snapshot());
+  const currentBridge = bridge(getStudySession);
+  const { container } = await mountDocument({}, currentBridge);
+  await act(drain);
+  const initialReads = getStudySession.mock.calls.length;
+  await act(async () => eventListener?.(approvedOutputEvent()));
+  expect(container.textContent).toContain('A loop');
+  await act(async () =>
+    eventListener?.(
+      approvedOutputEvent({ sequence: 1, textDelta: 'repeats a step.' }),
+    ),
+  );
+  expect(container.textContent).toContain('A loop repeats a step.');
+  expect(getStudySession).toHaveBeenCalledTimes(initialReads);
+  const durable = message(
+    'approved-message',
+    2,
+    'tutor',
+    [
+      { kind: 'text', text: 'A loop repeats a step.' },
+      { kind: 'citation', reference: sourceReference },
+    ],
+    { turnId: 'approved-turn' },
+  );
+  getStudySession.mockResolvedValue(
+    snapshot({ messages: [durable], revision: 2 }),
+  );
+  await act(async () => {
+    eventListener?.(
+      approvedOutputEvent({ sequence: 2, textDelta: '', done: true }),
+    );
+    await drain();
+  });
+  expect(getStudySession).toHaveBeenCalledTimes(initialReads + 1);
+  expect(container.querySelectorAll('[role="article"]')).toHaveLength(1);
+  expect(container.textContent).toContain('Cell division notes');
+  await act(async () => eventListener?.(approvedOutputEvent()));
+  expect(container.querySelectorAll('[role="article"]')).toHaveLength(1);
+  expect(container.textContent).toContain('Cell division notes');
+});
+
+it('rejects wrong scopes, missing chunks, duplicates, changed epochs, and unconsented grade output', async () => {
+  const currentBridge = bridge();
+  const { container } = await mountDocument({}, currentBridge);
+  await act(drain);
+  const rejected = [
+    { ...approvedOutputEvent(), accountId: 'other-account' },
+    { ...approvedOutputEvent(), targetId: 'other-session' },
+    approvedOutputEvent({ sequence: 1, textDelta: 'Missing first chunk' }),
+    approvedOutputEvent({ generationEpoch: 2, textDelta: 'Wrong generation' }),
+    approvedOutputEvent({
+      gradeDerived: true,
+      gradeConsentRevision: 0,
+      textDelta: 'Hidden grade answer',
+    }),
+  ];
+  for (const event of rejected) await act(async () => eventListener?.(event));
+  expect(container.querySelectorAll('[role="article"]')).toHaveLength(0);
+  await act(async () => eventListener?.(approvedOutputEvent()));
+  await act(async () => eventListener?.(approvedOutputEvent()));
+  await act(async () =>
+    eventListener?.(
+      approvedOutputEvent({ sequence: 2, textDelta: 'Skipped chunk' }),
+    ),
+  );
+  expect(container.textContent).toContain('A loop');
+  expect(container.textContent).not.toContain('A loop A loop');
+  expect(container.textContent).not.toContain('Skipped chunk');
+  await act(async () =>
+    eventListener?.(
+      approvedOutputEvent({ sequence: 1, textDelta: 'repeats.' }),
+    ),
+  );
+  expect(container.textContent).toContain('A loop repeats.');
+});
