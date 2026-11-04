@@ -207,6 +207,12 @@ describe('deep course content scanning', () => {
         purpose: 'assignments',
         destinationUrl: rememberedUrl,
         destinationKind: 'collection',
+        parentUrl: root,
+        evidence: {
+          sourceUrl: root,
+          excerpts: ['Assignments'],
+          targetIds: [],
+        },
         recipe: expect.objectContaining({ version: 1 }),
       }),
     );

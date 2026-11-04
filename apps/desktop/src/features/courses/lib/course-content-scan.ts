@@ -808,8 +808,12 @@ export const scanCourseCollection = async ({
                 : null,
               label: (parent?.label || current.title || kind).slice(0, 200),
               evidence: {
-                sourceUrl: current.url,
-                excerpts: evidenceText ? [evidenceText] : [],
+                sourceUrl: parent?.parentUrl ?? current.url,
+                excerpts: parent?.label
+                  ? [parent.label.slice(0, 500)]
+                  : evidenceText
+                    ? [evidenceText]
+                    : [],
                 targetIds: [],
               },
               status: 'verified',
