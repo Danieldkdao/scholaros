@@ -21,6 +21,15 @@ import {
 } from '@scholaros/services/learning/speech-contracts';
 import { clientEnv } from './data/env/client';
 import {
+  safeRouteSchema,
+  type SafeRoute,
+} from '@scholaros/services/learning/notification-contracts';
+import type { AuthorizedContext } from '@scholaros/services/learning/product-contracts';
+import {
+  createNotificationHostAdapter,
+  type NotificationHostAdapter,
+} from './services/academic/notification-host-adapter';
+import {
   createDictationHostAdapter,
   type DictationHostAdapter,
   type DictationHostScope,
@@ -149,6 +158,211 @@ let nativeAdmissionBlocks = 0;
 const assertNativeAdmission = () => {
   if (nativeAdmissionBlocks > 0)
     throw new Error('Native work is being closed; try again afterward.');
+};
+
+type NativeNotificationOwner = {
+  cookie: string;
+  context: AuthorizedContext;
+  controller: AbortController;
+  host: NotificationHostAdapter;
+  visible: Map<string, Notification>;
+  timer?: ReturnType<typeof setInterval>;
+};
+let notificationEpoch = 0;
+let notificationOwner: NativeNotificationOwner | null = null;
+let notificationDisposal: Promise<void> = Promise.resolve();
+
+const notificationRoutePath = (input: SafeRoute) => {
+  const route = safeRouteSchema.parse(input);
+  switch (route.kind) {
+    case 'today':
+      return '/dashboard';
+    case 'settings':
+      return `/dashboard/settings${route.section ? `?section=${encodeURIComponent(route.section)}` : ''}`;
+    case 'context':
+      return `/dashboard/context${route.itemId ? `?itemId=${encodeURIComponent(route.itemId)}` : ''}`;
+    case 'course':
+      return `/dashboard/courses/${encodeURIComponent(route.courseId)}`;
+    case 'study':
+      return `/study/${encodeURIComponent(route.sessionId)}`;
+  }
+};
+
+const disposeNotificationHost = () => {
+  notificationEpoch += 1;
+  const owner = notificationOwner;
+  notificationOwner = null;
+  if (owner) {
+    owner.controller.abort();
+    clearInterval(owner.timer);
+    for (const notification of owner.visible.values()) notification.close();
+    owner.visible.clear();
+  }
+  notificationDisposal = Promise.all([
+    notificationDisposal,
+    owner?.host.dispose(),
+  ]).then(() => undefined);
+  return notificationDisposal;
+};
+
+const bindNotificationUser = async (input: unknown) => {
+  const user = z
+    .object({ id: idSchema, authMode: z.string().optional() })
+    .safeParse(input);
+  if (
+    !user.success ||
+    user.data.authMode === 'offline-local' ||
+    nativeAdmissionBlocks > 0
+  )
+    return null;
+  const cookie = authClient.getCookie();
+  if (
+    notificationOwner?.context.userId === user.data.id &&
+    notificationOwner.cookie === cookie &&
+    notificationOwner.context.isCurrent()
+  )
+    return notificationOwner;
+  const startingEpoch = notificationEpoch;
+  await notificationDisposal;
+  assertNativeAdmission();
+  if (startingEpoch !== notificationEpoch || !isAccountSessionCurrent(cookie))
+    return null;
+  if (
+    notificationOwner?.context.userId === user.data.id &&
+    notificationOwner.cookie === cookie &&
+    notificationOwner.context.isCurrent()
+  )
+    return notificationOwner;
+  if (notificationOwner) {
+    const disposal = disposeNotificationHost();
+    const disposalEpoch = notificationEpoch;
+    await disposal;
+    if (disposalEpoch !== notificationEpoch) return null;
+  }
+  if (!isAccountSessionCurrent(cookie) || nativeAdmissionBlocks > 0)
+    return null;
+  const epoch = ++notificationEpoch;
+  const controller = new AbortController();
+  const context: AuthorizedContext = {
+    userId: user.data.id,
+    epoch,
+    signal: controller.signal,
+    isCurrent: () =>
+      notificationOwner?.context === context &&
+      !controller.signal.aborted &&
+      nativeAdmissionBlocks === 0 &&
+      epoch === notificationEpoch &&
+      isAccountSessionCurrent(cookie),
+  };
+  const visible = new Map<string, Notification>();
+  const host = createNotificationHostAdapter({
+    isFocused: () => getTrustedWindows().some((window) => window.isFocused()),
+    show: async ({ eventId, title, body, onClick }) => {
+      if (!context.isCurrent() || !Notification.isSupported()) return 'failed';
+      return new Promise<'shown' | 'failed'>((resolve) => {
+        const notification = new Notification({ title, body });
+        visible.set(eventId, notification);
+        let settled = false;
+        const finish = (result: 'shown' | 'failed') => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          resolve(result);
+        };
+        const timeout = setTimeout(() => {
+          finish('failed');
+          notification.close();
+        }, 5_000);
+        notification.once('show', () =>
+          finish(context.isCurrent() ? 'shown' : 'failed'),
+        );
+        notification.once('failed', () => {
+          visible.delete(eventId);
+          finish('failed');
+        });
+        notification.once('close', () => {
+          visible.delete(eventId);
+          finish('failed');
+        });
+        notification.once('click', () => {
+          if (context.isCurrent()) onClick();
+        });
+        try {
+          notification.show();
+        } catch {
+          visible.delete(eventId);
+          finish('failed');
+        }
+      });
+    },
+    dismiss: async (eventId) => {
+      visible.get(eventId)?.close();
+      visible.delete(eventId);
+    },
+    route: async (route) => {
+      const routePath = notificationRoutePath(route);
+      if (!context.isCurrent()) return;
+      let window = getTrustedWindows()[0];
+      if (window) {
+        const url = new URL(window.webContents.getURL());
+        url.hash = routePath;
+        await window.loadURL(url.href);
+      } else window = createWindow(routePath);
+      if (context.isCurrent() && !window.isDestroyed()) {
+        window.show();
+        window.focus();
+      }
+    },
+    validateTarget: async (userId, event) => {
+      if (userId !== context.userId || !context.isCurrent()) return false;
+      const currentUser = await getOnlineServiceUser();
+      if (currentUser.id !== userId || !context.isCurrent()) return false;
+      const route = safeRouteSchema.parse(event.safeRoute);
+      let exists: unknown = true;
+      switch (route.kind) {
+        case 'study':
+          exists = await requestAcademicService('getStudySession', {
+            sessionId: route.sessionId,
+          });
+          break;
+        case 'course':
+          exists = await requestAcademicService('getCourse', route.courseId);
+          break;
+        case 'context':
+          if (route.itemId)
+            exists = await requestAcademicService('getContextItem', {
+              itemId: route.itemId,
+            });
+          break;
+        case 'today':
+        case 'settings':
+          break;
+      }
+      return Boolean(exists) && context.isCurrent();
+    },
+  });
+  const owner: NativeNotificationOwner = {
+    cookie,
+    context,
+    controller,
+    host,
+    visible,
+  };
+  notificationOwner = owner;
+  await owner.host.setFocus(
+    owner.context,
+    getTrustedWindows().some((window) => window.isFocused()),
+  );
+  await owner.host.deliverDueNotifications(owner.context);
+  if (!owner.context.isCurrent()) return null;
+  owner.timer = setInterval(() => {
+    if (owner.context.isCurrent())
+      void owner.host
+        .deliverDueNotifications(owner.context)
+        .catch(() => undefined);
+  }, 30_000);
+  owner.timer.unref();
+  return owner;
 };
 
 type NativeDictationScope = {
@@ -566,6 +780,7 @@ const disposeNativeOwners = async () => {
     const results = await Promise.allSettled([
       disposeDictationHost(),
       disposeActivityManager(),
+      disposeNotificationHost(),
     ]);
     const failures = results.flatMap((result) =>
       result.status === 'rejected' ? [result.reason] : [],
@@ -1011,10 +1226,27 @@ const registerTrustedNativeIpc = () => {
     async (event, input) => {
       requireTrustedSender(event);
       requestNotificationPermissionSchema.parse(input);
-      await requireTrustedOnlineServiceUser(event);
-      return {
-        state: Notification.isSupported() ? 'unknown' : 'unsupported',
-      };
+      assertNativeAdmission();
+      const user = await requireTrustedOnlineServiceUser(event);
+      if (!Notification.isSupported()) return { state: 'unsupported' };
+      const window = requireTrustedSender(event);
+      const decision = await window.webContents.executeJavaScript(
+        'Notification.requestPermission()',
+        true,
+      );
+      await requireSameTrustedOnlineServiceUser(event, user);
+      assertNativeAdmission();
+      const state =
+        decision === 'granted' || decision === 'denied' ? decision : 'unknown';
+      const owner = await bindNotificationUser({
+        id: user.id,
+        authMode: 'online',
+      });
+      await requireSameTrustedOnlineServiceUser(event, user);
+      if (!owner?.context.isCurrent())
+        throw new Error('Your session changed; sign in again.');
+      await owner.host.setPermission(owner.context, state);
+      return { state };
     },
   );
 };
@@ -1042,7 +1274,7 @@ if (!started && !serviceMode && !app.commandLine.hasSwitch('migrate-db')) {
   registerTrustedNativeIpc();
 }
 
-const createWindow = () => {
+const createWindow = (routePath?: string) => {
   // Create the browser window.
   const mainWindow = new BrowserWindow({
     width: 1120,
@@ -1091,7 +1323,24 @@ const createWindow = () => {
     void disposeNativeOwners().catch(reportActivityTeardownFailure);
   });
 
-  if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
+  const updateNotificationFocus = () => {
+    const owner = notificationOwner;
+    if (owner?.context.isCurrent())
+      void owner.host
+        .setFocus(
+          owner.context,
+          getTrustedWindows().some((window) => window.isFocused()),
+        )
+        .catch(() => undefined);
+  };
+  mainWindow.on('focus', updateNotificationFocus);
+  mainWindow.on('blur', updateNotificationFocus);
+
+  if (routePath) {
+    const url = new URL(expectedDocument);
+    url.hash = routePath;
+    mainWindow.loadURL(url.href);
+  } else if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
     mainWindow.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL);
   } else {
     mainWindow.loadFile(rendererFile);
@@ -1125,6 +1374,16 @@ app
     }
     await registerAcademicClient({
       onIdentityChange: disposeNativeOwners,
+      onAccountReady: async (user) => {
+        await bindNotificationUser(user);
+      },
+      onServiceEvent: () => {
+        const owner = notificationOwner;
+        if (owner?.context.isCurrent())
+          void owner.host
+            .deliverDueNotifications(owner.context)
+            .catch(() => undefined);
+      },
       beforeSessionDelete: async (sessionId) => {
         if (dictationScope?.sessionId === sessionId)
           await disposeDictationHost();

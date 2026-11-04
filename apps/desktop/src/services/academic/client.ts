@@ -29,6 +29,8 @@ let authIdentity: string | null | undefined;
 let currentAccountId: string | null = null;
 export type AcademicClientLifecycle = {
   onIdentityChange?: () => Promise<void>;
+  onAccountReady?: (user: unknown) => void | Promise<void>;
+  onServiceEvent?: (channel: AcademicEventChannel, value: unknown) => void;
   beforeSessionDelete?: (sessionId: string) => Promise<void>;
   beforeLocalDataDelete?: () => Promise<void>;
   afterLocalDataDelete?: () => Promise<void>;
@@ -128,6 +130,7 @@ const publish = (channel: AcademicEventChannel, value: unknown) => {
     if (!parsedEvent.success || parsedEvent.data.accountId !== currentAccountId)
       return;
     deliverToTrustedWindows(channel, parsedEvent.data);
+    lifecycle.onServiceEvent?.(channel, parsedEvent.data);
     return;
   }
 
@@ -141,6 +144,7 @@ const publish = (channel: AcademicEventChannel, value: unknown) => {
   if (eventAccountId === undefined || eventAccountId !== currentAccountId)
     return;
   deliverToTrustedWindows(channel, value);
+  lifecycle.onServiceEvent?.(channel, value);
 };
 const publishReconnect = (user: unknown) => {
   publishAuthIdentity(user);
@@ -247,6 +251,17 @@ const requestAcademicServiceOperation = async (
     appliedUserLookup = Math.max(appliedUserLookup, lookup);
     publishAuthIdentity(result);
     currentAccountId = getUserId(result);
+    const readyEpoch = identityEpoch;
+    void identityBarrier
+      .then(async () => {
+        if (
+          cookie === observeCookie() &&
+          readyEpoch === identityEpoch &&
+          currentAccountId === getUserId(result)
+        )
+          await lifecycle.onAccountReady?.(result);
+      })
+      .catch(() => undefined);
   }
   if (method === 'signOut') {
     currentAccountId = null;

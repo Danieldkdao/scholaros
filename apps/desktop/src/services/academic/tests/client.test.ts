@@ -140,6 +140,40 @@ afterEach(async () => {
   unregisterTrustedWindow?.();
   unregisterTrustedWindow = undefined;
 });
+it('notifies native owners only after settled account authorization and validated account events', async () => {
+  const { registerAcademicClient, requestAcademicService } =
+    await import('../client');
+  const onAccountReady = vi.fn();
+  const onServiceEvent = vi.fn();
+  let releaseIdentity: (() => void) | undefined;
+  const settling = new Promise<void>((resolve) => {
+    releaseIdentity = resolve;
+  });
+  await registerAcademicClient({
+    onAccountReady,
+    onServiceEvent,
+    onIdentityChange: () => settling,
+  });
+  await requestAcademicService('getCurrentUser');
+  await vi.waitFor(() =>
+    expect(onAccountReady).toHaveBeenCalledWith({ id: 'student' }),
+  );
+  onAccountReady.mockClear();
+  mocks.request.mockResolvedValue({ id: 'student-next' });
+  await requestAcademicService('getCurrentUser');
+  expect(onAccountReady).not.toHaveBeenCalled();
+  releaseIdentity?.();
+  await vi.waitFor(() =>
+    expect(onAccountReady).toHaveBeenCalledWith({ id: 'student-next' }),
+  );
+  mocks.receive?.('scholar:academicReconnect', { accountId: 'foreign' });
+  expect(onServiceEvent).not.toHaveBeenCalled();
+  mocks.receive?.('scholar:academicReconnect', { accountId: 'student-next' });
+  expect(onServiceEvent).toHaveBeenCalledWith('scholar:academicReconnect', {
+    accountId: 'student-next',
+  });
+});
+
 it('reuses the service and exposes only named academic commands to trusted application frames', async () => {
   const client = await import('../client');
   await client.registerAcademicClient();

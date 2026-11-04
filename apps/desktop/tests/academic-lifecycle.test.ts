@@ -6,6 +6,8 @@ import type {
   AuthorizedActivityRun as RuntimeAuthorizedActivityRun,
 } from '../src/features/study/services/activity-runtime';
 import type { DictationHostAdapterDependencies } from '../src/services/academic/dictation-host-adapter';
+import type { NotificationHostAdapterDependencies } from '../src/services/academic/notification-host-adapter';
+import type { AcademicClientLifecycle } from '../src/services/academic/client';
 const mocks = vi.hoisted(() => ({
   serviceMode: false,
   authCookie: 'test-session-a',
@@ -16,9 +18,15 @@ const mocks = vi.hoisted(() => ({
       mainFrame: { url: string };
       send: ReturnType<typeof vi.fn>;
       isDestroyed: () => boolean;
+      getURL: () => string;
+      executeJavaScript: ReturnType<typeof vi.fn>;
     };
     isDestroyed: () => boolean;
     close: ReturnType<typeof vi.fn>;
+    isFocused: () => boolean;
+    show: ReturnType<typeof vi.fn>;
+    focus: ReturnType<typeof vi.fn>;
+    loadURL: ReturnType<typeof vi.fn>;
     emit: (name: string, event?: unknown) => void;
   }[],
   activityDependencies: null as ActivityManagerDependencies | null,
@@ -38,6 +46,18 @@ const mocks = vi.hoisted(() => ({
   disposeDictation: vi.fn(),
   cancelSessionDictation: vi.fn(),
   fetch: vi.fn(),
+  notificationDependencies: null as NotificationHostAdapterDependencies | null,
+  createNotificationHost: vi.fn(),
+  deliverNotifications: vi.fn(),
+  notificationClick: vi.fn(),
+  notificationFocus: vi.fn(),
+  notificationPermission: vi.fn(),
+  disposeNotifications: vi.fn(),
+  nativeNotifications: [] as {
+    emit: (name: string) => void;
+    close: ReturnType<typeof vi.fn>;
+    options: unknown;
+  }[],
   listeners: new Map<string, ((event?: unknown) => void)[]>(),
   ipcHandlers: new Map<string, (event: unknown, input?: unknown) => unknown>(),
   ready: vi.fn(),
@@ -99,9 +119,15 @@ vi.mock('electron', () => ({
       mainFrame: { url: 'file:///scholaros/index.html' },
       send: vi.fn(),
       isDestroyed: () => false,
+      getURL: () => 'file:///scholaros/index.html',
+      executeJavaScript: vi.fn(async () => 'denied'),
     };
     windowListeners = new Map<string, ((event?: unknown) => void)[]>();
     isDestroyed = () => false;
+    isFocused = () => false;
+    show = vi.fn();
+    focus = vi.fn();
+    loadURL = vi.fn(async () => undefined);
     close = vi.fn();
     on(name: string, callback: (event?: unknown) => void) {
       this.windowListeners.set(name, [
@@ -121,10 +147,29 @@ vi.mock('electron', () => ({
       mocks.hostWindows.push(this);
     }
     loadFile() {}
-    loadURL() {}
   },
   dialog: { showErrorBox: mocks.errorBox, showOpenDialog: mocks.chooseFiles },
-  Notification: { isSupported: mocks.notificationIsSupported },
+  Notification: class {
+    static isSupported = mocks.notificationIsSupported;
+    listeners = new Map<string, (() => void)[]>();
+    constructor(public options: unknown) {
+      mocks.nativeNotifications.push(this);
+    }
+    on(name: string, listener: () => void) {
+      this.listeners.set(name, [...(this.listeners.get(name) ?? []), listener]);
+      return this;
+    }
+    once(name: string, listener: () => void) {
+      return this.on(name, listener);
+    }
+    emit(name: string) {
+      for (const listener of this.listeners.get(name) ?? []) listener();
+    }
+    show() {
+      this.emit('show');
+    }
+    close = vi.fn(() => this.emit('close'));
+  },
   systemPreferences: {
     askForMediaAccess: mocks.askForMicrophone,
     getMediaAccessStatus: () => 'granted',
@@ -144,6 +189,9 @@ vi.mock('../src/data/env/client', () => ({
 }));
 vi.mock('../src/services/academic/dictation-host-adapter', () => ({
   createDictationHostAdapter: mocks.createDictationHost,
+}));
+vi.mock('../src/services/academic/notification-host-adapter', () => ({
+  createNotificationHostAdapter: mocks.createNotificationHost,
 }));
 vi.mock('../src/lib/auth/client', () => ({
   authClient: {
@@ -201,6 +249,23 @@ beforeEach(() => {
   mocks.hostWindows = [];
   mocks.activityDependencies = null;
   mocks.dictationDependencies = null;
+  mocks.notificationDependencies = null;
+  mocks.nativeNotifications = [];
+  mocks.createNotificationHost.mockImplementation((dependencies) => {
+    mocks.notificationDependencies = dependencies;
+    return {
+      deliverDueNotifications: mocks.deliverNotifications,
+      handleClick: mocks.notificationClick,
+      setFocus: mocks.notificationFocus,
+      setPermission: mocks.notificationPermission,
+      clearAccount: vi.fn(),
+      dispose: mocks.disposeNotifications,
+    };
+  });
+  mocks.deliverNotifications.mockResolvedValue(undefined);
+  mocks.notificationFocus.mockResolvedValue(undefined);
+  mocks.notificationPermission.mockResolvedValue(undefined);
+  mocks.disposeNotifications.mockResolvedValue(undefined);
   mocks.createDictationHost.mockImplementation((dependencies) => {
     mocks.dictationDependencies = dependencies;
     return {
@@ -364,6 +429,60 @@ const dictationInput = () => ({
   sessionId: 'session-a',
   composerRevision: 0,
 });
+it('binds one native notification owner and fences persisted events, safe clicks and teardown', async () => {
+  mocks.request.mockImplementation(async (method) =>
+    method === 'getStudySession'
+      ? activeStudySnapshot()
+      : { id: 'student-a', authMode: 'online' },
+  );
+  await import('../src/main');
+  await vi.waitFor(() => expect(mocks.windows).toBe(1));
+  const lifecycle = mocks.register.mock.calls[0][0] as AcademicClientLifecycle;
+  expect(lifecycle.onAccountReady).toBeTypeOf('function');
+  await Promise.all([
+    lifecycle.onAccountReady?.({ id: 'student-a', authMode: 'online' }),
+    lifecycle.onAccountReady?.({ id: 'student-a', authMode: 'online' }),
+  ]);
+  expect(mocks.createNotificationHost).toHaveBeenCalledOnce();
+  const context = mocks.deliverNotifications.mock.calls[0][0];
+  expect(context.userId).toBe('student-a');
+  const deps = mocks.notificationDependencies!;
+  const onClick = vi.fn();
+  await expect(
+    deps.show({
+      eventId: 'notification-a',
+      title: 'ScholarOS',
+      body: 'Your study response is ready.',
+      onClick,
+    }),
+  ).resolves.toBe('shown');
+  expect(mocks.nativeNotifications[0].options).toMatchObject({
+    title: 'ScholarOS',
+    body: 'Your study response is ready.',
+  });
+  mocks.nativeNotifications[0].emit('click');
+  expect(onClick).toHaveBeenCalledOnce();
+  await deps.route({ kind: 'study', sessionId: 'session-a' });
+  expect(mocks.hostWindows[0].loadURL).toHaveBeenCalledWith(
+    'file:///scholaros/index.html#/study/session-a',
+  );
+  await expect(
+    Promise.resolve().then(() =>
+      deps.route({ kind: 'external', url: 'https://hostile.example' } as never),
+    ),
+  ).rejects.toThrow();
+  await lifecycle.onIdentityChange?.();
+  expect(mocks.disposeNotifications).toHaveBeenCalledOnce();
+  expect(context.isCurrent()).toBe(false);
+  expect(mocks.nativeNotifications[0].close).toHaveBeenCalledOnce();
+  const delivered = mocks.deliverNotifications.mock.calls.length;
+  lifecycle.onServiceEvent?.('scholar:productEvent', {
+    accountId: 'student-a',
+  });
+  await Promise.resolve();
+  expect(mocks.deliverNotifications).toHaveBeenCalledTimes(delivered);
+});
+
 it('binds dictation to the exact trusted online document and originating owner', async () => {
   mockActivityService();
   await import('../src/main');
@@ -1562,7 +1681,7 @@ it('does not request microphone permission for an offline account', async () => 
   expect(mocks.askForMicrophone).not.toHaveBeenCalled();
 });
 
-it('reports notification permission as unknown rather than treating support as a grant', async () => {
+it('persists the actual notification permission decision without treating support as a grant', async () => {
   mocks.request.mockResolvedValue({ id: 'student-a', authMode: 'online' });
   await import('../src/main');
   await vi.waitFor(() => expect(mocks.windows).toBe(1));
@@ -1571,9 +1690,17 @@ it('reports notification permission as unknown rather than treating support as a
   );
 
   await expect(requestPermission?.({ trusted: true }, {})).resolves.toEqual({
-    state: 'unknown',
+    state: 'denied',
   });
-  expect(mocks.notificationIsSupported).toHaveBeenCalledOnce();
+  expect(
+    mocks.hostWindows[0].webContents.executeJavaScript,
+  ).toHaveBeenCalledWith('Notification.requestPermission()', true);
+  expect(mocks.notificationPermission).toHaveBeenCalledWith(
+    expect.objectContaining({ userId: 'student-a' }),
+    'denied',
+  );
+  const lifecycle = mocks.register.mock.calls[0][0] as AcademicClientLifecycle;
+  await lifecycle.beforeDisconnect?.();
 });
 
 it('rejects notification permission lookup when the trusted frame changes during account verification', async () => {
