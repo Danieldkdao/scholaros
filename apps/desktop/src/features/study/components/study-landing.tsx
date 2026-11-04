@@ -30,20 +30,22 @@ export const StudyLanding = ({
 
   return (
     <div className="flex flex-col gap-6 text-base">
-      <header className="flex flex-col gap-2">
-        <h1 className="text-2xl font-semibold">Study</h1>
-        <p className="text-base text-muted-foreground">
-          Start with one course and return to a saved session whenever you are
-          ready.
-        </p>
+      <header className="flex items-start justify-between gap-4">
+        <div className="flex min-w-0 flex-col gap-2">
+          <h1 className="text-2xl font-semibold">Study</h1>
+          <p className="text-base text-muted-foreground">
+            Start with one course and return to a saved session whenever you are
+            ready.
+          </p>
+        </div>
+        <StudySetup
+          key={`study-setup:${accountId}`}
+          accountId={accountId}
+          initialSetup={initialSetup}
+          offline={offline}
+          onStarted={(session) => openSession(session.id)}
+        />
       </header>
-      <StudySetup
-        key={`study-setup:${accountId}`}
-        accountId={accountId}
-        initialSetup={initialSetup}
-        offline={offline}
-        onStarted={(session) => openSession(session.id)}
-      />
       <StudyHistory
         key={`study-history:${accountId}`}
         accountId={accountId}

@@ -108,7 +108,10 @@ let createStudySession: ReturnType<typeof vi.fn>;
 let listContextItems: ReturnType<typeof vi.fn>;
 let onStarted: NonNullable<StudySetupProps['onStarted']>;
 
-const renderSetup = async (props: Partial<StudySetupProps> = {}) => {
+const renderSetup = async (
+  props: Partial<StudySetupProps> = {},
+  openDialog = true,
+) => {
   const host = document.createElement('div');
   document.body.append(host);
   root = createRoot(host);
@@ -122,6 +125,12 @@ const renderSetup = async (props: Partial<StudySetupProps> = {}) => {
     );
   });
   await act(async () => {});
+  if (
+    openDialog &&
+    !document.querySelector('[role="dialog"]') &&
+    button('Start a study session')
+  )
+    await act(async () => button('Start a study session')?.click());
   return host;
 };
 
@@ -468,6 +477,8 @@ it('keeps setup choices after a failed create and prevents a duplicate while pen
     ),
   );
   expect(onStarted).toHaveBeenCalledOnce();
+  expect(document.querySelector('[role="dialog"]')).toBeNull();
+  await act(async () => button('Start a study session')?.click());
   expect(text()).toContain('Mitosis');
 });
 
@@ -566,6 +577,7 @@ it('preserves setup and reuses each request ID after a failed create and edits',
     .calls[1][0] as CreateStudySessionInput;
   expect(editedRequest.requestId).not.toBe(firstRequest.requestId);
   expect(editedRequest.topic).toBe('Cell division');
+  await act(async () => button('Start a study session')?.click());
   await setTextarea('Topic or study goal', 'Mitosis');
   await act(async () => button('Start study session')?.click());
   const retryRequest = createStudySession.mock
@@ -573,4 +585,40 @@ it('preserves setup and reuses each request ID after a failed create and edits',
   expect(retryRequest.requestId).toBe(firstRequest.requestId);
   expect(retryRequest.topic).toBe('Mitosis');
   expect(onStarted).toHaveBeenCalledTimes(2);
+});
+
+it('opens setup from an accessible plus button and preserves choices after closing', async () => {
+  await renderSetup({}, false);
+  expect(document.querySelector('form')).toBeNull();
+  expect(button('Start a study session')).toBeTruthy();
+  await act(async () => button('Start a study session')?.click());
+  expect(document.querySelector('[role="dialog"]')).toBeTruthy();
+  await selectOption('Study activity', 'Understand a topic');
+  await chooseCourse('Biology 101');
+  await setTextarea('Topic or study goal', 'Keep this draft');
+  await act(async () => button('Close')?.click());
+  await act(async () => button('Start a study session')?.click());
+  expect(
+    document.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Topic or study goal"]',
+    )?.value,
+  ).toBe('Keep this draft');
+  expect(createStudySession).not.toHaveBeenCalled();
+});
+
+it('retries opening a saved session without creating it twice and then closes the dialog', async () => {
+  onStarted = vi
+    .fn()
+    .mockRejectedValueOnce(new Error('Navigation unavailable'))
+    .mockResolvedValue(undefined);
+  await renderSetup({
+    initialSetup: { activity: 'understand-topic', courseId: 'course-1' },
+  });
+  await act(async () => button('Start study session')?.click());
+  expect(text()).toContain('Your session is saved, but could not be opened.');
+  expect(document.querySelector('[role="dialog"]')).toBeTruthy();
+  await act(async () => button('Start study session')?.click());
+  expect(createStudySession).toHaveBeenCalledOnce();
+  expect(onStarted).toHaveBeenCalledTimes(2);
+  expect(document.querySelector('[role="dialog"]')).toBeNull();
 });

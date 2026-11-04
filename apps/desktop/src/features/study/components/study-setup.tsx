@@ -19,12 +19,14 @@ import {
 import { Alert, AlertDescription } from '@scholaros/ui/components/alert';
 import { Button } from '@scholaros/ui/components/button';
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@scholaros/ui/components/card';
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from '@scholaros/ui/components/dialog';
+import { TooltipWrapper } from '@scholaros/ui/components/tooltip-wrapper';
 import { Checkbox } from '@scholaros/ui/components/checkbox';
 import {
   Field,
@@ -43,7 +45,7 @@ import {
   SelectValue,
 } from '@scholaros/ui/components/select';
 import { Textarea } from '@scholaros/ui/components/textarea';
-import { BookOpen, CircleAlert, Loader2 } from 'lucide-react';
+import { BookOpen, CircleAlert, Loader2, Plus } from 'lucide-react';
 import type { CourseDetail, CourseSummary } from '../../courses/types';
 import { useCourses } from '../../courses/hooks/use-courses';
 import { formatCollectionState } from '../../courses/lib/formatters';
@@ -134,6 +136,7 @@ export const StudySetup = ({
   offline = false,
   onStarted,
 }: StudySetupProps) => {
+  const [dialogOpen, setDialogOpen] = useState(false);
   const {
     snapshot,
     loading: coursesLoading,
@@ -186,6 +189,7 @@ export const StudySetup = ({
   useEffect(() => {
     if (lastPrefillKey.current === prefillKey) return;
     lastPrefillKey.current = prefillKey;
+    if (Object.keys(initialSetup ?? {}).length > 0) setDialogOpen(true);
     userChangedCourse.current = false;
     setActivity(
       isStudyActivity(initialSetup?.activity) ? initialSetup.activity : null,
@@ -464,6 +468,7 @@ export const StudySetup = ({
       setSubmitting(true);
       try {
         await onStarted?.(createdSession.current.session);
+        if (mounted.current) setDialogOpen(false);
       } catch {
         if (mounted.current)
           setSubmitError(
@@ -494,6 +499,7 @@ export const StudySetup = ({
       createdSession.current = { fingerprint, session: created };
       try {
         await onStarted?.(created);
+        if (mounted.current) setDialogOpen(false);
       } catch {
         if (mounted.current)
           setSubmitError(
@@ -539,15 +545,33 @@ export const StudySetup = ({
   };
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Start a study session</CardTitle>
-        <CardDescription>
-          Choose one activity and one course. Selection does not start inference
-          or expand source access.
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
+    <Dialog
+      open={dialogOpen}
+      onOpenChange={(open) => {
+        if (!submitting) setDialogOpen(open);
+      }}
+    >
+      <TooltipWrapper content="Start a study session">
+        <DialogTrigger
+          render={
+            <Button
+              type="button"
+              size="icon"
+              aria-label="Start a study session"
+            />
+          }
+        >
+          <Plus aria-hidden="true" />
+        </DialogTrigger>
+      </TooltipWrapper>
+      <DialogContent className="sm:max-w-2xl" showCloseButton={!submitting}>
+        <DialogHeader>
+          <DialogTitle>Start a study session</DialogTitle>
+          <DialogDescription>
+            Choose one activity, one course, and how long you would like to
+            focus.
+          </DialogDescription>
+        </DialogHeader>
         {offline && (
           <Alert>
             <CircleAlert aria-hidden="true" />
@@ -734,7 +758,10 @@ export const StudySetup = ({
                           ? null
                           : value,
                       );
-                      setFieldErrors((current) => ({ ...current, target: '' }));
+                      setFieldErrors((current) => ({
+                        ...current,
+                        target: '',
+                      }));
                     }}
                     items={assignmentItems}
                   >
@@ -1018,7 +1045,7 @@ export const StudySetup = ({
             </LoadingSwap>
           </Button>
         </form>
-      </CardContent>
-    </Card>
+      </DialogContent>
+    </Dialog>
   );
 };
