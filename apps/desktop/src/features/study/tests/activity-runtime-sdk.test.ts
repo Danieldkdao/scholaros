@@ -59,6 +59,8 @@ const runIdentity = {
   runId: 'run-1',
 };
 
+const contentDigest = 'a'.repeat(64);
+
 it('restores semantic state and reports only host-acknowledged revisions', () => {
   const { window, messages } = runSdk();
   const restored: unknown[] = [];
@@ -75,7 +77,7 @@ it('restores semantic state and reports only host-acknowledged revisions', () =>
     ...runIdentity,
     sequence: 1,
     stateRevision: 4,
-    contentDigest: 'digest-1',
+    contentDigest,
     state,
     theme: {
       foreground: 'rgb(20, 30, 40)',
@@ -89,11 +91,13 @@ it('restores semantic state and reports only host-acknowledged revisions', () =>
   });
   expect(messages[0]).toMatchObject({
     ...runIdentity,
+    source: 'activity',
     kind: 'ready',
     sequence: 1,
     baseStateRevision: 4,
-    payload: { contentDigest: 'digest-1' },
+    payload: { contentDigest },
   });
+  expect(messages[0].payload).toEqual({ contentDigest });
   expect(window.ScholarActivity.acknowledgedRevision).toBe(4);
 
   window.ScholarActivity.proposeState(
@@ -101,10 +105,14 @@ it('restores semantic state and reports only host-acknowledged revisions', () =>
   );
   expect(messages[1]).toMatchObject({
     ...runIdentity,
+    source: 'activity',
     kind: 'state-proposed',
     sequence: 2,
     baseStateRevision: 4,
     payload: { state: { ...state, inputs: { slope: 3 } } },
+  });
+  expect(messages[1].payload).toEqual({
+    state: { ...state, inputs: { slope: 3 } },
   });
   expect(window.ScholarActivity.acknowledgedRevision).toBe(4);
 
@@ -117,6 +125,185 @@ it('restores semantic state and reports only host-acknowledged revisions', () =>
   expect(window.ScholarActivity.acknowledgedRevision).toBe(5);
 });
 
+it('requires a sequence-one restore and ignores later restore envelopes', () => {
+  const { window, messages } = runSdk();
+  const restore = {
+    kind: 'restore',
+    ...runIdentity,
+    stateRevision: 0,
+    contentDigest,
+    state: { version: 1, inputs: {}, rngSeed: 17, canvas: {}, progress: {} },
+    theme: {},
+  };
+
+  sendHostMessage(window, { ...restore, sequence: 2 });
+  expect(messages).toHaveLength(0);
+  expect(window.ScholarActivity.acknowledgedRevision).toBeNull();
+
+  sendHostMessage(window, {
+    ...restore,
+    sequence: 1,
+    contentDigest: 'digest-1',
+  });
+  expect(messages).toHaveLength(0);
+
+  sendHostMessage(window, { ...restore, sequence: 1 });
+  expect(messages).toHaveLength(1);
+  sendHostMessage(window, {
+    ...restore,
+    sequence: 2,
+    sessionId: 'replacement-session',
+  });
+
+  expect(messages).toHaveLength(1);
+  expect(messages[0]).toMatchObject({
+    ...runIdentity,
+    kind: 'ready',
+    sequence: 1,
+    payload: { contentDigest },
+  });
+  expect(window.ScholarActivity.acknowledgedRevision).toBe(0);
+});
+
+it('rejects stale host identity, sequence, version, source, and revision envelopes', () => {
+  const { window } = runSdk();
+  sendHostMessage(window, {
+    kind: 'restore',
+    ...runIdentity,
+    sequence: 1,
+    stateRevision: 4,
+    contentDigest,
+    state: { version: 1, inputs: {}, rngSeed: 17, canvas: {}, progress: {} },
+    theme: {},
+  });
+  window.ScholarActivity.proposeState(
+    window.JSON.parse(JSON.stringify({ version: 1, inputs: { slope: 3 } })),
+  );
+
+  const invalidEnvelopes = [
+    { source: 'untrusted' },
+    { protocolVersion: 2 },
+    { runtimeVersion: 'activity-runtime-v2' },
+    { sessionId: 'session-2' },
+    { artifactId: 'artifact-2' },
+    { contentVersionId: 'version-2' },
+    { attemptId: 'attempt-2' },
+    { runId: 'run-2' },
+    { sequence: 3 },
+    { stateRevision: 6 },
+  ];
+  for (const invalidEnvelope of invalidEnvelopes) {
+    sendHostMessage(window, {
+      kind: 'state-acknowledged',
+      ...runIdentity,
+      sequence: 2,
+      stateRevision: 5,
+      ...invalidEnvelope,
+    });
+    expect(window.ScholarActivity.acknowledgedRevision).toBe(4);
+  }
+
+  sendHostMessage(window, {
+    kind: 'state-acknowledged',
+    ...runIdentity,
+    sequence: 2,
+    stateRevision: 5,
+  });
+  expect(window.ScholarActivity.acknowledgedRevision).toBe(5);
+
+  window.ScholarActivity.proposeState(
+    window.JSON.parse(JSON.stringify({ version: 1, inputs: { slope: 4 } })),
+  );
+  sendHostMessage(window, {
+    kind: 'state-acknowledged',
+    ...runIdentity,
+    sequence: 2,
+    stateRevision: 6,
+  });
+  expect(window.ScholarActivity.acknowledgedRevision).toBe(5);
+
+  sendHostMessage(window, {
+    kind: 'state-acknowledged',
+    ...runIdentity,
+    sequence: 3,
+    stateRevision: 6,
+  });
+  expect(window.ScholarActivity.acknowledgedRevision).toBe(6);
+});
+
+it('keeps a rejected checkpoint pending until the host retry is acknowledged', () => {
+  const { messages, window } = runSdk();
+  const initialState = {
+    version: 1,
+    inputs: { slope: 2 },
+    rngSeed: 17,
+    canvas: {},
+    progress: {},
+  };
+  const proposedState = { ...initialState, inputs: { slope: 3 } };
+  sendHostMessage(window, {
+    kind: 'restore',
+    ...runIdentity,
+    sequence: 1,
+    stateRevision: 4,
+    contentDigest,
+    state: initialState,
+    theme: {},
+  });
+  const acknowledgements: Event[] = [];
+  const rejections: Event[] = [];
+  window.addEventListener('scholar-activity:state-acknowledged', (event) =>
+    acknowledgements.push(event),
+  );
+  window.addEventListener('scholar-activity:state-rejected', (event) =>
+    rejections.push(event),
+  );
+
+  window.ScholarActivity.proposeState(
+    window.JSON.parse(JSON.stringify(proposedState)),
+  );
+  expect(messages.at(-1)).toMatchObject({
+    kind: 'state-proposed',
+    sequence: 2,
+    baseStateRevision: 4,
+    payload: { state: proposedState },
+  });
+  sendHostMessage(window, {
+    kind: 'state-rejected',
+    ...runIdentity,
+    sequence: 2,
+    stateRevision: 5,
+  });
+  expect(window.ScholarActivity.acknowledgedRevision).toBe(4);
+  expect(window.ScholarActivity.getState()).toEqual(proposedState);
+  expect(rejections).toHaveLength(0);
+
+  sendHostMessage(window, {
+    kind: 'state-rejected',
+    ...runIdentity,
+    sequence: 2,
+    stateRevision: 4,
+  });
+  expect(window.ScholarActivity.acknowledgedRevision).toBe(4);
+  expect(window.ScholarActivity.getState()).toEqual(proposedState);
+  expect(rejections).toHaveLength(1);
+  expect(acknowledgements).toHaveLength(0);
+  expect('retryState' in window.ScholarActivity).toBe(false);
+
+  sendHostMessage(window, {
+    kind: 'state-acknowledged',
+    ...runIdentity,
+    sequence: 3,
+    stateRevision: 5,
+  });
+  expect(window.ScholarActivity.acknowledgedRevision).toBe(5);
+  expect(window.ScholarActivity.getState()).toEqual(proposedState);
+  expect(acknowledgements).toHaveLength(1);
+  expect(
+    messages.filter((message) => message.kind === 'state-proposed'),
+  ).toHaveLength(1);
+});
+
 it('coalesces state proposals while one checkpoint is awaiting acknowledgement', () => {
   const { window, messages } = runSdk();
   sendHostMessage(window, {
@@ -124,7 +311,7 @@ it('coalesces state proposals while one checkpoint is awaiting acknowledgement',
     ...runIdentity,
     sequence: 1,
     stateRevision: 0,
-    contentDigest: 'digest-1',
+    contentDigest,
     state: { version: 1, inputs: {}, rngSeed: 17, canvas: {}, progress: {} },
     theme: {},
   });
@@ -165,7 +352,7 @@ it('notifies restore listeners registered after the host has restored state', ()
     ...runIdentity,
     sequence: 1,
     stateRevision: 4,
-    contentDigest: 'digest-1',
+    contentDigest,
     state,
     theme: { foreground: 'rgb(20, 30, 40)' },
   });
@@ -190,7 +377,7 @@ it('can checkpoint null as a valid JSON state value', () => {
     ...runIdentity,
     sequence: 1,
     stateRevision: 0,
-    contentDigest: 'digest-1',
+    contentDigest,
     state: { version: 1, inputs: {}, rngSeed: 17 },
     theme: {},
   });
@@ -270,7 +457,7 @@ it('reports local input feedback and sends reset only as an untrusted interactio
     ...runIdentity,
     sequence: 1,
     stateRevision: 0,
-    contentDigest: 'digest-1',
+    contentDigest,
     state: { version: 1, inputs: {}, rngSeed: 17, canvas: {}, progress: {} },
     theme: {},
   });
@@ -299,6 +486,33 @@ it('reports local input feedback and sends reset only as an untrusted interactio
   });
 });
 
+it('emits interactions with the canonical action and value payload', () => {
+  const { messages, window } = runSdk();
+  sendHostMessage(window, {
+    kind: 'restore',
+    ...runIdentity,
+    sequence: 1,
+    stateRevision: 0,
+    contentDigest,
+    state: { version: 1, inputs: {}, rngSeed: 17, canvas: {}, progress: {} },
+    theme: {},
+  });
+
+  window.ScholarActivity.interaction(
+    'answer-submitted',
+    window.JSON.parse(JSON.stringify({ answer: 'x = 4' })),
+  );
+
+  expect(messages.at(-1)).toMatchObject({
+    ...runIdentity,
+    source: 'activity',
+    kind: 'interaction',
+    sequence: 2,
+    baseStateRevision: 0,
+    payload: { action: 'answer-submitted', value: { answer: 'x = 4' } },
+  });
+});
+
 it('provides deterministic randomness from explicit seeds without network helpers', () => {
   const { window } = runSdk();
   const first = window.ScholarActivity.random(17, 0);
@@ -318,7 +532,7 @@ it('rejects malformed or oversized state and fingerprints the exact bundled byte
     ...runIdentity,
     sequence: 1,
     stateRevision: 7,
-    contentDigest: 'digest-1',
+    contentDigest,
     state: { version: 1, inputs: {}, rngSeed: 17, canvas: {}, progress: {} },
     theme: {},
   });

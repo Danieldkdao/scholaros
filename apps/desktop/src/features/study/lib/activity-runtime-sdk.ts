@@ -37,7 +37,6 @@ export type ActivityRuntimeSdkApi = {
   interaction: (action: string, value?: JsonValue) => void;
   reportError: (code: string) => void;
   requestReset: () => void;
-  retryState: () => void;
   random: (seed: number, index?: number) => number;
   controls: {
     range: (input: {
@@ -172,13 +171,27 @@ export const activityRuntimeSdkSource = String.raw`(() => {
   let identity = null;
   let revision = null;
   let outgoingSequence = 0;
-  let incomingSequence = -1;
+  let incomingSequence = 0;
   let contentDigest = null;
   let hostTheme = Object.freeze({});
   let latestState;
   let pendingState;
-  let proposalInFlight = false;
+  let checkpointAwaitingResult = false;
+  let restored = false;
   const restoreListeners = new Set();
+  const identityKeys = ['sessionId', 'artifactId', 'contentVersionId', 'attemptId', 'runId'];
+  const commonHostEnvelopeKeys = [
+    'protocolVersion', 'runtimeVersion', 'source', 'sessionId', 'artifactId',
+    'contentVersionId', 'attemptId', 'runId', 'sequence', 'kind',
+  ];
+  const restoreHostEnvelopeKeys = [
+    ...commonHostEnvelopeKeys, 'stateRevision', 'contentDigest', 'state', 'theme',
+  ];
+  const checkpointHostEnvelopeKeys = [...commonHostEnvelopeKeys, 'stateRevision'];
+  const hasExactKeys = (value, keys) =>
+    Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
+  const matchesIdentity = (message) =>
+    identity !== null && identityKeys.every((key) => message[key] === identity[key]);
 
   const emit = (kind, payload) => {
     if (!identity || revision === null) throw new Error('Activity host is not ready.');
@@ -200,12 +213,12 @@ export const activityRuntimeSdkSource = String.raw`(() => {
     window.postMessage(serialized, '*');
   };
   const flushPendingState = () => {
-    if (proposalInFlight || pendingState === undefined) return;
+    if (checkpointAwaitingResult || pendingState === undefined) return;
     const state = pendingState;
     pendingState = undefined;
     const serialized = assertJson(state, stateLimit);
     emit('state-proposed', { state: JSON.parse(serialized) });
-    proposalInFlight = true;
+    checkpointAwaitingResult = true;
     latestState = JSON.parse(serialized);
   };
   const handleHostMessage = (event) => {
@@ -218,13 +231,13 @@ export const activityRuntimeSdkSource = String.raw`(() => {
       return;
     }
     if (!isPlainObject(message) || message.source !== 'scholar-host' || message.protocolVersion !== 1 || message.runtimeVersion !== runtimeVersion) return;
-    if (!Number.isSafeInteger(message.sequence) || message.sequence <= incomingSequence) return;
+    if (!Number.isSafeInteger(message.sequence)) return;
     const hostKinds = ['restore', 'state-acknowledged', 'state-rejected'];
     if (!hostKinds.includes(message.kind)) return;
     if (message.kind === 'restore') {
-      const requiredIds = ['sessionId', 'artifactId', 'contentVersionId', 'attemptId', 'runId'];
-      if (requiredIds.some((key) => typeof message[key] !== 'string' || message[key].length === 0 || message[key].length > 300)) return;
-      if (!Number.isSafeInteger(message.stateRevision) || message.stateRevision < 0 || typeof message.contentDigest !== 'string' || message.contentDigest.length > 128) return;
+      if (restored || message.sequence !== 1 || !hasExactKeys(message, restoreHostEnvelopeKeys)) return;
+      if (identityKeys.some((key) => typeof message[key] !== 'string' || message[key].length === 0 || message[key].length > 300)) return;
+      if (!Number.isSafeInteger(message.stateRevision) || message.stateRevision < 0 || typeof message.contentDigest !== 'string' || !/^[a-f0-9]{64}$/.test(message.contentDigest) || !isPlainObject(message.theme)) return;
       try {
         assertJson(message.state, stateLimit);
       } catch {
@@ -237,6 +250,7 @@ export const activityRuntimeSdkSource = String.raw`(() => {
         attemptId: message.attemptId,
         runId: message.runId,
       };
+      restored = true;
       incomingSequence = message.sequence;
       outgoingSequence = 0;
       revision = message.stateRevision;
@@ -244,28 +258,26 @@ export const activityRuntimeSdkSource = String.raw`(() => {
       hostTheme = safeTheme(message.theme);
       latestState = cloneJson(message.state);
       pendingState = undefined;
-      proposalInFlight = false;
+      checkpointAwaitingResult = false;
       emit('ready', { contentDigest });
-      const restored = Object.freeze({ state: cloneJson(latestState), stateRevision: revision, theme: hostTheme });
-      for (const listener of restoreListeners) listener(restored.state, restored.stateRevision, restored.theme);
-      detailEvent('restore', restored);
+      const restoredState = Object.freeze({ state: cloneJson(latestState), stateRevision: revision, theme: hostTheme });
+      for (const listener of restoreListeners) listener(restoredState.state, restoredState.stateRevision, restoredState.theme);
+      detailEvent('restore', restoredState);
       return;
     }
-    if (!identity || revision === null || message.runId !== identity.runId) return;
-    incomingSequence = message.sequence;
+    if (!restored || !identity || revision === null || !hasExactKeys(message, checkpointHostEnvelopeKeys) || !matchesIdentity(message) || message.sequence !== incomingSequence + 1) return;
     if (message.kind === 'state-acknowledged') {
-      if (!Number.isSafeInteger(message.stateRevision) || message.stateRevision <= revision) return;
+      if (!checkpointAwaitingResult || !Number.isSafeInteger(message.stateRevision) || message.stateRevision !== revision + 1) return;
+      incomingSequence = message.sequence;
       revision = message.stateRevision;
-      proposalInFlight = false;
+      checkpointAwaitingResult = false;
       detailEvent('state-acknowledged', { stateRevision: revision, state: cloneJson(latestState) });
       flushPendingState();
       return;
     }
-    if (message.kind === 'state-rejected') {
-      proposalInFlight = false;
-      if (pendingState === undefined && latestState !== undefined) pendingState = cloneJson(latestState);
-      detailEvent('state-rejected', { stateRevision: revision });
-    }
+    if (!checkpointAwaitingResult || !Number.isSafeInteger(message.stateRevision) || message.stateRevision !== revision) return;
+    incomingSequence = message.sequence;
+    detailEvent('state-rejected', { stateRevision: revision });
   };
   window.addEventListener('message', handleHostMessage, true);
 
@@ -422,7 +434,7 @@ export const activityRuntimeSdkSource = String.raw`(() => {
     proposeState: (state) => {
       const serialized = assertJson(state, stateLimit);
       const candidate = JSON.parse(serialized);
-      if (proposalInFlight) pendingState = candidate;
+      if (checkpointAwaitingResult) pendingState = candidate;
       else {
         pendingState = candidate;
         flushPendingState();
@@ -438,13 +450,6 @@ export const activityRuntimeSdkSource = String.raw`(() => {
       emit('runtime-error', { code });
     },
     requestReset: () => api.interaction('request-reset', null),
-    retryState: () => {
-      if (pendingState !== undefined) flushPendingState();
-      else if (latestState !== undefined) {
-        pendingState = cloneJson(latestState);
-        flushPendingState();
-      }
-    },
     random: seededRandom,
   };
   Object.defineProperty(window, 'ScholarActivity', {
