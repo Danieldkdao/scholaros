@@ -34,9 +34,8 @@ it('stages mammoth and its runtime dependencies for an isolated package', async 
     const raw = await mammoth.extractRawText({ buffer });
     expect(raw.value).toContain('Packaged document');
     packaged.root = root;
-    const { extractDocxContent } = await import(
-      '../src/features/context/services/docx-content'
-    );
+    const { extractDocxContent } =
+      await import('../src/features/context/services/docx-content');
     const result = await extractDocxContent(buffer);
     expect(result.status).toBe('complete');
     expect(result.text).toContain('Packaged document');
