@@ -14,20 +14,28 @@ const pdfModulePath = createRequire(
 const workerSource = `
 const { parentPort, workerData } = require('node:worker_threads');
 (async () => {
-  const { pathToFileURL } = require('node:url');
-  const { getDocument } = await import(pathToFileURL(workerData.modulePath).href);
-  const loadingTask = getDocument({
-    data: new Uint8Array(workerData.bytes),
-    verbosity: 0,
-    useWasm: false,
-  });
+  let loadingTask;
+  let pageCount = 0;
+  let text = '';
   try {
+    const { pathToFileURL } = require('node:url');
+    const { getDocument } = await import(pathToFileURL(workerData.modulePath).href);
+    loadingTask = getDocument({
+      data: new Uint8Array(workerData.bytes),
+      verbosity: 0,
+      useWasm: false,
+    });
     const document = await loadingTask.promise;
-    const text = [];
+    pageCount = document.numPages;
+    const pages = [];
     let characters = 0;
     const pageLimit = Math.min(document.numPages, workerData.maxPages);
     let partial = document.numPages > pageLimit;
-    for (let number = 1; number <= pageLimit && characters < workerData.maxCharacters; number += 1) {
+    for (let number = 1; number <= pageLimit; number += 1) {
+      if (characters >= workerData.maxCharacters) {
+        partial = true;
+        break;
+      }
       const page = await document.getPage(number);
       const content = await page.getTextContent();
       const pageText = content.items
@@ -37,23 +45,39 @@ const { parentPort, workerData } = require('node:worker_threads');
         .replace(/\\s+/g, ' ')
         .trim();
       page.cleanup();
-      const separator = text.length ? '\\f' : '';
+      const separator = number > 1 ? '\\f' : '';
       const remaining = workerData.maxCharacters - characters - separator.length;
+      if (remaining < 0) {
+        partial = true;
+        break;
+      }
       const selected = pageText.slice(0, Math.max(0, remaining));
       if (selected.length < pageText.length) partial = true;
-      if (selected) text.push(separator + selected);
+      pages.push(separator + selected);
       characters += separator.length + selected.length;
+      text = pages.join('');
+      parentPort.postMessage({ type: 'progress', pageCount, text });
       if (selected.length < pageText.length) break;
+      if (characters >= workerData.maxCharacters && number < pageLimit) {
+        partial = true;
+        break;
+      }
     }
+    const readableText = text.replace(/\\f/g, '').trim();
     parentPort.postMessage({
-      status: partial ? 'partial' : 'complete',
-      pageCount: document.numPages,
-      text: text.join(''),
+      status: readableText ? (partial ? 'partial' : 'complete') : 'unreadable',
+      pageCount,
+      text: readableText ? text : '',
     });
-    await loadingTask.destroy();
   } catch {
-    await loadingTask.destroy().catch(() => undefined);
-    parentPort.postMessage({ status: 'unreadable', pageCount: 0, text: '' });
+    const readableText = text.replace(/\\f/g, '').trim();
+    parentPort.postMessage(
+      readableText
+        ? { status: 'partial', pageCount, text }
+        : { status: 'unreadable', pageCount: 0, text: '' },
+    );
+  } finally {
+    await loadingTask?.destroy().catch(() => undefined);
   }
 })().catch(() => parentPort.postMessage({ status: 'unreadable', pageCount: 0, text: '' }));
 `;
@@ -120,6 +144,7 @@ export const extractPdfContent = async (
 
   return new Promise<PdfContentResult>((resolve, reject) => {
     let settled = false;
+    let lastProgress: PdfContentResult | null = null;
     const cleanup = () => {
       clearTimeout(timer);
       signal?.removeEventListener('abort', onAbort);
@@ -137,28 +162,64 @@ export const extractPdfContent = async (
       cleanup();
       reject(new DOMException('Aborted', 'AbortError'));
     };
-    const timer = setTimeout(() => finish(unreadable()), timeoutMs);
+    const timer = setTimeout(() => {
+      if (lastProgress?.text.replace(/\f/g, '').trim())
+        finish({ ...lastProgress, status: 'partial' });
+      else finish(unreadable());
+    }, timeoutMs);
     signal?.addEventListener('abort', onAbort, { once: true });
     if (signal?.aborted) onAbort();
-    worker.once('message', (message: unknown) => {
+    worker.on('message', (message: unknown) => {
+      if (typeof message !== 'object' || message === null) {
+        finish(unreadable());
+        return;
+      }
       if (
-        typeof message === 'object' &&
-        message !== null &&
+        'type' in message &&
+        message.type === 'progress' &&
+        'pageCount' in message &&
+        Number.isSafeInteger(message.pageCount) &&
+        Number(message.pageCount) >= 0 &&
+        'text' in message &&
+        typeof message.text === 'string'
+      ) {
+        lastProgress = {
+          status: 'partial',
+          pageCount: Number(message.pageCount),
+          text: message.text,
+        };
+        return;
+      }
+      if (
         'status' in message &&
         ['complete', 'partial', 'unreadable'].includes(
           String(message.status),
         ) &&
         'pageCount' in message &&
-        typeof message.pageCount === 'number' &&
+        Number.isSafeInteger(message.pageCount) &&
+        Number(message.pageCount) >= 0 &&
         'text' in message &&
         typeof message.text === 'string'
-      )
+      ) {
         finish(message as PdfContentResult);
-      else finish(unreadable());
+        return;
+      }
+      finish(unreadable());
     });
-    worker.once('error', () => finish(unreadable()));
+    worker.once('error', () =>
+      finish(
+        lastProgress?.text.replace(/\f/g, '').trim()
+          ? { ...lastProgress, status: 'partial' }
+          : unreadable(),
+      ),
+    );
     worker.once('exit', (code) => {
-      if (code !== 0) finish(unreadable());
+      if (code !== 0)
+        finish(
+          lastProgress?.text.replace(/\f/g, '').trim()
+            ? { ...lastProgress, status: 'partial' }
+            : unreadable(),
+        );
     });
   });
 };

@@ -63,6 +63,51 @@ describe('extractPdfContent', () => {
     });
   });
 
+  it('preserves blank source pages in page text boundaries', async () => {
+    const result = await extractPdfContent(createPdf(['First', '', 'Third']));
+
+    expect(result).toEqual({
+      status: 'complete',
+      pageCount: 3,
+      text: 'First\f\fThird',
+    });
+  });
+
+  it('preserves leading and trailing blank source pages', async () => {
+    const result = await extractPdfContent(createPdf(['', 'First', '']));
+
+    expect(result).toEqual({
+      status: 'complete',
+      pageCount: 3,
+      text: '\fFirst\f',
+    });
+  });
+
+  it('reports partial when the exact character cap leaves later pages unread', async () => {
+    const result = await extractPdfContent(createPdf(['First', 'Later']), {
+      maxCharacters: 'First'.length,
+    });
+
+    expect(result).toEqual({ status: 'partial', pageCount: 2, text: 'First' });
+  });
+
+  it('rejects input that exceeds the PDF byte cap', async () => {
+    const bytes = new Uint8Array(10 * 1024 * 1024 + 1);
+    bytes.set(new TextEncoder().encode('%PDF-1.4'));
+
+    const result = await extractPdfContent(bytes);
+
+    expect(result).toEqual({ status: 'unreadable', pageCount: 0, text: '' });
+  });
+
+  it('returns unreadable when the time cap expires before a readable page', async () => {
+    const result = await extractPdfContent(createPdf(['Slow page']), {
+      timeoutMs: 1,
+    });
+
+    expect(result).toEqual({ status: 'unreadable', pageCount: 0, text: '' });
+  });
+
   it('marks malformed or scanned documents unreadable', async () => {
     const result = await extractPdfContent(
       new TextEncoder().encode('%PDF-invalid'),

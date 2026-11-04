@@ -6,14 +6,22 @@ import type { CourseListContext } from '../../onboarding/services/connection-sca
 const mocks = vi.hoisted(() => ({
   request: vi.fn(),
   save: vi.fn(),
+  reconcile: vi.fn(),
   extractPdf: vi.fn(),
+  getLocations: vi.fn(),
+  saveLocation: vi.fn(),
 }));
 vi.mock('../../../lib/auth/main', () => ({
   accountRequest: (_path: string, body: AgentRequestSchema) =>
     mocks.request(body),
 }));
 vi.mock('../services/material-store', () => ({
+  reconcileMaterialCollection: mocks.reconcile,
   saveCourseMaterial: mocks.save,
+}));
+vi.mock('../services/navigation-store', () => ({
+  getNavigationLocations: mocks.getLocations,
+  saveNavigationLocation: mocks.saveLocation,
 }));
 vi.mock('../services/pdf-content', () => ({
   extractPdfContent: mocks.extractPdf,
@@ -56,9 +64,14 @@ const material = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
+type TestCourseContext = CourseListContext & {
+  visitKnownLocation?: (location: unknown) => Promise<ObservedPage>;
+};
+
 const createContext = (
   observed: ObservedPage,
   pages: Map<string, ObservedPage>,
+  visitKnownLocation?: (location: unknown) => Promise<ObservedPage>,
 ) => {
   const openFrom = vi.fn(async (from: ObservedPage, url: string) => {
     expect(from.links.some((link) => link.url === url)).toBe(true);
@@ -71,7 +84,7 @@ const createContext = (
     url: pdfUrl,
     bytes: new TextEncoder().encode('%PDF-1.4'),
   }));
-  const courseContext = (current: ObservedPage): CourseListContext => ({
+  const courseContext = (current: ObservedPage): TestCourseContext => ({
     observed: current,
     pages: [current],
     entries: [],
@@ -79,12 +92,13 @@ const createContext = (
     openFrom,
     downloadPdf,
     assertReadable: vi.fn(),
+    ...(visitKnownLocation ? { visitKnownLocation } : {}),
   });
   return {
     openFrom,
     context: courseContext(observed),
     runOnCoursePage: async (
-      run: (context: CourseListContext) => Promise<void>,
+      run: (context: TestCourseContext) => Promise<void>,
     ) => run(courseContext(observed)),
     downloadPdf,
   };
@@ -92,7 +106,17 @@ const createContext = (
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.save.mockReturnValue({ changed: true });
+  mocks.save.mockImplementation((input: { source: { url: string } }) => ({
+    outcome: 'saved',
+    material: {
+      id: input.source.url,
+      currentUsableVersion: 'test-version-hash',
+    },
+    changed: true,
+  }));
+  mocks.reconcile.mockReturnValue({ retiredMaterialIds: [] });
+  mocks.getLocations.mockReturnValue([]);
+  mocks.saveLocation.mockReturnValue(null);
   mocks.extractPdf.mockResolvedValue({
     status: 'complete',
     pageCount: 1,
@@ -165,6 +189,526 @@ describe('course material refresh', () => {
     });
   });
 
+  it('persists only observed in-course material collection routes', async () => {
+    const rootPage = page(courseUrl, {
+      title: 'Course Materials',
+      text: 'Biology course materials include Biology syllabus.',
+      links: [{ label: 'Biology syllabus', url: moduleUrl }],
+    });
+    const modulePage = page(moduleUrl, {
+      title: 'Course Materials',
+      text: 'Biology syllabus',
+      links: [{ label: 'Syllabus', url: syllabusUrl }],
+    });
+    const syllabusPage = page(syllabusUrl, {
+      title: 'Biology syllabus',
+      text: syllabusText,
+    });
+    const pages = new Map([
+      [moduleUrl, modulePage],
+      [syllabusUrl, syllabusPage],
+    ]);
+    const { context, runOnCoursePage } = createContext(rootPage, pages);
+    mocks.saveLocation.mockReturnValue({ id: 'saved-material-route' });
+    mocks.request.mockImplementation(async (body: AgentRequestSchema) => {
+      const sourceUrl = body.pages[0]!.url;
+      if (sourceUrl === courseUrl)
+        return {
+          materials: [
+            material({
+              title: 'Biology syllabus',
+              sourceType: 'page',
+              url: moduleUrl,
+              evidence: {
+                sourceUrl,
+                excerpts: ['Biology syllabus'],
+                targetIds: ['1'],
+              },
+            }),
+          ],
+          coverage: 'complete',
+        };
+      if (sourceUrl === moduleUrl)
+        return {
+          materials: [
+            material({
+              title: 'Biology syllabus',
+              sourceType: 'page',
+              url: syllabusUrl,
+              evidence: {
+                sourceUrl,
+                excerpts: ['Syllabus'],
+                targetIds: ['1'],
+              },
+            }),
+          ],
+          coverage: 'complete',
+        };
+      return {
+        materials: [
+          material({
+            title: 'Biology syllabus',
+            sourceType: 'page',
+            url: syllabusUrl,
+            readability: 'readable',
+            evidence: {
+              sourceUrl,
+              excerpts: [syllabusText],
+              targetIds: [],
+            },
+          }),
+        ],
+        coverage: 'complete',
+      };
+    });
+
+    const result = await refreshCourseMaterials({
+      userId,
+      connectionId,
+      courseId,
+      courseUrl,
+      courseName: 'Biology',
+      host: 'canvas.school.edu',
+      allowedHosts: ['canvas.school.edu'],
+      notes: '',
+      from: rootPage,
+      context,
+      runOnCoursePage,
+      request: (body) => mocks.request(body),
+      signal: new AbortController().signal,
+      isCurrent: () => true,
+    });
+
+    expect(mocks.saveLocation).toHaveBeenCalledWith(
+      userId,
+      connectionId,
+      expect.objectContaining({
+        courseId,
+        purpose: 'materials',
+        destinationUrl: moduleUrl,
+        parentUrl: courseUrl,
+        evidence: expect.objectContaining({
+          sourceUrl: courseUrl,
+          targetIds: ['1'],
+        }),
+        status: 'verified',
+        destinationKind: 'collection',
+      }),
+    );
+    expect(result).toMatchObject({
+      status: 'complete',
+      navigationLocationsReused: 0,
+      navigationLocationsSaved: 1,
+    });
+  });
+
+  it('reuses a verified cached material collection before root discovery', async () => {
+    const cachedUrl = `${courseUrl}/modules`;
+    const rootPage = page(courseUrl, {
+      title: 'Course Home',
+      text: 'Course home',
+    });
+    const cachedPage = page(cachedUrl, {
+      title: 'Course Materials',
+      text: 'Biology syllabus',
+    });
+    const location = {
+      id: 'cached-material-collection',
+      userId,
+      connectionId,
+      courseId,
+      purpose: 'materials',
+      destinationUrl: cachedUrl,
+      parentUrl: courseUrl,
+      recipe: null,
+      label: 'Course Materials',
+      evidence: {
+        sourceUrl: courseUrl,
+        excerpts: ['Course Materials'],
+        targetIds: ['1'],
+      },
+      status: 'verified',
+      destinationKind: 'collection',
+      observedAt: '2026-11-01T12:00:00.000Z',
+      verifiedAt: '2026-11-01T12:00:00.000Z',
+      failureCount: 0,
+      lastFailureClass: null,
+    };
+    mocks.getLocations.mockReturnValue([location]);
+    const visitKnownLocation = vi.fn(async () => cachedPage);
+    const { context, runOnCoursePage } = createContext(
+      rootPage,
+      new Map([[cachedUrl, cachedPage]]),
+      visitKnownLocation,
+    );
+    mocks.request.mockResolvedValue({
+      materials: [
+        material({
+          title: 'Biology syllabus',
+          sourceType: 'page',
+          url: cachedUrl,
+          readability: 'readable',
+          evidence: {
+            sourceUrl: cachedUrl,
+            excerpts: ['Biology syllabus'],
+            targetIds: [],
+          },
+        }),
+      ],
+      coverage: 'complete',
+    });
+
+    const result = await refreshCourseMaterials({
+      userId,
+      connectionId,
+      courseId,
+      courseUrl,
+      courseName: 'Biology',
+      host: 'canvas.school.edu',
+      allowedHosts: ['canvas.school.edu'],
+      notes: '',
+      from: rootPage,
+      context,
+      runOnCoursePage,
+      request: (body) => mocks.request(body),
+      signal: new AbortController().signal,
+      isCurrent: () => true,
+    });
+
+    expect(visitKnownLocation).toHaveBeenCalledWith(location);
+    expect(mocks.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pages: [expect.objectContaining({ url: cachedUrl })],
+      }),
+    );
+    expect(mocks.save).toHaveBeenCalledOnce();
+    expect(result.status).toBe('complete');
+    expect(result.navigationLocationsReused).toBe(1);
+  });
+
+  it('repairs a lost material route from its verified parent', async () => {
+    const cachedUrl = `${courseUrl}/modules`;
+    const replacementUrl = `${courseUrl}/modules/week-one`;
+    const readingUrl = `${courseUrl}/files/biology-reading`;
+    const rootPage = page(courseUrl, {
+      title: 'Course Materials',
+      text: 'Biology syllabus Course Materials',
+      links: [{ label: 'Biology syllabus', url: replacementUrl }],
+    });
+    const replacementPage = page(replacementUrl, {
+      title: 'Course Materials',
+      text: 'Biology syllabus',
+      links: [{ label: 'Syllabus', url: readingUrl }],
+    });
+    const readingPage = page(readingUrl, {
+      title: 'Biology syllabus',
+      text: syllabusText,
+    });
+    const location = {
+      id: 'stale-material-collection',
+      userId,
+      connectionId,
+      courseId,
+      purpose: 'materials',
+      destinationUrl: cachedUrl,
+      parentUrl: courseUrl,
+      recipe: null,
+      label: 'Course Materials',
+      evidence: {
+        sourceUrl: courseUrl,
+        excerpts: ['Course Materials'],
+        targetIds: ['1'],
+      },
+      status: 'verified',
+      destinationKind: 'collection',
+      observedAt: '2026-11-01T12:00:00.000Z',
+      verifiedAt: '2026-11-01T12:00:00.000Z',
+      failureCount: 0,
+      lastFailureClass: null,
+    };
+    const replacementLocation = {
+      ...location,
+      id: 'replacement-material-collection',
+      destinationUrl: replacementUrl,
+      label: 'Biology syllabus',
+      evidence: {
+        sourceUrl: courseUrl,
+        excerpts: ['Biology syllabus'],
+        targetIds: ['1'],
+      },
+    };
+    let knownLocations = [location];
+    mocks.getLocations.mockImplementation(() => knownLocations);
+    const visitKnownLocation = vi.fn(async () => {
+      knownLocations = [replacementLocation];
+      return replacementPage;
+    });
+    const { context, runOnCoursePage } = createContext(
+      rootPage,
+      new Map([
+        [replacementUrl, replacementPage],
+        [readingUrl, readingPage],
+      ]),
+      visitKnownLocation,
+    );
+    mocks.saveLocation.mockReturnValue({ id: 'replacement-material-route' });
+    mocks.request.mockImplementation(async (body: AgentRequestSchema) => {
+      const sourceUrl = body.pages[0]!.url;
+      if (sourceUrl === courseUrl)
+        return {
+          materials: [
+            material({
+              title: 'Biology syllabus',
+              sourceType: 'page',
+              url: replacementUrl,
+              evidence: {
+                sourceUrl,
+                excerpts: ['Biology syllabus'],
+                targetIds: ['1'],
+              },
+            }),
+          ],
+          coverage: 'complete',
+        };
+      if (sourceUrl === replacementUrl)
+        return {
+          materials: [
+            material({
+              title: 'Biology syllabus',
+              sourceType: 'page',
+              url: readingUrl,
+              evidence: {
+                sourceUrl,
+                excerpts: ['Syllabus'],
+                targetIds: ['1'],
+              },
+            }),
+          ],
+          coverage: 'complete',
+        };
+      return {
+        materials: [
+          material({
+            title: 'Biology syllabus',
+            sourceType: 'page',
+            url: readingUrl,
+            readability: 'readable',
+            evidence: {
+              sourceUrl,
+              excerpts: [syllabusText],
+              targetIds: [],
+            },
+          }),
+        ],
+        coverage: 'complete',
+      };
+    });
+
+    const result = await refreshCourseMaterials({
+      userId,
+      connectionId,
+      courseId,
+      courseUrl,
+      courseName: 'Biology',
+      host: 'canvas.school.edu',
+      allowedHosts: ['canvas.school.edu'],
+      notes: '',
+      from: rootPage,
+      context,
+      runOnCoursePage,
+      request: (body) => mocks.request(body),
+      signal: new AbortController().signal,
+      isCurrent: () => true,
+    });
+
+    expect(visitKnownLocation).toHaveBeenCalledOnce();
+    expect(visitKnownLocation).toHaveBeenCalledWith(location);
+    expect(mocks.getLocations).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({
+      status: 'complete',
+      navigationLocationsReused: 0,
+      navigationLocationsRepaired: 1,
+      navigationLocationsSaved: 0,
+    });
+  });
+
+  it('keeps keyword-skipped course roots partial and performs no model call', async () => {
+    const rootPage = page(courseUrl, { text: 'Course home' });
+    const { context, runOnCoursePage } = createContext(rootPage, new Map());
+
+    const result = await refreshCourseMaterials({
+      userId,
+      connectionId,
+      courseId,
+      courseUrl,
+      courseName: 'Biology',
+      host: 'canvas.school.edu',
+      allowedHosts: ['canvas.school.edu'],
+      notes: '',
+      from: rootPage,
+      context,
+      runOnCoursePage,
+      request: (body) => mocks.request(body),
+      signal: new AbortController().signal,
+      isCurrent: () => true,
+    });
+
+    expect(result.status).toBe('partial');
+    expect(mocks.request).not.toHaveBeenCalled();
+    expect(mocks.reconcile).not.toHaveBeenCalled();
+  });
+
+  it('does not treat model-empty complete output as host-proven empty coverage', async () => {
+    const rootPage = page(courseUrl, {
+      title: 'Course Materials',
+      text: 'Course Materials',
+    });
+    const { context, runOnCoursePage } = createContext(rootPage, new Map());
+    mocks.request.mockResolvedValue({ materials: [], coverage: 'complete' });
+
+    const result = await refreshCourseMaterials({
+      userId,
+      connectionId,
+      courseId,
+      courseUrl,
+      courseName: 'Biology',
+      host: 'canvas.school.edu',
+      allowedHosts: ['canvas.school.edu'],
+      notes: '',
+      from: rootPage,
+      context,
+      runOnCoursePage,
+      request: (body) => mocks.request(body),
+      signal: new AbortController().signal,
+      isCurrent: () => true,
+    });
+
+    expect(result.status).toBe('partial');
+    expect(result.hostCoverage).toMatchObject({
+      collectionKind: 'materials',
+      explicitEmptyEvidence: null,
+      gaps: { scopeUnverified: false },
+    });
+    expect(mocks.reconcile).not.toHaveBeenCalled();
+  });
+
+  it('associates explicit-empty evidence with the observed nested collection', async () => {
+    const collectionUrl = `${courseUrl}/modules`;
+    const rootPage = page(courseUrl, {
+      title: 'Course Home',
+      text: 'Open the Course Materials list.',
+      links: [{ label: 'Course Materials', url: collectionUrl }],
+    });
+    const collectionPage = page(collectionUrl, {
+      title: 'Course Materials',
+      text: 'No course materials are available.',
+    });
+    const { context, runOnCoursePage } = createContext(
+      rootPage,
+      new Map([[collectionUrl, collectionPage]]),
+    );
+    mocks.request.mockImplementation(async (body: AgentRequestSchema) => {
+      const sourceUrl = body.pages[0]!.url;
+      if (sourceUrl === courseUrl)
+        return {
+          materials: [
+            material({
+              title: 'Course Materials',
+              sourceType: 'page',
+              url: collectionUrl,
+              evidence: {
+                sourceUrl,
+                excerpts: ['Course Materials'],
+                targetIds: ['1'],
+              },
+            }),
+          ],
+          coverage: 'complete',
+        };
+      return { materials: [], coverage: 'complete' };
+    });
+
+    const result = await refreshCourseMaterials({
+      userId,
+      connectionId,
+      courseId,
+      courseUrl,
+      courseName: 'Biology',
+      host: 'canvas.school.edu',
+      allowedHosts: ['canvas.school.edu'],
+      notes: '',
+      from: rootPage,
+      context,
+      runOnCoursePage,
+      request: (body) => mocks.request(body),
+      signal: new AbortController().signal,
+      isCurrent: () => true,
+    });
+
+    expect(result).toMatchObject({
+      status: 'complete',
+      hostCoverage: {
+        collectionUrls: expect.arrayContaining([courseUrl, collectionUrl]),
+        explicitEmptyEvidence: { pageUrl: collectionUrl },
+      },
+    });
+    expect(mocks.reconcile).toHaveBeenCalledWith(
+      { userId, connectionId, courseId },
+      expect.objectContaining({
+        coverage: expect.objectContaining({
+          collectionUrls: expect.arrayContaining([collectionUrl]),
+          explicitEmptyEvidence: expect.objectContaining({
+            pageUrl: collectionUrl,
+          }),
+        }),
+      }),
+    );
+  });
+
+  it('retires unseen material only with observed explicit empty evidence', async () => {
+    const rootPage = page(courseUrl, {
+      title: 'Course Materials',
+      text: 'No course materials are available.',
+    });
+    const { context, runOnCoursePage } = createContext(rootPage, new Map());
+    mocks.request.mockResolvedValue({ materials: [], coverage: 'complete' });
+
+    const result = await refreshCourseMaterials({
+      userId,
+      connectionId,
+      courseId,
+      courseUrl,
+      courseName: 'Biology',
+      host: 'canvas.school.edu',
+      allowedHosts: ['canvas.school.edu'],
+      notes: '',
+      from: rootPage,
+      context,
+      runOnCoursePage,
+      request: (body) => mocks.request(body),
+      signal: new AbortController().signal,
+      isCurrent: () => true,
+    });
+
+    expect(result.status).toBe('complete');
+    expect(result.hostCoverage.explicitEmptyEvidence).toMatchObject({
+      kind: 'observed-empty-list',
+      pageUrl: courseUrl,
+    });
+    expect(mocks.reconcile).toHaveBeenCalledWith(
+      { userId, connectionId, courseId },
+      expect.objectContaining({
+        coverage: expect.objectContaining({
+          collectionKind: 'materials',
+          explicitEmptyEvidence: expect.objectContaining({
+            kind: 'observed-empty-list',
+          }),
+        }),
+        seenIds: [],
+      }),
+    );
+  });
+
   it('reads a course page whose only material signal is Course Materials', async () => {
     const rootPage = page(courseUrl, {
       text: 'Course Materials. Mitochondria convert glucose into ATP.',
@@ -209,6 +753,7 @@ describe('course material refresh', () => {
 
   it('follows observed material links and saves source text separately from a supported summary', async () => {
     const rootPage = page(courseUrl, {
+      title: 'Course Materials',
       links: [{ label: 'Modules', url: moduleUrl }],
     });
     const modulePage = page(moduleUrl, {
@@ -336,6 +881,176 @@ describe('course material refresh', () => {
         }),
       }),
     );
+  });
+
+  it('does not navigate to a same-host material from another course', async () => {
+    const wrongCourseUrl = 'https://canvas.school.edu/courses/2/files/syllabus';
+    const rootPage = page(courseUrl, {
+      title: 'Course Materials',
+      text: 'Biology syllabus Course Materials',
+      links: [{ label: 'Course Materials', url: wrongCourseUrl }],
+    });
+    const { context, openFrom, runOnCoursePage } = createContext(
+      rootPage,
+      new Map(),
+    );
+    mocks.request.mockResolvedValue({
+      materials: [
+        material({
+          title: 'Biology syllabus',
+          sourceType: 'page',
+          url: wrongCourseUrl,
+          readability: 'readable',
+          evidence: {
+            sourceUrl: courseUrl,
+            excerpts: ['Course Materials'],
+            targetIds: ['1'],
+          },
+        }),
+      ],
+      coverage: 'complete',
+    });
+
+    const result = await refreshCourseMaterials({
+      userId,
+      connectionId,
+      courseId,
+      courseUrl,
+      courseName: 'Biology',
+      host: 'canvas.school.edu',
+      allowedHosts: ['canvas.school.edu'],
+      notes: '',
+      from: rootPage,
+      context,
+      runOnCoursePage,
+      request: (body) => mocks.request(body),
+      signal: new AbortController().signal,
+      isCurrent: () => true,
+    });
+
+    expect(result.status).toBe('partial');
+    expect(openFrom).not.toHaveBeenCalled();
+    expect(mocks.save).not.toHaveBeenCalled();
+    expect(mocks.reconcile).not.toHaveBeenCalled();
+  });
+
+  it('saves an explicitly observed external material through its current host', async () => {
+    const externalUrl = 'https://files.school.edu/biology/reading';
+    const rootPage = page(courseUrl, {
+      title: 'Course Materials',
+      links: [{ label: 'Week 1 Reading', url: externalUrl }],
+    });
+    const externalPage = page(externalUrl, {
+      title: 'Week 1 Reading',
+      text: syllabusText,
+    });
+    const { context, runOnCoursePage, openFrom } = createContext(
+      rootPage,
+      new Map([[externalUrl, externalPage]]),
+    );
+    mocks.request.mockImplementation(async (body: AgentRequestSchema) =>
+      body.pages[0]!.url === courseUrl
+        ? {
+            materials: [
+              material({
+                title: 'Week 1 Reading',
+                url: externalUrl,
+                sourceType: 'page',
+                readability: 'readable',
+                evidence: {
+                  sourceUrl: courseUrl,
+                  excerpts: ['Week 1 Reading'],
+                  targetIds: ['1'],
+                },
+              }),
+            ],
+            coverage: 'complete',
+          }
+        : {
+            materials: [
+              material({
+                title: 'Week 1 Reading',
+                url: externalUrl,
+                sourceType: 'page',
+                readability: 'readable',
+                evidence: {
+                  sourceUrl: externalUrl,
+                  excerpts: [syllabusText],
+                  targetIds: [],
+                },
+              }),
+            ],
+            coverage: 'complete',
+          },
+    );
+
+    const result = await refreshCourseMaterials({
+      userId,
+      connectionId,
+      courseId,
+      courseUrl,
+      courseName: 'Biology',
+      host: 'canvas.school.edu',
+      allowedHosts: ['canvas.school.edu', 'files.school.edu'],
+      notes: '',
+      from: rootPage,
+      context,
+      runOnCoursePage,
+      request: (body) => mocks.request(body),
+      signal: new AbortController().signal,
+      isCurrent: () => true,
+    });
+
+    expect(result.status).toBe('complete');
+    expect(openFrom).toHaveBeenCalledWith(rootPage, externalUrl);
+    expect(mocks.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: expect.objectContaining({ url: externalUrl }),
+      }),
+    );
+  });
+
+  it('does not persist an external material after its host is revoked', async () => {
+    const externalUrl = 'https://files.school.edu/biology/reading';
+    const rootPage = page(courseUrl, {
+      title: 'Course Materials',
+      links: [{ label: 'Week 1 Reading', url: externalUrl }],
+    });
+    const { context, runOnCoursePage } = createContext(rootPage, new Map());
+    mocks.request.mockResolvedValue({
+      materials: [
+        material({
+          url: externalUrl,
+          evidence: {
+            sourceUrl: courseUrl,
+            excerpts: ['Week 1 Reading'],
+            targetIds: ['1'],
+          },
+        }),
+      ],
+      coverage: 'complete',
+    });
+
+    const result = await refreshCourseMaterials({
+      userId,
+      connectionId,
+      courseId,
+      courseUrl,
+      courseName: 'Biology',
+      host: 'canvas.school.edu',
+      allowedHosts: ['canvas.school.edu'],
+      notes: '',
+      from: rootPage,
+      context,
+      runOnCoursePage,
+      request: (body) => mocks.request(body),
+      signal: new AbortController().signal,
+      isCurrent: () => true,
+    });
+
+    expect(result.status).toBe('partial');
+    expect(mocks.save).not.toHaveBeenCalled();
+    expect(mocks.reconcile).not.toHaveBeenCalled();
   });
 
   it('keeps failures partial and does not replace previously saved material', async () => {
