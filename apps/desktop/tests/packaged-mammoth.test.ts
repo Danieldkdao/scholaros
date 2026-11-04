@@ -2,8 +2,11 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { stageRuntimePackage } from '../stage-runtime-package.mts';
+
+const packaged = vi.hoisted(() => ({ root: '' }));
+vi.mock('electron', () => ({ app: { getAppPath: () => packaged.root } }));
 
 it('stages mammoth and its runtime dependencies for an isolated package', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'scholaros-mammoth-'));
@@ -28,8 +31,16 @@ it('stages mammoth and its runtime dependencies for an isolated package', async 
     );
     zip.file('word/_rels/document.xml.rels', '<Relationships/>');
     const buffer = await zip.generateAsync({ type: 'nodebuffer' });
-    const result = await mammoth.extractRawText({ buffer });
-    expect(result.value).toContain('Packaged document');
+    const raw = await mammoth.extractRawText({ buffer });
+    expect(raw.value).toContain('Packaged document');
+    packaged.root = root;
+    const { extractDocxContent } = await import(
+      '../src/features/context/services/docx-content'
+    );
+    const result = await extractDocxContent(buffer);
+    expect(result.status).toBe('complete');
+    expect(result.text).toContain('Packaged document');
+    expect(result.locators).toEqual([{ kind: 'paragraph', ordinal: 1 }]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
