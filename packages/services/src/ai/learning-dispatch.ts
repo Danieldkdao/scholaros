@@ -827,6 +827,22 @@ export const createLearningDispatcher = (
       throw new LearningDispatchError('provider-failed');
 
     await assertCapabilitiesUnchanged(capabilities.configurationRevision);
+    // An asynchronous evaluation may outlive its proof or a signing-key change.
+    const currentSecret = dependencies.practiceProofSecret?.();
+    if (!currentSecret) throw new LearningDispatchError('feature-unavailable');
+    if (
+      !verifyPracticeProof(
+        {
+          ...origin,
+          question: request.input.question,
+          answerKey: request.input.answerKey,
+        },
+        request.input.answerKey.generationProof ?? '',
+        currentSecret,
+        now(),
+      )
+    )
+      throw new LearningDispatchError('scope-denied');
     return practiceEvaluateResponseSchema.parse({
       version: 1,
       requestId: request.requestId,
@@ -842,6 +858,7 @@ export const createLearningDispatcher = (
     rawRequest: unknown,
     signal: AbortSignal,
   ): Promise<LearningOperationResponse> => {
+    signal.throwIfAborted();
     const parsedRequest = learningRequestSchema.safeParse(rawRequest);
     if (!parsedRequest.success)
       throw new LearningDispatchError('invalid-input');
@@ -857,7 +874,65 @@ export const createLearningDispatcher = (
     if (existing) {
       if (existing.digest !== digest)
         throw new LearningDispatchError('revision-conflict');
-      return existing.result;
+      const cached = await existing.result;
+      signal.throwIfAborted();
+      if (
+        request.kind === 'practice-generate' ||
+        request.kind === 'practice-evaluate'
+      ) {
+        const capabilities = await getAvailableCapabilities();
+        signal.throwIfAborted();
+        if (cached.configurationRevision !== capabilities.configurationRevision)
+          throw new LearningDispatchError('capability-changed');
+        const secret = dependencies.practiceProofSecret?.();
+        if (!secret) throw new LearningDispatchError('feature-unavailable');
+        const common = {
+          accountId,
+          courseId: request.courseId,
+          sessionId: request.sessionId,
+          configurationRevision: capabilities.configurationRevision,
+        };
+        if (request.kind === 'practice-evaluate') {
+          if (
+            !verifyPracticeProof(
+              {
+                ...common,
+                rubricVersion: request.input.rubricVersion,
+                question: request.input.question,
+                answerKey: request.input.answerKey,
+              },
+              request.input.answerKey.generationProof ?? '',
+              secret,
+              now(),
+            )
+          )
+            throw new LearningDispatchError('scope-denied');
+        } else {
+          if (!('kind' in cached) || cached.kind !== 'practice-generate')
+            throw new LearningDispatchError('provider-failed');
+          for (const answerKey of cached.candidate.hostAnswerKey) {
+            const question = cached.candidate.questions.find(
+              ({ id }) => id === answerKey.questionId,
+            );
+            if (
+              !question ||
+              !verifyPracticeProof(
+                {
+                  ...common,
+                  rubricVersion: cached.candidate.rubricVersion,
+                  question,
+                  answerKey,
+                },
+                answerKey.generationProof ?? '',
+                secret,
+                now(),
+              )
+            )
+              throw new LearningDispatchError('scope-denied');
+          }
+        }
+      }
+      return cached;
     }
     if (idempotency.size >= idempotencyLimit) {
       const oldestEntry = [...idempotency.entries()].sort(

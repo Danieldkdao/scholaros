@@ -1152,3 +1152,129 @@ describe('learning inference dispatcher', () => {
     expect(dispatcher).toBeDefined();
   });
 });
+
+describe('practice proof lifecycle across cached requests', () => {
+  const lifetime = 7 * 24 * 60 * 60 * 1000;
+  const fixture = async (duringEvaluation?: () => void) => {
+    let clock = 1000;
+    let secret: string | undefined = 'lifecycle-test-secret';
+    let revision = 'configuration-1';
+    const generation = vi.fn(async () => ({
+      candidate: practiceGeneratedCandidate,
+    }));
+    const evaluation = vi.fn(async () => {
+      duringEvaluation?.();
+      return { evaluation: practiceEvaluation };
+    });
+    const dispatcher = createLearningDispatcher({
+      practiceProofSecret: () => secret,
+      now: () => clock,
+      getCapabilities: async () => ({
+        ...capabilities,
+        configurationRevision: revision,
+      }),
+      generateCandidate: vi.fn(),
+      assessCandidate: vi.fn(),
+      assessPracticeCandidate: async () => undefined,
+      operations: {
+        'practice-generate': generation,
+        'practice-evaluate': evaluation,
+      },
+    });
+    const generated = await dispatcher.dispatch(
+      'account-1',
+      practiceGenerationRequest,
+      new AbortController().signal,
+    );
+    if (!('kind' in generated) || generated.kind !== 'practice-generate')
+      throw new Error('Generation failed');
+    const request = {
+      ...practiceEvaluationRequest,
+      input: {
+        ...practiceEvaluationRequest.input,
+        answerKey: generated.candidate.hostAnswerKey[0]!,
+      },
+    };
+    return {
+      dispatcher,
+      request,
+      generation,
+      evaluation,
+      time: (value: number) => {
+        clock = value;
+      },
+      secret: (value: string | undefined) => {
+        secret = value;
+      },
+      revision: (value: string) => {
+        revision = value;
+      },
+    };
+  };
+  it('reuses valid evaluation without another provider call', async () => {
+    const f = await fixture();
+    const signal = new AbortController().signal;
+    const first = await f.dispatcher.dispatch('account-1', f.request, signal);
+    expect(await f.dispatcher.dispatch('account-1', f.request, signal)).toEqual(
+      first,
+    );
+    expect(f.evaluation).toHaveBeenCalledOnce();
+  });
+  it.each(['configuration', 'key', 'missing-key', 'expiry', 'cancelled'])(
+    'rejects cached evaluation after %s changes',
+    async (change) => {
+      const f = await fixture();
+      const controller = new AbortController();
+      if (change === 'expiry') f.time(1000 + lifetime - 10);
+      await f.dispatcher.dispatch('account-1', f.request, controller.signal);
+      if (change === 'configuration') f.revision('new-config');
+      if (change === 'key') f.secret('rotated');
+      if (change === 'missing-key') f.secret(undefined);
+      if (change === 'expiry') f.time(1000 + lifetime + 10);
+      if (change === 'cancelled') controller.abort();
+      await expect(
+        f.dispatcher.dispatch('account-1', f.request, controller.signal),
+      ).rejects.toThrow();
+      expect(f.evaluation).toHaveBeenCalledOnce();
+    },
+  );
+  it('does not return cached generation proof after signing key rotation', async () => {
+    const f = await fixture();
+    f.secret('rotated');
+    await expect(
+      f.dispatcher.dispatch(
+        'account-1',
+        practiceGenerationRequest,
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: 'scope-denied' });
+    expect(f.generation).toHaveBeenCalledOnce();
+  });
+  it('does not publish when a valid proof expires during evaluation', async () => {
+    let expire = () => {};
+    const f = await fixture(() => expire());
+    f.time(1000 + lifetime - 10);
+    expire = () => f.time(1000 + lifetime + 10);
+    await expect(
+      f.dispatcher.dispatch(
+        'account-1',
+        f.request,
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: 'scope-denied' });
+    expect(f.evaluation).toHaveBeenCalledOnce();
+  });
+  it('does not publish when signing key changes during evaluation', async () => {
+    let rotate = () => {};
+    const f = await fixture(() => rotate());
+    rotate = () => f.secret('rotated');
+    await expect(
+      f.dispatcher.dispatch(
+        'account-1',
+        f.request,
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: 'scope-denied' });
+    expect(f.evaluation).toHaveBeenCalledOnce();
+  });
+});
