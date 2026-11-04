@@ -87,7 +87,7 @@ const packagedRuntimeProbe: Plugin = {
       '  }',
       '};',
     ].join('\n');
-    const serviceStartAnchor = 'await runAcademicService();';
+    const serviceStartAnchor = 'await runAcademicService({ learningModules });';
     const mainWithProbe = code.replace(
       serviceStartAnchor,
       `${serviceStartAnchor}\n      if (pdfProbeArgument) await runPackagedPdfProbe();`,
