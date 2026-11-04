@@ -565,3 +565,43 @@ it('does not log academic content or provider response bodies on inference error
   });
   logged.mockRestore();
 });
+
+describe('safe academic provider failures', () => {
+  it.each([
+    [{ statusCode: 429 }, 429, 'provider-rate-limited', 'usage limit'],
+    [{ name: 'TimeoutError' }, 504, 'provider-timeout', 'timed out'],
+    [
+      { name: 'AI_NoObjectGeneratedError' },
+      502,
+      'model-response-invalid',
+      'unreadable course data',
+    ],
+    [
+      { statusCode: 401 },
+      503,
+      'provider-authentication',
+      'credentials were rejected',
+    ],
+  ] as const)(
+    'returns a bounded actionable category for %j without provider details',
+    async (attributes, status, code, explanation) => {
+      mocks.choose.mockRejectedValue(
+        Object.assign(
+          new Error(
+            'private-student-text secret-token https://private.school/path',
+          ),
+          attributes,
+        ),
+      );
+      const response = await POST(request());
+      expect(response.status).toBe(status);
+      const result = await response.json();
+      expect(result.code).toBe(code);
+      expect(result.error).toContain(explanation);
+      expect(JSON.stringify(result)).not.toMatch(
+        /private-student|secret-token|private\.school/,
+      );
+      expect(response.headers.get('cache-control')).toBe('no-store');
+    },
+  );
+});

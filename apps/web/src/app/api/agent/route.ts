@@ -354,6 +354,56 @@ export const POST = async (request: Request) => {
       kind: requestKind,
       name: error instanceof Error ? error.name : 'UnknownError',
     });
+    // SDK status/name fields select static explanations; provider messages and
+    // response bodies can contain academic text or credentials and stay private.
+    const statusCode =
+      error && typeof error === 'object' && 'statusCode' in error
+        ? error.statusCode
+        : null;
+    if (statusCode === 429)
+      return noStoreJson(
+        {
+          error:
+            'The AI provider usage limit was reached. Retry after the limit resets.',
+          code: 'provider-rate-limited',
+        },
+        429,
+      );
+    if (
+      (error instanceof Error && error.name === 'TimeoutError') ||
+      statusCode === 408 ||
+      statusCode === 504
+    )
+      return noStoreJson(
+        {
+          error: 'The AI course-reading request timed out. Retry the refresh.',
+          code: 'provider-timeout',
+        },
+        504,
+      );
+    if (statusCode === 401 || statusCode === 403)
+      return noStoreJson(
+        {
+          error:
+            'The AI provider credentials were rejected. Check the server Meta API configuration.',
+          code: 'provider-authentication',
+        },
+        503,
+      );
+    if (
+      error instanceof Error &&
+      /^AI_(?:NoObjectGenerated|NoOutputGenerated|TypeValidation|JSONParse)Error$/.test(
+        error.name,
+      )
+    )
+      return noStoreJson(
+        {
+          error:
+            'The AI service returned unreadable course data. Retry the refresh.',
+          code: 'model-response-invalid',
+        },
+        502,
+      );
     return noStoreJson(
       {
         error: 'The AI request could not finish. Try again.',
