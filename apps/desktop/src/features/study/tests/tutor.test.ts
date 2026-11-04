@@ -762,3 +762,110 @@ describe('durable tutor turns', () => {
     await service.cleanup();
   });
 });
+
+describe('atomic tutor effect publication', () => {
+  const reference = {
+    sourceKind: 'context-version' as const,
+    sourceId: 'effect-source',
+    versionId: 'effect-source-v1',
+    courseId: 'course-a',
+    locator: null,
+    title: 'Synthetic study note',
+    provenance: 'user-authored' as const,
+    observedAt: '2026-11-03T12:00:00.000Z',
+    state: 'current' as const,
+  };
+  const effectPolicy: AssistancePolicy = {
+    ...policy,
+    allowedOperations: [...policy.allowedOperations, 'distinct-practice'],
+  };
+  const dependenciesFor = (
+    kinds: Array<'create-activity' | 'offer-practice'>,
+  ) => {
+    const dependencies = createTutorDependencies(async (request) => ({
+      ...response,
+      requestId: request.requestId,
+      proposedEffects: kinds.map((kind) => ({
+        kind,
+        objective: 'Understand how cells convert energy.',
+        references: [
+          {
+            sourceKind: reference.sourceKind,
+            sourceId: reference.sourceId,
+            versionId: reference.versionId,
+            locator: null,
+          },
+        ],
+      })),
+    }));
+    dependencies.studyContext.readCourseSources = vi.fn(async () => ({
+      ...sourceRead,
+      passages: [{ reference, text: 'Cells convert energy.', score: null }],
+    }));
+    dependencies.studyContext.resolveAssistancePolicy = vi.fn(
+      async () => effectPolicy,
+    );
+    dependencies.learningEffectHandlers.resolveAssistancePolicy = vi.fn(
+      async () => effectPolicy,
+    );
+    return dependencies;
+  };
+  it.each(['create-activity', 'offer-practice'] as const)(
+    'commits a successful %s link in the same operation as completion',
+    async (kind) => {
+      const dependencies = dependenciesFor([kind]);
+      const service = createTutorService(dependencies, lifecycle);
+      try {
+        await service.sendStudyTurn(authorizedContext(), sendInput);
+        await vi.waitFor(() =>
+          expect(dependencies.commitStudyTurn).toHaveBeenCalledOnce(),
+        );
+        const expected =
+          kind === 'create-activity'
+            ? {
+                kind: 'activity',
+                artifactId: 'artifact-a',
+                versionId: 'artifact-version-a',
+                attemptId: 'artifact-attempt-a',
+              }
+            : { kind: 'practice', practiceAttemptId: 'practice-a' };
+        expect(
+          vi.mocked(dependencies.commitStudyTurn).mock.calls[0]![1].parts,
+        ).toContainEqual(expected);
+        expect(dependencies.appendStudyTurnParts).not.toHaveBeenCalled();
+      } finally {
+        await service.cleanup();
+      }
+    },
+  );
+  it('commits successful links and the recoverable action failure together', async () => {
+    const dependencies = dependenciesFor(['create-activity', 'offer-practice']);
+    dependencies.learningEffectHandlers.offerPractice = vi.fn(async () => {
+      throw new Error('Synthetic practice failure');
+    });
+    const service = createTutorService(dependencies, lifecycle);
+    try {
+      await service.sendStudyTurn(authorizedContext(), sendInput);
+      await vi.waitFor(() =>
+        expect(dependencies.commitStudyTurn).toHaveBeenCalledOnce(),
+      );
+      const parts = vi.mocked(dependencies.commitStudyTurn).mock.calls[0]![1]
+        .parts;
+      expect(parts).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            kind: 'activity',
+            artifactId: 'artifact-a',
+          }),
+          expect.objectContaining({
+            kind: 'status',
+            code: 'learning-action-unavailable',
+          }),
+        ]),
+      );
+      expect(dependencies.appendStudyTurnParts).not.toHaveBeenCalled();
+    } finally {
+      await service.cleanup();
+    }
+  });
+});

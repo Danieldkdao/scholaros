@@ -593,6 +593,27 @@ export const createTutorService = (
             dependencies.learningEffectHandlers,
           )
         : null;
+    // Include effect links before the transaction marks the turn complete.
+    const committedParts: MessagePart[] = [];
+    const citationKeys = new Set<string>();
+    const effectParts =
+      effectResult?.effects.flatMap((effect) => effect.parts) ?? [];
+    for (const part of [...safeParts, ...effectParts]) {
+      if (part.kind === 'citation') {
+        const key = JSON.stringify(part.reference);
+        if (citationKeys.has(key)) continue;
+        citationKeys.add(key);
+      }
+      committedParts.push(part);
+    }
+    if (effectResult?.errorCode) {
+      committedParts.push({
+        kind: 'status',
+        code: 'learning-action-unavailable',
+        label:
+          'Your explanation is saved, but one learning action could not be completed.',
+      });
+    }
     await assertTurnCurrent(context, admission, preparation);
     const commitResult = await dependencies.commitStudyTurn(
       context,
@@ -606,44 +627,14 @@ export const createTutorService = (
           ? preparation.gradeConsentRevision
           : null,
         gradeDerived,
-        parts: safeParts,
-        sourceReferences: safeParts.flatMap((part) =>
+        parts: committedParts,
+        sourceReferences: committedParts.flatMap((part) =>
           part.kind === 'citation' ? [part.reference] : [],
         ),
       },
       reservedForEffects ? undefined : reserveAssistance,
     );
     if (!commitResult.committed) throw new TutorServiceError('session-changed');
-
-    if (effectResult) {
-      for (const effect of effectResult.effects) {
-        const appended = await dependencies.appendStudyTurnParts(context, {
-          sessionId: admission.sessionId,
-          turnId: admission.turnId,
-          generationEpoch: admission.generationEpoch,
-          idempotencyKey: effect.idempotencyKey,
-          parts: effect.parts,
-        });
-        if (!appended.committed) throw new TutorServiceError('session-changed');
-      }
-      if (effectResult.errorCode) {
-        const appended = await dependencies.appendStudyTurnParts(context, {
-          sessionId: admission.sessionId,
-          turnId: admission.turnId,
-          generationEpoch: admission.generationEpoch,
-          idempotencyKey: `${admission.turnId}:effects-unavailable`,
-          parts: [
-            {
-              kind: 'status',
-              code: 'learning-action-unavailable',
-              label:
-                'Your explanation is saved, but one learning action could not be completed.',
-            },
-          ],
-        });
-        if (!appended.committed) throw new TutorServiceError('session-changed');
-      }
-    }
   };
 
   const launchTurn = (

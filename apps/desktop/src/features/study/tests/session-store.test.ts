@@ -1263,6 +1263,18 @@ describe('durable turn admission', () => {
         parts: [
           { kind: 'text', text: 'Mitosis creates two daughter cells.' },
           { kind: 'citation', reference: sourceReference },
+          {
+            kind: 'activity',
+            artifactId: 'restart-artifact',
+            versionId: 'restart-version',
+            attemptId: 'restart-attempt',
+          },
+          { kind: 'practice', practiceAttemptId: 'restart-practice' },
+          {
+            kind: 'status',
+            code: 'preference-saved',
+            label: 'Saved a preference.',
+          },
         ],
         sourceReferences: [sourceReference],
         gradeDerived: false,
@@ -1313,6 +1325,18 @@ describe('durable turn admission', () => {
           [
             { kind: 'text', text: 'Mitosis creates two daughter cells.' },
             { kind: 'citation', reference: sourceReference },
+            {
+              kind: 'activity',
+              artifactId: 'restart-artifact',
+              versionId: 'restart-version',
+              attemptId: 'restart-attempt',
+            },
+            { kind: 'practice', practiceAttemptId: 'restart-practice' },
+            {
+              kind: 'status',
+              code: 'preference-saved',
+              label: 'Saved a preference.',
+            },
           ],
         ]);
         expect(snapshot?.sourceReferences).toEqual([sourceReference]);
@@ -1683,5 +1707,50 @@ describe('durable tutor effect append', () => {
       },
       { enabled: true, revision: 4 },
     );
+  });
+});
+
+it('rolls back tutor text and effect links together when completing the turn fails', async () => {
+  await withMigratedAppendFixture(async (fixture) => {
+    const eventCount = fixture.events.length;
+    fixture.database.$client.exec(`
+      CREATE TRIGGER fail_effect_completion BEFORE UPDATE OF status ON study_turns
+      WHEN NEW.status = 'complete'
+      BEGIN SELECT RAISE(ABORT, 'synthetic completion failure'); END;
+    `);
+    await expect(
+      fixture.commitTutorTurn({
+        parts: [
+          { kind: 'text', text: 'A safe conceptual explanation.' },
+          {
+            kind: 'activity',
+            artifactId: 'rollback-artifact',
+            versionId: 'rollback-version',
+            attemptId: 'rollback-attempt',
+          },
+          { kind: 'practice', practiceAttemptId: 'rollback-practice' },
+        ],
+      }),
+    ).rejects.toMatchObject({ code: 'storage-failed' });
+    const observer = new Database(fixture.database.$client.name, {
+      readonly: true,
+    });
+    try {
+      expect(
+        observer
+          .prepare(
+            "SELECT COUNT(*) AS count FROM study_messages WHERE role = 'tutor'",
+          )
+          .get(),
+      ).toEqual({ count: 0 });
+      expect(
+        observer
+          .prepare('SELECT status FROM study_turns WHERE id = ?')
+          .get(fixture.turn.turnId),
+      ).toEqual({ status: 'preparing' });
+      expect(fixture.events).toHaveLength(eventCount);
+    } finally {
+      observer.close();
+    }
   });
 });
