@@ -10,7 +10,6 @@ import type {
   LearningPublicMethod,
   ProductEventV1,
   ResultOf,
-  SafeErrorCode,
 } from '@scholaros/services/learning/product-contracts';
 import type {
   DictationAudioChunk,
@@ -32,6 +31,7 @@ import type {
   WorkspaceReplacementInput,
 } from '../../services/academic/contracts';
 import type { ConnectRunState } from './services/connect-run';
+import type { WorkspaceReplacementDTO } from './services/browser-workspace';
 import type { ConnectionCandidateSchema } from '@scholaros/services/ai/schemas';
 import type { CourseDetail, CoursesSnapshot } from '../courses/types';
 import type { CourseRecordSuppressionView } from '../courses/services/store';
@@ -221,20 +221,7 @@ export type ConnectionProposal = {
   candidates: ConnectionCandidateSchema[];
 };
 
-export type DeviceReplacementDTO = {
-  operationId: string;
-  state:
-    | 'staged'
-    | 'verifying'
-    | 'ready'
-    | 'committed'
-    | 'cancelled'
-    | 'failed'
-    | 'needs-sign-in';
-  browserId: string;
-  errorCode: SafeErrorCode | null;
-  revision: number;
-};
+export type DeviceReplacementDTO = WorkspaceReplacementDTO;
 
 type LearningBridge = {
   [Method in LearningPublicMethod]: (
