@@ -202,12 +202,14 @@ const createTestProfile = async () => {
   };
 };
 
-const createTestEnvironment = (profileDirectory: string) => {
+export const createTestEnvironment = (profileDirectory: string) => {
   const environment: NodeJS.ProcessEnv = {};
   for (const key of ['PATH', 'LANG', 'LC_ALL', 'SystemRoot', 'WINDIR'])
     if (process.env[key]) environment[key] = process.env[key];
 
-  environment.HOME = profileDirectory;
+  // Preserve macOS HOME for packaged startup; isolate Electron data and temp paths.
+  environment.HOME =
+    process.platform === 'darwin' ? process.env.HOME : profileDirectory;
   environment.USERPROFILE = profileDirectory;
   environment.TMPDIR = profileDirectory;
   environment.TMP = profileDirectory;

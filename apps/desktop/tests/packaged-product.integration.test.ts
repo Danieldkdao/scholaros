@@ -159,6 +159,23 @@ it('refuses to follow a package executable symlink outside owned output', async 
   }
 });
 
+it.skipIf(process.platform !== 'darwin')(
+  'keeps macOS HOME while isolating temporary and profile paths',
+  async () => {
+    const { createTestEnvironment } =
+      await import('./fixtures/whole-product-runner');
+    const environment = createTestEnvironment('/test-owned-profile');
+    expect(environment.HOME).toBe(process.env.HOME);
+    expect(environment.USERPROFILE).toBe('/test-owned-profile');
+    expect(environment.TMPDIR).toBe('/test-owned-profile');
+    expect(environment.TMP).toBe('/test-owned-profile');
+    expect(environment.TEMP).toBe('/test-owned-profile');
+    expect(environment.APPDATA).toBe('/test-owned-profile/AppData/Roaming');
+    expect(environment.LOCALAPPDATA).toBe('/test-owned-profile/AppData/Local');
+    expect(Object.keys(environment)).not.toContain('AWS_SECRET_ACCESS_KEY');
+  },
+);
+
 const packagedIntegrationTest =
   process.env.RUN_PACKAGED_PRODUCT_INTEGRATION === '1' ? it : it.skip;
 
