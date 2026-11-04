@@ -458,7 +458,13 @@ export const StudyComposer = ({
     ? formatTurnStatus(activeTurn.status)
     : null;
   const composerStatus = formatComposerStatus(
-    error ? 'error' : saving ? 'saving' : submitting ? 'sending' : 'saved',
+    error
+      ? 'error'
+      : submitting
+        ? 'sending'
+        : saving || text !== savedTextRef.current
+          ? 'saving'
+          : 'saved',
     error,
   );
   const ComposerStatusIcon = composerStatus.Icon;
@@ -739,7 +745,8 @@ export const StudyComposer = ({
           aria-label="Message"
           aria-describedby={
             [
-              error || saving || submitting ? 'study-composer-status' : null,
+              'study-composer-status',
+              error ? 'study-composer-error' : null,
               sendingDisabledReason ? 'study-send-reason' : null,
             ]
               .filter(Boolean)
@@ -804,7 +811,11 @@ export const StudyComposer = ({
                 onCancel: () => {
                   if (mountedRef.current) setProvisionalTranscript(null);
                 },
-                disabled: submitting || Boolean(activeTurnStatus?.isWorking),
+                disabled:
+                  offline ||
+                  offlineFromService ||
+                  submitting ||
+                  Boolean(activeTurnStatus?.isWorking),
               })
             ) : (
               <TooltipWrapper
@@ -828,6 +839,27 @@ export const StudyComposer = ({
             )}
           </div>
           <div className="flex items-center gap-2">
+            <TooltipWrapper content={composerStatus.label}>
+              <span
+                id="study-composer-status"
+                role="status"
+                aria-live="polite"
+                tabIndex={0}
+                className={cn(
+                  'inline-flex items-center',
+                  error ? 'text-destructive' : 'text-muted-foreground',
+                )}
+              >
+                <ComposerStatusIcon
+                  aria-hidden="true"
+                  className={cn(
+                    'size-4 shrink-0',
+                    composerStatus.isWorking && 'motion-safe:animate-spin',
+                  )}
+                />
+                <span className="sr-only">{composerStatus.label}</span>
+              </span>
+            </TooltipWrapper>
             {activeTurnStatus?.isWorking ? (
               <TooltipWrapper content="Stop response">
                 <InputGroupButton
@@ -884,24 +916,13 @@ export const StudyComposer = ({
           {sendingDisabledReason}
         </p>
       )}
-      {(error || saving || submitting) && (
+      {error && (
         <p
-          id="study-composer-status"
-          role="status"
-          aria-live="polite"
-          className={cn(
-            'flex items-center gap-2 text-base',
-            error ? 'text-destructive' : 'text-muted-foreground',
-          )}
+          id="study-composer-error"
+          role="alert"
+          className="text-base text-destructive"
         >
-          <ComposerStatusIcon
-            aria-hidden="true"
-            className={cn(
-              'size-4 shrink-0',
-              composerStatus.isWorking && 'motion-safe:animate-spin',
-            )}
-          />
-          <span>{composerStatus.label}</span>
+          {error}
         </p>
       )}
       {activeTurnStatus?.isWorking && (

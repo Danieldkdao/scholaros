@@ -552,8 +552,9 @@ describe('StudyComposer', () => {
 
     await act(async () => resolveSave({ draftRevision: 1 }));
     await vi.waitFor(() => {
-      expect(node.querySelector('[role="status"]')).toBeNull();
-      expect(node.textContent).not.toContain('Draft saved');
+      expect(
+        node.querySelector('#study-composer-status .sr-only')?.textContent,
+      ).toBe('Draft saved');
     });
     expect(onSaveDraft).toHaveBeenCalledOnce();
   });
@@ -592,7 +593,9 @@ it('keeps the idle composer plain without redundant help or saved indicators', a
   expect(node.textContent).not.toContain(
     'Enter a message or attach a readable file.',
   );
-  expect(node.textContent).not.toContain('Draft saved');
+  expect(
+    node.querySelector('#study-composer-status .sr-only')?.textContent,
+  ).toBe('Draft saved');
   expect(node.querySelector('textarea')?.className).toContain('resize-none');
   expect(node.querySelector('[data-slot="input-group"]')?.className).toContain(
     'border-0',
@@ -601,4 +604,26 @@ it('keeps the idle composer plain without redundant help or saved indicators', a
     node.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')
       ?.disabled,
   ).toBe(true);
+});
+
+it('shows an accessible quiet save icon inside the composer toolbar', async () => {
+  const node = await mount(defaultProps());
+  const status = node.querySelector('#study-composer-status')!;
+  expect(status.closest('[data-slot="input-group-addon"]')).not.toBeNull();
+  expect(status.querySelector('svg')).not.toBeNull();
+  expect(status.querySelector('.sr-only')?.textContent).toBe('Draft saved');
+});
+
+it('disables hosted dictation while the session is offline even with browser connectivity', async () => {
+  let captured: StudyDictationControlProps | undefined;
+  await mount(
+    defaultProps({
+      offline: true,
+      renderDictation: (props) => {
+        captured = props;
+        return null;
+      },
+    }),
+  );
+  expect(captured?.disabled).toBe(true);
 });
