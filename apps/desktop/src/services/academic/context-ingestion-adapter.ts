@@ -1,3 +1,7 @@
+import {
+  documentPageStatuses,
+  documentInterpretationStatuses,
+} from '@scholaros/services/learning/context-contracts';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { net } from 'electron';
@@ -58,25 +62,27 @@ const materialMetadataSchema = z.strictObject({
   version: z.literal(1),
   requestId: z.uuid(),
   configurationRevision: z.string().min(1).max(300),
-  status: z.enum(['complete', 'partial', 'unreadable']),
+  status: z.enum(documentInterpretationStatuses),
   interpretedPages: z.array(z.number().int().positive().max(200)).max(20),
   pages: z
     .array(
       z.strictObject({
         page: z.number().int().positive().max(200),
-        status: z.enum(['readable', 'partial', 'uncertain', 'unreadable']),
+        status: z.enum(documentPageStatuses),
         text: z.string().max(8_000),
         uncertainty: z.string().max(1_000).nullable(),
       }),
     )
     .max(20),
 });
+export type MaterialMetadataSchema = z.infer<typeof materialMetadataSchema>;
 const materialErrorSchema = z.strictObject({
   error: z.strictObject({
     code: z.string().max(100).optional(),
     message: z.string().max(300).optional(),
   }),
 });
+export type MaterialErrorSchema = z.infer<typeof materialErrorSchema>;
 
 type ContextIngestionHostOptions = {
   imageDecoder?: ContextImageDecoder | null;

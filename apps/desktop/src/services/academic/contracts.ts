@@ -319,11 +319,15 @@ export const activityInternalInputSchemas: {
 export const academicReconnectSchema = z.strictObject({
   accountId: z.string().min(1).max(300).nullable(),
 });
+export type AcademicReconnectSchema = z.infer<typeof academicReconnectSchema>;
 export type AcademicReconnect = z.infer<typeof academicReconnectSchema>;
 export type AuthMode = 'online' | 'offline-local';
 export const offlineDeviceReadinessSchema = z.strictObject({
   configured: z.boolean(),
 });
+export type OfflineDeviceReadinessSchema = z.infer<
+  typeof offlineDeviceReadinessSchema
+>;
 export type OfflineDeviceReadiness = z.infer<
   typeof offlineDeviceReadinessSchema
 >;
@@ -331,6 +335,9 @@ export const workspaceReplacementInputSchema = z.strictObject({
   requestId: z.uuid(),
   browserId: z.string().min(1).max(300),
 });
+export type WorkspaceReplacementInputSchema = z.infer<
+  typeof workspaceReplacementInputSchema
+>;
 export type WorkspaceReplacementInput = z.infer<
   typeof workspaceReplacementInputSchema
 >;
@@ -338,12 +345,18 @@ export const workspaceReplacementCommitInputSchema = z.strictObject({
   operationId: z.uuid(),
   expectedRevision: z.number().int().nonnegative().safe(),
 });
+export type WorkspaceReplacementCommitInputSchema = z.infer<
+  typeof workspaceReplacementCommitInputSchema
+>;
 export type WorkspaceReplacementCommitInput = z.infer<
   typeof workspaceReplacementCommitInputSchema
 >;
 export const workspaceReplacementCancelInputSchema = z.strictObject({
   operationId: z.uuid(),
 });
+export type WorkspaceReplacementCancelInputSchema = z.infer<
+  typeof workspaceReplacementCancelInputSchema
+>;
 export type WorkspaceReplacementCancelInput = z.infer<
   typeof workspaceReplacementCancelInputSchema
 >;
@@ -351,6 +364,9 @@ export const deleteLocalAcademicDataInputSchema = z.strictObject({
   requestId: z.uuid(),
   scope: z.literal('account-local'),
 });
+export type DeleteLocalAcademicDataInputSchema = z.infer<
+  typeof deleteLocalAcademicDataInputSchema
+>;
 export type DeleteLocalAcademicDataInput = z.infer<
   typeof deleteLocalAcademicDataInputSchema
 >;
@@ -359,6 +375,9 @@ export const contextFileSelectionSchema = z.strictObject({
   courseId: z.string().min(1).max(300).optional(),
   saveToLibrary: z.boolean(),
 });
+export type ContextFileSelectionSchema = z.infer<
+  typeof contextFileSelectionSchema
+>;
 export type ContextFileSelectionInput = z.infer<
   typeof contextFileSelectionSchema
 >;
@@ -368,6 +387,9 @@ export const registerSelectedContextFilesInputSchema = z.strictObject({
   courseId: z.string().min(1).max(300).optional(),
   saveToLibrary: z.boolean(),
 });
+export type RegisterSelectedContextFilesInputSchema = z.infer<
+  typeof registerSelectedContextFilesInputSchema
+>;
 export type RegisterSelectedContextFilesInput = z.infer<
   typeof registerSelectedContextFilesInputSchema
 >;
@@ -383,6 +405,9 @@ export const contextFileSelectionResultSchema = z.strictObject({
     .max(8),
   cancelled: z.boolean(),
 });
+export type ContextFileSelectionResultSchema = z.infer<
+  typeof contextFileSelectionResultSchema
+>;
 export type ContextFileSelectionResult = z.infer<
   typeof contextFileSelectionResultSchema
 >;
@@ -462,10 +487,16 @@ export const internalLearningInputSchemas: {
 export const requestMicrophonePermissionSchema = z.strictObject({
   sessionId: z.string().min(1).max(300),
 });
+export type RequestMicrophonePermissionSchema = z.infer<
+  typeof requestMicrophonePermissionSchema
+>;
 export type RequestMicrophonePermissionInput = z.infer<
   typeof requestMicrophonePermissionSchema
 >;
 export const requestNotificationPermissionSchema = z.strictObject({});
+export type RequestNotificationPermissionSchema = z.infer<
+  typeof requestNotificationPermissionSchema
+>;
 export type RequestNotificationPermissionInput = z.infer<
   typeof requestNotificationPermissionSchema
 >;
