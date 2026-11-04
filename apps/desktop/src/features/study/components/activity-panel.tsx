@@ -57,6 +57,12 @@ export const ActivityPanel = ({ children, className }: ActivityPanelProps) => {
   );
 
   useLayoutEffect(() => {
+    // A removed or withheld message can unmount the portal owner.
+    if (activeActivityId && panelTarget && !panelTarget.hasChildNodes())
+      setActiveActivity(null);
+  }, [activeActivityId, children, panelTarget]);
+
+  useLayoutEffect(() => {
     const element = rootRef.current;
     if (!element) return;
     const updateLayout = (width: number) => setLayout(getActivityLayout(width));

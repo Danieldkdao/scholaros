@@ -1,11 +1,4 @@
-import {
-  createContext,
-  useContext,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from 'react';
+import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import type { ComponentType, ReactNode } from 'react';
 import { Link } from '@tanstack/react-router';
 import {
@@ -20,7 +13,6 @@ import {
   FileTextIcon,
   SparklesIcon,
   TriangleAlertIcon,
-  XIcon,
 } from 'lucide-react';
 import type {
   MessagePart,
@@ -54,12 +46,8 @@ import {
   MessageScrollerViewport,
 } from '@scholaros/ui/components/message-scroller';
 import { Skeleton } from '@scholaros/ui/components/skeleton';
-import {
-  ResizableHandle,
-  ResizablePanel,
-  ResizablePanelGroup,
-} from '@scholaros/ui/components/resizable';
 import { TooltipWrapper } from '@scholaros/ui/components/tooltip-wrapper';
+import { ActivityPanel } from './activity-panel';
 import type { StudyDictationControlProps } from './study-composer';
 import { StudyComposer } from './study-composer';
 import { StudyMessage } from './study-message';
@@ -75,6 +63,7 @@ import {
 type ActivityHostProps = {
   accountId: string;
   sessionId: string;
+  courseId: string;
   artifactId: string;
   versionId: string;
   attemptId: string;
@@ -116,11 +105,6 @@ type StudyDocumentProps = {
 type SessionStatusPresentation = {
   label: string;
   Icon: typeof CircleCheckIcon;
-};
-type ExpandedActivity = {
-  key: string;
-  message: StudyMessageDTO;
-  part: Extract<MessagePart, { kind: 'activity' }>;
 };
 
 const StudyDocumentRenderersContext =
@@ -282,12 +266,6 @@ export const StudyDocument = ({
     null,
   );
   const [progressOpen, setProgressOpen] = useState(false);
-  const [expandedActivityKey, setExpandedActivityKey] = useState<string | null>(
-    null,
-  );
-  const [isNarrowLayout, setIsNarrowLayout] = useState(false);
-  const activityHeadingRef = useRef<HTMLHeadingElement>(null);
-  const returnFocusActivityKeyRef = useRef<string | null>(null);
   const snapshot = study.snapshot;
   const session = snapshot?.session;
 
@@ -295,18 +273,7 @@ export const StudyDocument = ({
     setSourcesOpen(false);
     setSelectedSource(null);
     setProgressOpen(false);
-    setExpandedActivityKey(null);
-    returnFocusActivityKeyRef.current = null;
   }, [accountId, sessionId]);
-
-  useEffect(() => {
-    if (typeof window.matchMedia !== 'function') return;
-    const query = window.matchMedia('(max-width: 1023px)');
-    const updateLayout = () => setIsNarrowLayout(query.matches);
-    updateLayout();
-    query.addEventListener('change', updateLayout);
-    return () => query.removeEventListener('change', updateLayout);
-  }, []);
 
   const messages = useMemo(
     () =>
@@ -337,29 +304,6 @@ export const StudyDocument = ({
       ),
     [gradeContentVisible, sourceMessages, snapshot?.sourceReferences],
   );
-  const expandedActivity = useMemo(() => {
-    if (!expandedActivityKey) return null;
-    for (const message of messages) {
-      if (
-        message.gradeDerived &&
-        (!gradeContentVisible ||
-          message.gradeConsentRevision !== study.gradeSettings?.revision)
-      )
-        continue;
-      for (const part of message.parts) {
-        if (
-          part.kind === 'activity' &&
-          activityKey(message.id, part) === expandedActivityKey
-        )
-          return {
-            key: expandedActivityKey,
-            message,
-            part,
-          } satisfies ExpandedActivity;
-      }
-    }
-    return null;
-  }, [expandedActivityKey, gradeContentVisible, messages, study.gradeSettings]);
   const failedTurnMessage = [...messages]
     .reverse()
     .find(
@@ -382,24 +326,6 @@ export const StudyDocument = ({
   const DictationControl = renderers?.DictationControl;
   const ProgressSummary = renderers?.ProgressSummary;
 
-  useEffect(() => {
-    if (expandedActivityKey && !expandedActivity) setExpandedActivityKey(null);
-  }, [expandedActivityKey, expandedActivity]);
-
-  useEffect(() => {
-    if (expandedActivityKey) activityHeadingRef.current?.focus();
-    else if (returnFocusActivityKeyRef.current) {
-      const targetKey = returnFocusActivityKeyRef.current;
-      const expandButton = [
-        ...document.querySelectorAll<HTMLButtonElement>(
-          'button[data-study-activity-key]',
-        ),
-      ].find((button) => button.dataset.studyActivityKey === targetKey);
-      expandButton?.focus();
-      returnFocusActivityKeyRef.current = null;
-    }
-  }, [expandedActivityKey]);
-
   if (study.loading && !snapshot) return <LoadingStudyDocument />;
   if (!snapshot || !session) {
     return (
@@ -415,53 +341,18 @@ export const StudyDocument = ({
     if (part.kind === 'activity') {
       const ActivityHost = renderers?.ActivityHost;
       if (!ActivityHost) return null;
-      const key = activityKey(message.id, part);
-      if (expandedActivityKey === key) {
-        return (
-          <p className="flex flex-wrap items-center gap-2 text-base text-muted-foreground">
-            This activity is open in the study panel.
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              aria-label={`Collapse activity ${part.artifactId}`}
-              aria-expanded="true"
-              aria-controls="study-activity-panel"
-              onClick={() => setExpandedActivityKey(null)}
-            >
-              Return to inline view
-            </Button>
-          </p>
-        );
-      }
       return (
-        <div className="flex min-w-0 flex-col gap-2">
-          <ActivityHost
-            key={key}
-            accountId={accountId}
-            sessionId={sessionId}
-            artifactId={part.artifactId}
-            versionId={part.versionId}
-            attemptId={part.attemptId}
-            presentation="inline"
-            readOnly={readOnly}
-          />
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            aria-label={`Expand activity ${part.artifactId}`}
-            aria-expanded="false"
-            aria-controls="study-activity-panel"
-            data-study-activity-key={key}
-            onClick={() => {
-              returnFocusActivityKeyRef.current = key;
-              setExpandedActivityKey(key);
-            }}
-          >
-            Expand activity
-          </Button>
-        </div>
+        <ActivityHost
+          key={activityKey(message.id, part)}
+          accountId={accountId}
+          sessionId={sessionId}
+          courseId={session.courseId}
+          artifactId={part.artifactId}
+          versionId={part.versionId}
+          attemptId={part.attemptId}
+          presentation="inline"
+          readOnly={readOnly}
+        />
       );
     }
     if (part.kind === 'practice') {
@@ -703,70 +594,9 @@ export const StudyDocument = ({
         aria-label="Study conversation"
         className="flex min-h-0 flex-1 flex-col"
       >
-        <ResizablePanelGroup
-          orientation={isNarrowLayout ? 'vertical' : 'horizontal'}
-          className="min-h-0 flex-1"
-        >
-          <ResizablePanel
-            id="study-conversation-panel"
-            defaultSize={
-              expandedActivity ? (isNarrowLayout ? '55%' : '68%') : '100%'
-            }
-            minSize={isNarrowLayout ? '30%' : '50%'}
-            className="min-h-0"
-          >
-            {conversation}
-          </ResizablePanel>
-          {expandedActivity && renderers?.ActivityHost && (
-            <>
-              <ResizableHandle withHandle />
-              <ResizablePanel
-                id="study-activity-panel"
-                defaultSize={isNarrowLayout ? '45%' : '32%'}
-                minSize={isNarrowLayout ? '28%' : '22%'}
-                className="min-h-0"
-              >
-                <aside
-                  className="flex h-full min-h-0 flex-col gap-3 overflow-hidden p-3"
-                  aria-label="Expanded learning activity"
-                >
-                  <header className="flex shrink-0 items-center justify-between gap-3 border-b pb-3">
-                    <h2
-                      ref={activityHeadingRef}
-                      tabIndex={-1}
-                      className="text-lg font-semibold outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
-                    >
-                      Interactive activity
-                    </h2>
-                    <Button
-                      type="button"
-                      size="icon"
-                      variant="ghost"
-                      aria-label="Collapse activity panel"
-                      aria-expanded="true"
-                      aria-controls="study-activity-panel"
-                      onClick={() => setExpandedActivityKey(null)}
-                    >
-                      <XIcon aria-hidden="true" />
-                    </Button>
-                  </header>
-                  <div className="min-h-0 flex-1 overflow-auto">
-                    <renderers.ActivityHost
-                      key={expandedActivity.key}
-                      accountId={accountId}
-                      sessionId={sessionId}
-                      artifactId={expandedActivity.part.artifactId}
-                      versionId={expandedActivity.part.versionId}
-                      attemptId={expandedActivity.part.attemptId}
-                      presentation="expanded"
-                      readOnly={readOnly}
-                    />
-                  </div>
-                </aside>
-              </ResizablePanel>
-            </>
-          )}
-        </ResizablePanelGroup>
+        <ActivityPanel key={`${accountId}:${sessionId}`} className="flex-1">
+          {conversation}
+        </ActivityPanel>
       </section>
       <StudyComposer
         key={`${accountId}:${sessionId}:composer`}

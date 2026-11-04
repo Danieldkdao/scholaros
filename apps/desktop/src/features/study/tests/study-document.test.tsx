@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, createElement, type ReactNode } from 'react';
+import { act, createElement, useEffect, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -25,6 +25,11 @@ import type { ProductEventV1 } from '@scholaros/services/learning/product-contra
 import type { CurrentUser } from '../../onboarding/types';
 import type { CourseDetail } from '../../courses/types';
 import { PracticeView as ActualPracticeView } from '../../practice/components/practice-view';
+import { ActivityHost as ActualActivityHost } from '../components/activity-host';
+import type {
+  ActivityHostBridge,
+  ActivityRuntimeChange,
+} from '../hooks/use-activity-host';
 
 vi.mock('@tanstack/react-router', () => ({
   Link: ({
@@ -324,6 +329,51 @@ const mountDocument = async (
 const click = async (button: HTMLButtonElement) =>
   act(async () => button.click());
 
+const activityBridge = () => {
+  let nextRun = 0;
+  const listeners = new Map<string, (event: ActivityRuntimeChange) => void>();
+  const value: ActivityHostBridge = {
+    getArtifactVersion: vi.fn(async ({ artifactId, versionId }) => ({
+      artifactId,
+      versionId,
+      title: `Graph ${artifactId}`,
+      objective: 'Explore how slope changes a line.',
+      runtimeVersion: 1,
+      contentDigest: 'digest-1',
+      createdAt: '2026-11-03T12:00:00.000Z',
+      sourceReferences: [],
+      available: true,
+    })),
+    getArtifactState: vi.fn(async ({ artifactId, versionId, attemptId }) => ({
+      artifactId,
+      versionId,
+      attemptId,
+      stateRevision: 2,
+      state: { inputs: { slope: 2 } },
+      updatedAt: '2026-11-03T12:00:00.000Z',
+    })),
+    mountActivity: vi.fn(async () => ({ runId: `run-${++nextRun}` })),
+    updateActivityBounds: vi.fn(async () => undefined),
+    closeActivity: vi.fn(async () => undefined),
+    onActivityChange: vi.fn((runId, listener) => {
+      listeners.set(runId, listener);
+      return () => {
+        listeners.delete(runId);
+      };
+    }),
+    retryActivityCheckpoint: vi.fn(async () => undefined),
+    resetArtifactAttempt: vi.fn(),
+    saveArtifactToContext: vi.fn(async () =>
+      makeContextItem({ kind: 'activity' }),
+    ),
+  };
+  Object.assign(window.scholar, value);
+  return {
+    value,
+    emit: (event: ActivityRuntimeChange) => listeners.get(event.runId)?.(event),
+  };
+};
+
 const drain = async () => {
   for (let hop = 0; hop < 8; hop += 1) await Promise.resolve();
 };
@@ -358,6 +408,7 @@ afterEach(() => {
   act(() => root?.unmount());
   root = undefined;
   document.body.replaceChildren();
+  vi.restoreAllMocks();
 });
 
 describe('StudyDocument', () => {
@@ -520,12 +571,198 @@ describe('StudyDocument', () => {
     ).toBe('Keep this draft through expiry');
   });
 
-  it('moves one activity host into a resizable panel and restores focus on collapse', async () => {
+  it.each([
+    {
+      width: 1000,
+      readOnly: false,
+      reducedMotion: false,
+      layout: 'side-by-side',
+    },
+    { width: 680, readOnly: false, reducedMotion: true, layout: 'stacked' },
+    {
+      width: 1000,
+      readOnly: true,
+      reducedMotion: true,
+      layout: 'side-by-side',
+    },
+    { width: 680, readOnly: true, reducedMotion: false, layout: 'stacked' },
+  ])(
+    'keeps each chronological activity mounted across expansion in $layout readOnly=$readOnly reducedMotion=$reducedMotion',
+    async ({ width, readOnly, reducedMotion, layout }) => {
+      const matchMedia = window.matchMedia;
+      vi.spyOn(window, 'matchMedia').mockImplementation((query) => ({
+        ...matchMedia(query),
+        matches: reducedMotion && query === '(prefers-reduced-motion: reduce)',
+      }));
+      vi.spyOn(
+        HTMLElement.prototype,
+        'getBoundingClientRect',
+      ).mockImplementation(function (this: HTMLElement) {
+        if (this.hasAttribute('data-activity-runtime-slot')) {
+          return this.closest('[data-activity-panel-target]')
+            ? new DOMRect(40, 400, 600, 300)
+            : new DOMRect(40, 80, 500, 300);
+        }
+        return new DOMRect(0, 0, width, 800);
+      });
+      const messages = ['artifact-1', 'artifact-2'].map((artifactId, index) =>
+        message(`message-${index + 1}`, index + 1, 'tutor', [
+          { kind: 'text', text: `Before ${artifactId}` },
+          {
+            kind: 'activity',
+            artifactId,
+            versionId: 'v1',
+            attemptId: 'attempt-1',
+          },
+          { kind: 'text', text: `After ${artifactId}` },
+        ]),
+      );
+      const currentBridge = bridge(vi.fn(async () => snapshot({ messages })));
+      const runtime = activityBridge();
+      const mounted = vi.fn();
+      const unmounted = vi.fn();
+      const TrackedActivityHost: NonNullable<
+        StudyDocumentRenderers['ActivityHost']
+      > = (props) => {
+        useEffect(() => {
+          mounted(props.artifactId);
+          return () => {
+            unmounted(props.artifactId);
+          };
+        }, [props.artifactId]);
+        return createElement(ActualActivityHost, props);
+      };
+      const { container } = await mountDocument({ readOnly }, currentBridge, {
+        ...renderers,
+        ActivityHost: TrackedActivityHost,
+      });
+      await vi.waitFor(() =>
+        expect(runtime.value.mountActivity).toHaveBeenCalledTimes(2),
+      );
+      const cards = [
+        ...container.querySelectorAll<HTMLElement>('[data-activity-host]'),
+      ];
+      const runIds = cards.map((card) => card.dataset.runtime);
+      expect(runIds.every((runId) => runId && runId !== 'closed')).toBe(true);
+      expect(new Set(runIds).size).toBe(2);
+      const composer = container.querySelector('textarea');
+      const history = container.querySelector(
+        '[aria-label="Conversation history"]',
+      )!;
+      Object.defineProperty(history, 'scrollTop', {
+        configurable: true,
+        writable: true,
+        value: 120,
+      });
+      history.setAttribute('style', 'overflow-y: auto');
+      await act(async () =>
+        runtime.emit({
+          runId: runIds[0]!,
+          sessionId: 'session-1',
+          artifactId: 'artifact-1',
+          versionId: 'v1',
+          attemptId: 'attempt-1',
+          kind: 'checkpoint-acknowledged',
+          stateRevision: 3,
+        }),
+      );
+
+      for (const index of [0, 1, 0]) {
+        const messageElement = container.querySelector(
+          `[data-message-id="message-${index + 1}"]`,
+        )!;
+        const expand = [
+          ...messageElement.querySelectorAll<HTMLButtonElement>(
+            'button[aria-label^="Expand activity"]',
+          ),
+        ].at(-1)!;
+        await act(async () => expand.focus());
+        await click(expand);
+        await act(
+          async () => new Promise((resolve) => setTimeout(resolve, 80)),
+        );
+        expect(messageElement.querySelector('[data-activity-host]')).toBe(
+          cards[index],
+        );
+        expect(mounted).toHaveBeenCalledTimes(2);
+        expect(unmounted).not.toHaveBeenCalled();
+        const target = container.querySelector('[data-activity-panel-target]')!;
+        expect(
+          target.querySelector('[data-activity-runtime-slot]'),
+        ).not.toBeNull();
+        expect(
+          container
+            .querySelector('[data-activity-panel]')
+            ?.getAttribute('data-layout'),
+        ).toBe(layout);
+        expect(
+          container
+            .querySelector('[data-slot="resizable-handle"]')
+            ?.getAttribute('aria-orientation'),
+        ).toBe(layout === 'stacked' ? 'horizontal' : 'vertical');
+        const collapse = target.querySelector<HTMLButtonElement>(
+          'button[aria-label="Collapse activity"]',
+        )!;
+        await vi.waitFor(() => expect(document.activeElement).toBe(collapse));
+        await vi.waitFor(() =>
+          expect(runtime.value.updateActivityBounds).toHaveBeenCalledWith({
+            runId: runIds[index],
+            bounds: { x: 40, y: 400, width: 600, height: 300 },
+            visible: true,
+          }),
+        );
+        if (index === 0)
+          expect(target.textContent).toContain('Saved progress: revision 3');
+        expect(history.scrollTop).toBe(120);
+        await click(collapse);
+        await act(
+          async () => new Promise((resolve) => setTimeout(resolve, 80)),
+        );
+        await vi.waitFor(() => expect(document.activeElement).toBe(expand));
+        expect(
+          cards[index]?.querySelector('[data-activity-runtime-slot]'),
+        ).not.toBeNull();
+        expect(cards[index]?.dataset.runtime).toBe(runIds[index]);
+        expect(
+          container.querySelector('[data-activity-panel-target]'),
+        ).toBeNull();
+        expect(container.querySelectorAll('[data-activity-host]')).toHaveLength(
+          2,
+        );
+        expect(runtime.value.mountActivity).toHaveBeenCalledTimes(2);
+        expect(runtime.value.closeActivity).not.toHaveBeenCalled();
+        expect(runtime.value.getArtifactState).toHaveBeenCalledTimes(2);
+        expect(history.scrollTop).toBe(120);
+        expect(container.querySelector('textarea')).toBe(composer);
+      }
+      expect(
+        vi
+          .mocked(runtime.value.mountActivity)
+          .mock.calls.every(([input]) => input.readOnly === readOnly),
+      ).toBe(true);
+      if (readOnly)
+        expect(
+          container.querySelector('[aria-label^="Activity options"]'),
+        ).toBeNull();
+      expect(runtime.value.saveArtifactToContext).not.toHaveBeenCalled();
+      expect(runtime.value.resetArtifactAttempt).not.toHaveBeenCalled();
+      await act(async () => {
+        root?.unmount();
+        root = undefined;
+      });
+      expect(unmounted).toHaveBeenCalledTimes(2);
+      expect(runtime.value.closeActivity).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it('saves the real activity to the authorized session course from inline and expanded views', async () => {
     const currentBridge = bridge(
       vi.fn(async () =>
         snapshot({
+          session: session({ courseId: 'authorized-course' }),
           messages: [
             message('message-1', 1, 'tutor', [
+              { kind: 'citation', reference: sourceReference },
               {
                 kind: 'activity',
                 artifactId: 'artifact-1',
@@ -537,52 +774,44 @@ describe('StudyDocument', () => {
         }),
       ),
     );
-    const { container } = await mountDocument({}, currentBridge);
+    const runtime = activityBridge();
+    const { container } = await mountDocument({}, currentBridge, {
+      ...renderers,
+      ActivityHost: ActualActivityHost,
+    });
     await vi.waitFor(() =>
-      expect(
-        container.querySelector('[data-presentation="inline"]'),
-      ).not.toBeNull(),
-    );
-    const expandButton = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Expand activity artifact-1"]',
-    )!;
-    await click(expandButton);
-
-    await vi.waitFor(() =>
-      expect(
-        container.querySelector('[data-presentation="expanded"]'),
-      ).not.toBeNull(),
-    );
-    expect(
-      container.querySelectorAll('[data-slot="test-activity"]'),
-    ).toHaveLength(1);
-    expect(
-      container.querySelector(
-        '[data-slot="resizable-panel-group"] [aria-orientation]',
-      ),
-    ).not.toBeNull();
-    expect(document.activeElement?.textContent).toContain(
-      'Interactive activity',
+      expect(container.textContent).toContain('Graph artifact-1'),
     );
 
-    await click(
-      container.querySelector<HTMLButtonElement>(
-        'button[aria-label="Collapse activity panel"]',
-      )!,
-    );
-    await vi.waitFor(() =>
-      expect(
-        container.querySelector('[data-presentation="inline"]'),
-      ).not.toBeNull(),
-    );
-    expect(
-      container.querySelectorAll('[data-slot="test-activity"]'),
-    ).toHaveLength(1);
-    expect(document.activeElement).toBe(
-      container.querySelector(
-        'button[aria-label="Expand activity artifact-1"]',
-      ),
-    );
+    for (const expanded of [false, true]) {
+      if (expanded)
+        await click(
+          container.querySelector<HTMLButtonElement>(
+            '[aria-label="Expand activity"]',
+          )!,
+        );
+      const view = expanded
+        ? container.querySelector('[data-activity-panel-target]')!
+        : container;
+      await click(
+        view.querySelector<HTMLButtonElement>(
+          '[aria-label="Activity options for Graph artifact-1"]',
+        )!,
+      );
+      const saveToCourse = [
+        ...document.querySelectorAll<HTMLElement>('[role="menuitem"]'),
+      ].find((item) => item.textContent?.includes('Save to course'))!;
+      expect(saveToCourse).toBeDefined();
+      expect(saveToCourse.getAttribute('aria-disabled')).not.toBe('true');
+      await act(async () => saveToCourse.click());
+      expect(runtime.value.saveArtifactToContext).toHaveBeenLastCalledWith({
+        artifactId: 'artifact-1',
+        versionId: 'v1',
+        courseId: 'authorized-course',
+        requestId: expect.any(String),
+      });
+    }
+    expect(runtime.value.saveArtifactToContext).toHaveBeenCalledTimes(2);
   });
 
   it('fails closed when a message attachment can no longer resolve its source', async () => {

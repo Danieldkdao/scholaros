@@ -190,7 +190,7 @@ it('keeps one native run and one accepted attempt across repeated expand and col
   const expand = node.querySelector<HTMLButtonElement>(
     '[aria-label="Expand activity"]',
   )!;
-  expand.focus();
+  await act(async () => expand.focus());
   await act(async () => expand.click());
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 80));
@@ -229,6 +229,30 @@ it('keeps one native run and one accepted attempt across repeated expand and col
   expect(document.activeElement).toBe(
     node.querySelector<HTMLButtonElement>('[aria-label="Expand activity"]'),
   );
+});
+
+it('removes the expanded panel when its activity is no longer in the conversation', async () => {
+  const { bridge } = createBridge();
+  const node = await renderActivity(bridge, { presentation: 'expanded' });
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 80)));
+  expect(node.querySelector('[data-activity-panel-target]')).not.toBeNull();
+
+  await act(async () =>
+    roots
+      .at(-1)
+      ?.root.render(
+        createElement(
+          ActivityPanel,
+          null,
+          createElement('p', null, 'Activity withheld'),
+        ),
+      ),
+  );
+
+  expect(node.querySelector('[data-activity-panel-target]')).toBeNull();
+  expect(node.querySelector('[data-slot="resizable-handle"]')).toBeNull();
+  expect(node.textContent).toContain('Activity withheld');
+  expect(bridge.closeActivity).toHaveBeenCalledWith({ runId: 'run-1' });
 });
 
 it('allows collapsing an initially expanded activity without restarting its run', async () => {
