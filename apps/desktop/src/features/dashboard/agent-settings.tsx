@@ -9,12 +9,14 @@ import type { ReactNode } from 'react';
 import { CircleAlert, CircleCheck, Loader2 } from 'lucide-react';
 import { Input } from '@scholaros/ui/components/input';
 import { Textarea } from '@scholaros/ui/components/textarea';
+import { cn } from '@scholaros/ui/lib/utils';
 import { settingsUpdateSchema } from '../onboarding/schemas';
 import type { SettingsUpdateSchema } from '../onboarding/schemas';
 import {
   getSettingsSaveState,
   queueSettingsSave,
   reconcileSettingsSaveDraft,
+  settingsUpdateFromSaveDraft,
   subscribeSettingsSaveState,
 } from './settings-save-queue';
 
@@ -37,12 +39,14 @@ export const AgentSettings = ({
   blockedWords,
   onSave,
   children,
+  showSaveStatus = true,
 }: {
   accountId: string;
   decisionTimeSeconds: number;
   blockedWords: string[];
   onSave: (changes: SettingsUpdateSchema) => Promise<void>;
   children?: ReactNode;
+  showSaveStatus?: boolean;
 }) => {
   const [seconds, setSeconds] = useState(() =>
     String(
@@ -95,20 +99,26 @@ export const AgentSettings = ({
     decisionTimeSeconds: Number(seconds),
   }).success;
   const save = (changes: SettingsUpdateSchema) => {
-    void queueSettingsSave(accountId, changes, () => onSave(changes)).catch(
-      () => undefined,
-    );
+    void queueSettingsSave(accountId, changes, (draft) =>
+      onSave(settingsUpdateFromSaveDraft(draft)),
+    ).catch(() => undefined);
   };
+  const navigationSaveState = sharedSaveState.groups.navigation;
   const visibleStatus: SaveStatus =
-    sharedSaveState.pending > 0
+    (navigationSaveState?.pending ?? 0) > 0
       ? 'saving'
-      : sharedSaveState.error
+      : navigationSaveState?.error
         ? 'error'
         : 'saved';
-  const visibleFailure = sharedSaveState.error;
+  const visibleFailure = navigationSaveState?.error;
   const { label, Icon } = formatSaveStatus(visibleStatus);
   return (
-    <div className="flex items-start gap-8">
+    <div
+      className={cn(
+        'flex',
+        showSaveStatus ? 'items-start gap-8' : 'flex-col gap-6',
+      )}
+    >
       <div className="flex w-full max-w-2xl flex-col gap-6">
         <div className="flex flex-col gap-2">
           <label htmlFor="decision-time" className="font-medium">
@@ -191,17 +201,26 @@ export const AgentSettings = ({
         </div>
         {children}
       </div>
-      <aside
-        role="status"
-        aria-live="polite"
-        className="sticky top-0 flex w-64 shrink-0 flex-col gap-2 text-base text-muted-foreground"
-      >
-        <span className="flex items-center gap-2">
-          <Icon className="size-5" />
-          {label}
-        </span>
-        {visibleFailure && <p className="text-destructive">{visibleFailure}</p>}
-      </aside>
+      {showSaveStatus && (
+        <aside
+          role="status"
+          aria-live="polite"
+          className="sticky top-0 flex w-64 shrink-0 flex-col gap-2 text-base text-muted-foreground"
+        >
+          <span className="flex items-center gap-2">
+            <Icon
+              className={cn(
+                'size-5',
+                visibleStatus === 'saving' && 'motion-safe:animate-spin',
+              )}
+            />
+            {label}
+          </span>
+          {visibleFailure && (
+            <p className="text-destructive">{visibleFailure}</p>
+          )}
+        </aside>
+      )}
     </div>
   );
 };

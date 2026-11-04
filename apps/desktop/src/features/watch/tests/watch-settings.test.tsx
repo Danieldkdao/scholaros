@@ -2,7 +2,10 @@
 import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { expect, it, vi } from 'vitest';
-import type { WatchSettings as WatchSettingsValue } from '../types';
+import type {
+  WatchHealthSummary,
+  WatchSettings as WatchSettingsValue,
+} from '../types';
 import { WatchSettings } from '../components/watch-settings';
 
 vi.mock('@tanstack/react-router', () => ({
@@ -29,6 +32,7 @@ const mount = async (
   connections = [connection],
   accountId = `student-${crypto.randomUUID()}`,
   focusOnMount = false,
+  health: WatchHealthSummary | null = null,
 ) => {
   const container = document.createElement('div');
   document.body.append(container);
@@ -40,6 +44,7 @@ const mount = async (
         settings,
         connections,
         status: 'off',
+        health,
         onSave,
         focusOnMount,
       }),
@@ -131,9 +136,11 @@ it('adds a validated custom URL, replaces defaults, and restores input focus', a
     watchUrls: ['https://canvas.school.edu/courses/biology/assignments'],
   });
   expect(container.textContent).not.toContain('Default');
-  expect(container.textContent).toContain(
-    'canvas.school.edu/courses/biology/assignments',
-  );
+  expect(
+    container.querySelector<HTMLInputElement>(
+      'input[aria-label^="Course page URL https"]',
+    )?.value,
+  ).toBe('https://canvas.school.edu/courses/biology/assignments');
   expect(document.activeElement).toBe(input);
   await act(async () => root.unmount());
 });
@@ -178,25 +185,127 @@ it('removes the last custom URL to return to default targets', async () => {
   await act(async () => root.unmount());
 });
 
-it('hides configuration while disabled and keeps custom URLs for re-enabling', async () => {
-  const customUrl = 'https://canvas.school.edu/courses/biology/assignments';
+it('keeps disable available when every course connection is ineligible', async () => {
   const save = vi.fn(async (next: WatchSettingsValue) => next);
   const { container, root } = await mount(
-    { watchEnabled: true, watchUrls: [customUrl] },
+    { watchEnabled: true, watchUrls: [] },
     save,
+    [],
   );
   const toggle = container.querySelector('[role="switch"]')!;
+
+  expect(toggle.hasAttribute('disabled')).toBe(false);
+  expect(toggle.getAttribute('aria-disabled')).not.toBe('true');
   await click(toggle);
   await vi.waitFor(() => expect(save).toHaveBeenCalledOnce());
+  expect(save).toHaveBeenCalledWith({ watchEnabled: false, watchUrls: [] });
+
+  await act(async () => root.unmount());
+});
+
+it('edits a saved custom URL and autosaves the replacement', async () => {
+  const originalUrl = 'https://canvas.school.edu/courses/biology';
+  const updatedUrl = 'https://canvas.school.edu/courses/chemistry';
+  const save = vi.fn(async (next: WatchSettingsValue) => next);
+  const { container, root } = await mount(
+    { watchEnabled: true, watchUrls: [originalUrl] },
+    save,
+  );
+  const input = container.querySelector<HTMLInputElement>(
+    `input[aria-label="Course page URL ${originalUrl}"]`,
+  )!;
+
+  await changeInput(input, updatedUrl);
+  await act(async () =>
+    input.dispatchEvent(new FocusEvent('focusout', { bubbles: true })),
+  );
+  await vi.waitFor(() => expect(save).toHaveBeenCalledOnce());
+
   expect(save).toHaveBeenCalledWith({
-    watchEnabled: false,
-    watchUrls: [customUrl],
+    watchEnabled: true,
+    watchUrls: [updatedUrl],
   });
   expect(
-    container.querySelector('[aria-label="Custom course pages"]'),
-  ).toBeNull();
-  await click(container.querySelector('[role="switch"]')!);
-  await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(2));
-  expect(container.querySelector(`[title="${customUrl}"]`)).not.toBeNull();
+    container.querySelector<HTMLInputElement>(
+      'input[aria-label^="Course page URL https"]',
+    )?.value,
+  ).toBe(updatedUrl);
+  await act(async () => root.unmount());
+});
+
+it('keeps an invalid edit inline without replacing the saved custom URL', async () => {
+  const originalUrl = 'https://canvas.school.edu/courses/biology';
+  const save = vi.fn(async (next: WatchSettingsValue) => next);
+  const { container, root } = await mount(
+    { watchEnabled: true, watchUrls: [originalUrl] },
+    save,
+  );
+  const input = container.querySelector<HTMLInputElement>(
+    `input[aria-label="Course page URL ${originalUrl}"]`,
+  )!;
+
+  await changeInput(input, 'http://127.0.0.1/admin');
+  await act(async () =>
+    input.dispatchEvent(new FocusEvent('focusout', { bubbles: true })),
+  );
+
+  expect(container.textContent).toContain('secure public HTTPS');
+  expect(save).not.toHaveBeenCalled();
+  expect(
+    container.querySelector<HTMLInputElement>(
+      `input[aria-label="Course page URL ${originalUrl}"]`,
+    )?.value,
+  ).toBe('http://127.0.0.1/admin');
+
+  await act(async () => root.unmount());
+});
+
+it('lets students remove saved custom URLs while watching is off and no connection is eligible', async () => {
+  const customUrl = 'https://canvas.school.edu/courses/biology';
+  const save = vi.fn(async (next: WatchSettingsValue) => next);
+  const { container, root } = await mount(
+    { watchEnabled: false, watchUrls: [customUrl] },
+    save,
+    [],
+  );
+
+  expect(
+    container.querySelector(`[aria-label="Remove ${customUrl}"]`),
+  ).not.toBeNull();
+  await click(container.querySelector(`[aria-label="Remove ${customUrl}"]`)!);
+  await vi.waitFor(() => expect(save).toHaveBeenCalledOnce());
+  expect(save).toHaveBeenCalledWith({ watchEnabled: false, watchUrls: [] });
+
+  await act(async () => root.unmount());
+});
+
+it('shows bounded durable pending, last-check, retry and failure-category health', async () => {
+  const health: WatchHealthSummary = {
+    status: 'blocked',
+    pendingRevisionCount: 2,
+    oldestPendingSince: new Date(Date.now() - 5 * 60_000).toISOString(),
+    oldestPendingSinceEstimated: false,
+    lastSuccessfulCheckAt: '2026-11-03T10:00:00.000Z',
+    nextRetryAt: '2026-11-03T10:05:00.000Z',
+    failures: [{ category: 'network', targetCount: 1 }],
+  };
+  const { container, root } = await mount(
+    { watchEnabled: true, watchUrls: [] },
+    undefined,
+    [connection],
+    `health-${crypto.randomUUID()}`,
+    false,
+    health,
+  );
+
+  expect(
+    container.querySelectorAll('[data-slot="card"]').length,
+  ).toBeGreaterThan(0);
+  expect(container.textContent).toContain('Last successful check');
+  expect(container.textContent).toContain('2 pending changes');
+  expect(container.textContent).toContain('Connection problem: 1');
+  expect(container.textContent).toContain('Next retry');
+  expect(container.textContent).not.toContain('%');
+
   await act(async () => root.unmount());
 });
