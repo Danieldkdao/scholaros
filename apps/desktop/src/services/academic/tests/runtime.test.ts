@@ -62,7 +62,7 @@ it('restores through a service-only online-gated action', async () => {
     register('restoreOnlineState', restoreOnlineState);
   });
   const { runAcademicService } = await import('../runtime');
-  await runAcademicService();
+  await runAcademicService({ learningModules: [] });
   expect(restoreOnlineState).toHaveBeenCalledOnce();
   expect(getState).not.toHaveBeenCalled();
   const willQuit = mocks.on.mock.calls.find(
@@ -73,6 +73,7 @@ it('restores through a service-only online-gated action', async () => {
 
 it('does not restore scheduler state for an offline-local user', async () => {
   mocks.hasSingleInstanceLock.mockReturnValue(true);
+  const restoreOnlineState = vi.fn();
   const getState = vi.fn();
   mocks.registerAcademicActions.mockImplementation(({ register }) => {
     register('getCurrentUser', async () => ({
@@ -80,9 +81,11 @@ it('does not restore scheduler state for an offline-local user', async () => {
       authMode: 'offline-local',
     }));
     register('getState', getState);
+    register('restoreOnlineState', restoreOnlineState);
   });
   const { runAcademicService } = await import('../runtime');
-  await runAcademicService();
+  await runAcademicService({ learningModules: [] });
+  expect(restoreOnlineState).not.toHaveBeenCalled();
   expect(getState).not.toHaveBeenCalled();
   const willQuit = mocks.on.mock.calls.find(
     ([event]) => event === 'will-quit',
