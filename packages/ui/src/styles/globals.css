@@ -7,6 +7,7 @@
 
 @source '../';
 @source '../../../../apps';
+@source '../../../../node_modules/streamdown/dist/*.js';
 
 @custom-variant dark (&:is(.dark *));
 
