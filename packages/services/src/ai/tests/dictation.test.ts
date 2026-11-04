@@ -140,6 +140,56 @@ describe('Meta realtime dictation protocol with a synthetic upstream fixture', (
     expect(socket.sentFrames).toHaveLength(1);
   });
 
+  it('does not read provider credentials when start is already cancelled', async () => {
+    const getApiKey = vi.fn(async () => 'fixture-only-secret');
+    const createWebSocket = vi.fn(() => new SyntheticMetaSocket() as never);
+    const service = createDictationService({
+      registry: createDictationRegistry(),
+      getApiKey,
+      createWebSocket,
+    });
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      service.createDictation('account-a', startInput, controller.signal),
+    ).rejects.toMatchObject({ code: 'cancelled' });
+
+    expect(getApiKey).not.toHaveBeenCalled();
+    expect(createWebSocket).not.toHaveBeenCalled();
+  });
+
+  it('does not connect to Meta when start is cancelled during credential lookup', async () => {
+    let resolveApiKey!: (apiKey: string) => void;
+    const apiKey = new Promise<string>((resolve) => {
+      resolveApiKey = resolve;
+    });
+    const getApiKey = vi.fn(() => apiKey);
+    const sockets: SyntheticMetaSocket[] = [];
+    const service = createDictationService({
+      registry: createDictationRegistry(),
+      getApiKey,
+      createWebSocket: () => {
+        const socket = new SyntheticMetaSocket();
+        sockets.push(socket);
+        return socket as never;
+      },
+    });
+    const controller = new AbortController();
+    const startResult = service.createDictation(
+      'account-a',
+      startInput,
+      controller.signal,
+    );
+
+    controller.abort();
+    resolveApiKey('fixture-only-secret');
+
+    await expect(startResult).rejects.toMatchObject({ code: 'cancelled' });
+    expect(getApiKey).toHaveBeenCalledOnce();
+    expect(sockets).toHaveLength(0);
+  });
+
   it('forwards sequenced PCM and accepts only one final after cumulative partials', async () => {
     const { service, sockets } = createFixture();
     const operation = await service.createDictation('account-a', startInput);

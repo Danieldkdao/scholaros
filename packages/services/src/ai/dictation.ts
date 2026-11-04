@@ -596,7 +596,9 @@ export const createDictationService = (
     const parsedInput = dictationStartInputSchema.safeParse(input);
     if (!idSchema.safeParse(accountId).success || !parsedInput.success)
       throw makeError('invalid-input');
+    if (signal?.aborted) throw makeError('cancelled');
     const apiKey = await getApiKey();
+    if (signal?.aborted) throw makeError('cancelled');
     if (!apiKey) throw makeError('feature-unavailable');
 
     const currentTime = now();
