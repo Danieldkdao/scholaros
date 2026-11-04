@@ -419,6 +419,43 @@ it('rejects native click callbacks after adapter teardown', async () => {
   expect(route).not.toHaveBeenCalled();
 });
 
+it('awaits an in-flight native display before disposal resolves', async () => {
+  mockServiceReplies();
+  let finishShow!: (result: 'shown') => void;
+  const show = vi.fn(
+    () =>
+      new Promise<'shown'>((resolve) => {
+        finishShow = resolve;
+      }),
+  );
+  const dismiss = vi.fn();
+  const adapter = createNotificationHostAdapter(
+    dependencies({ show, dismiss }) as never,
+  );
+  const delivery = adapter.deliverDueNotifications(context);
+  await vi.waitFor(() => expect(show).toHaveBeenCalledOnce());
+  let stopped = false;
+  const stopping = adapter.dispose().then(() => {
+    stopped = true;
+  });
+  await Promise.resolve();
+
+  expect(stopped).toBe(false);
+  finishShow('shown');
+  await Promise.all([delivery, stopping]);
+
+  expect(stopped).toBe(true);
+  expect(service.request).toHaveBeenCalledWith(
+    'claimDueNotifications',
+    expect.objectContaining({
+      operation: 'settle',
+      eventId: event.id,
+      status: 'cancelled',
+    }),
+  );
+  expect(dismiss).toHaveBeenCalledWith(event.id);
+});
+
 it('returns a permission update promise that settles after the service acknowledges it', async () => {
   let acknowledge!: () => void;
   service.request.mockImplementation(
