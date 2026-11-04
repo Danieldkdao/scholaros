@@ -20,11 +20,10 @@ export const StudyLanding = ({
   const navigate = useNavigate();
   const openSession = useCallback(
     async (sessionId: string) => {
-      // P15 owns the typed focus route and shared route-tree regeneration.
       await navigate({
         to: '/study/$sessionId',
         params: { sessionId },
-      } as never);
+      });
     },
     [navigate],
   );
