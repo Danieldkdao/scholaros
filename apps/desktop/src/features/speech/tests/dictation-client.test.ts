@@ -270,6 +270,34 @@ describe('authenticated desktop Meta dictation client', () => {
     });
   });
 
+  it('cancelAll waits for a remote cancellation already in flight', async () => {
+    let resolveCancel: (response: Response) => void = () => undefined;
+    const fetchAuthorized = vi.fn<AuthorizedDictationFetch>(async (path) => {
+      if (path === '/api/dictation')
+        return Response.json({ operationId: 'operation-a' });
+      if (path.startsWith('/api/dictation/control?'))
+        return new Promise<Response>((resolve) => {
+          resolveCancel = resolve;
+        });
+      return Response.json({ acceptedSequence: 0 });
+    });
+    const client = createDictationClient(fetchAuthorized);
+    const operation = await client.startDictation(startInput);
+    const cancellation = client.cancelDictation(operation.operationId);
+    await vi.waitFor(() => expect(fetchAuthorized).toHaveBeenCalledTimes(2));
+
+    let cancelAllSettled = false;
+    const cancelAll = client.cancelAll().then(() => {
+      cancelAllSettled = true;
+    });
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(cancelAllSettled).toBe(false);
+
+    resolveCancel(Response.json({ operationId: operation.operationId }));
+    await Promise.all([cancellation, cancelAll]);
+    expect(cancelAllSettled).toBe(true);
+  });
+
   it('uses authenticated cancellation to abort the owned SSE connection', async () => {
     let eventSignal: AbortSignal | undefined;
     const fetchAuthorized = vi.fn<AuthorizedDictationFetch>(

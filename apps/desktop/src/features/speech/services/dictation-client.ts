@@ -252,6 +252,7 @@ export const createDictationClient = (
   authorizedFetch: AuthorizedDictationFetch,
 ): DictationClient => {
   const operations = new Map<string, ActiveDictation>();
+  const pendingCancellations = new Map<string, Promise<void>>();
   let startingController: AbortController | null = null;
 
   const getOperation = (operationId: string) => {
@@ -580,41 +581,59 @@ export const createDictationClient = (
       throw new DictationClientError('provider-failed');
   };
 
-  const cancelDictation = async (operationId: string) => {
+  const cancelDictation = (operationId: string) => {
+    const pendingCancellation = pendingCancellations.get(operationId);
+    if (pendingCancellation) return pendingCancellation;
     const operation = operations.get(operationId);
-    if (!operation) return;
+    if (!operation) return Promise.resolve();
     removeOperation(operation);
 
-    try {
-      const response = await authorizedFetch(
-        getPathWithOperation('/api/dictation/control', operationId),
-        {
-          method: 'DELETE',
-          headers: operationHeaders(operation),
-          signal: AbortSignal.timeout(controlRequestTimeoutMs),
-        },
-      );
-      if (!response.ok) await readResponseError(response);
-      const parsedResponse = controlResponseSchema.safeParse(
-        await readJson(response, 'provider-failed'),
-      );
-      if (
-        !parsedResponse.success ||
-        parsedResponse.data.operationId !== operationId
-      )
-        throw new DictationClientError('provider-failed');
-    } catch (error) {
-      if (error instanceof DictationClientError) throw error;
-      throw new DictationClientError('offline');
-    }
+    const cancellation = (async () => {
+      try {
+        const response = await authorizedFetch(
+          getPathWithOperation('/api/dictation/control', operationId),
+          {
+            method: 'DELETE',
+            headers: operationHeaders(operation),
+            signal: AbortSignal.timeout(controlRequestTimeoutMs),
+          },
+        );
+        if (!response.ok) await readResponseError(response);
+        const parsedResponse = controlResponseSchema.safeParse(
+          await readJson(response, 'provider-failed'),
+        );
+        if (
+          !parsedResponse.success ||
+          parsedResponse.data.operationId !== operationId
+        )
+          throw new DictationClientError('provider-failed');
+      } catch (error) {
+        if (error instanceof DictationClientError) throw error;
+        throw new DictationClientError('offline');
+      }
+    })();
+    pendingCancellations.set(operationId, cancellation);
+    void cancellation.then(
+      () => {
+        if (pendingCancellations.get(operationId) === cancellation)
+          pendingCancellations.delete(operationId);
+      },
+      () => {
+        if (pendingCancellations.get(operationId) === cancellation)
+          pendingCancellations.delete(operationId);
+      },
+    );
+    return cancellation;
   };
 
   const cancelAll = async () => {
     startingController?.abort();
     startingController = null;
-    await Promise.allSettled(
-      [...operations.keys()].map((operationId) => cancelDictation(operationId)),
-    );
+    const activeCancellations = [...operations.keys()].map(cancelDictation);
+    await Promise.allSettled([
+      ...activeCancellations,
+      ...pendingCancellations.values(),
+    ]);
   };
 
   return {
