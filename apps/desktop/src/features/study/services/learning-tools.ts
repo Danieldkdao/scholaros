@@ -56,7 +56,7 @@ export type RememberPreferenceEffectSchema = z.infer<
 const createActivityEffectSchema = z.strictObject({
   kind: z.literal('create-activity'),
   objective: z.string().min(1).max(1000),
-  references: sourceReferencesSchema,
+  references: z.array(sourceSelectorSchema).max(20),
 });
 export type CreateActivityEffectSchema = z.infer<
   typeof createActivityEffectSchema
@@ -211,6 +211,12 @@ export const validateLearningEffects = (
         throw new LearningToolValidationError('scope-denied');
       continue;
     }
+    if (
+      effect.kind === 'create-activity' &&
+      effect.references.length === 0 &&
+      context.offeredReferences.length > 0
+    )
+      throw new LearningToolValidationError('scope-denied');
     validateReferences(effect.references, context);
   }
 

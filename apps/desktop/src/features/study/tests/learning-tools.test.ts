@@ -61,6 +61,42 @@ const authorizedContext: AuthorizedContext = {
 };
 
 describe('learning tool admission', () => {
+  it('allows an approved standalone concept activity with no invented sources but requires available source grounding', async () => {
+    const activity = {
+      kind: 'create-activity' as const,
+      objective: 'Explore Python variables.',
+      references: [],
+    };
+    expect(
+      validateLearningEffects([activity], {
+        ...validationContext,
+        offeredReferences: [],
+      }),
+    ).toEqual([activity]);
+    expect(() =>
+      validateLearningEffects([activity], validationContext),
+    ).toThrow();
+    expect(() =>
+      validateLearningEffects([{ kind: 'retrieve-source', references: [] }], {
+        ...validationContext,
+        offeredReferences: [],
+      }),
+    ).toThrow();
+    expect(() =>
+      validateLearningEffects(
+        [{ kind: 'offer-practice', objective: 'Practice', references: [] }],
+        { ...validationContext, offeredReferences: [] },
+      ),
+    ).toThrow();
+    expect(() =>
+      validateLearningEffects([activity], {
+        ...validationContext,
+        offeredReferences: [],
+        policy: { ...validationContext.policy, allowedOperations: [] },
+      }),
+    ).toThrow();
+  });
+
   it('accepts source references only when their exact offered version belongs to the selected course', () => {
     const effects = validateLearningEffects(
       [

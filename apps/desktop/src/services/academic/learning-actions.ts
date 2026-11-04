@@ -954,7 +954,7 @@ export const loadLearningActionModules = async (): Promise<
                 ),
             ).values(),
           ];
-          if (sources.length === 0 || sources.length !== offered.size)
+          if (sources.length !== offered.size)
             throw new LearningClientError('scope-denied');
           assertCurrent();
           const response = learningResponseSchema.parse(
