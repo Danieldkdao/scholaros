@@ -1877,3 +1877,27 @@ it('keeps source error details out of refresh activity events', async () => {
   expect(activity?.events.join(' ')).not.toContain(privateDetail);
   expect(activity?.events).toContain('Some course data could not be read.');
 });
+
+it('reports a bounded actionable provider failure without exposing private source details', async () => {
+  insertConnection('lms', host);
+  mocks.scan.mockResolvedValueOnce({
+    outcome: 'blocked',
+    entries: [],
+    observed: null,
+    notesOmitted: false,
+    followed: null,
+    truncated: false,
+    message:
+      'Meta API HTTP 429 quota exceeded student-one session-token-private',
+  });
+  const result = await startConnectionRefresh(student, 'lms');
+  const activity = academicTasks
+    .getActivity(student)
+    .find((run) => run.key === 'connection:lms');
+  expect(result.status).toBe('partial');
+  expect(activity?.events).toContain(
+    'The AI provider usage limit was reached. Retry after the limit resets.',
+  );
+  expect(activity?.events.join(' ')).not.toContain('session-token-private');
+  expect(activity?.events.join(' ')).not.toContain('student-one');
+});

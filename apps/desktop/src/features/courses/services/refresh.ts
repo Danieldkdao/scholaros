@@ -99,6 +99,34 @@ const isBrowserCapabilityChangedError = (
 ): error is BrowserCapabilityChangedError =>
   error instanceof Error && error.name === 'BrowserCapabilityChangedError';
 
+// Source/provider errors may contain private academic text or session details.
+// Report only an allowlisted explanation, never the original message.
+const refreshReadFailureMessage = (error: unknown) => {
+  const message =
+    typeof error === 'string'
+      ? error
+      : error instanceof Error
+        ? error.message
+        : '';
+  if (/\b429\b|rate.?limit|quota|usage limit/i.test(message))
+    return 'The AI provider usage limit was reached. Retry after the limit resets.';
+  if (/timed? ?out|timeout/i.test(message))
+    return 'Reading the course source timed out. Retry the refresh.';
+  if (/sign in|password/i.test(message))
+    return 'Sign in to this resource in your study browser, then refresh.';
+  if (/unsupported.*(?:model|capabil)|model.*unavailable/i.test(message))
+    return 'Course reading is unavailable with the configured Meta model.';
+  if (
+    /no (?:object|output) generated|invalid.*(?:response|schema)|(?:response|extraction).*(?:invalid|parse)/i.test(
+      message,
+    )
+  )
+    return 'The AI service returned unreadable course data. Retry the refresh.';
+  if (/outside.*(?:scope|approved)|navigation.*not allowed/i.test(message))
+    return 'A page was outside the approved course access. Review the connection settings.';
+  return 'Some course data could not be read.';
+};
+
 const getCourseMemory = (
   userId: string,
   connectionId: string,
@@ -573,10 +601,10 @@ const readCourseContent = async ({
                 },
                 onModelCall: () =>
                   academicTasks.recordMetric(signal, 'modelCalls'),
-                onError: () =>
+                onError: (message) =>
                   academicTasks.report(
                     signal,
-                    'Some course data could not be read.',
+                    refreshReadFailureMessage(message),
                     true,
                   ),
                 allowedHosts: hosts,
@@ -787,7 +815,7 @@ const performCourseRefresh = async (
         if (scan.message)
           academicTasks.report(
             signal,
-            'Some course data could not be read.',
+            refreshReadFailureMessage(scan.message),
             true,
           );
         // Retirement needs a list we are sure is whole: no pagination, and no
@@ -1130,10 +1158,10 @@ const runSingleCourseRefresh = (
                   childScan = await scanCourseCollection({
                     from,
                     kind,
-                    onError: () =>
+                    onError: (message) =>
                       academicTasks.report(
                         signal,
-                        'Some course data could not be read.',
+                        refreshReadFailureMessage(message),
                         true,
                       ),
                     host: connection.host,
@@ -1263,11 +1291,7 @@ const runSingleCourseRefresh = (
           isBrowserCapabilityChangedError(error)
         )
           throw error;
-        academicTasks.report(
-          signal,
-          'Some course data could not be read.',
-          true,
-        );
+        academicTasks.report(signal, refreshReadFailureMessage(error), true);
         for (const kind of ['assignments', 'announcements'] as const) {
           if (course[kind].status === 'pending')
             course[kind] = { status: outcomeFromError(error), items: [] };
