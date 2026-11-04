@@ -243,6 +243,63 @@ const postRequest = (
 beforeEach(() => vi.restoreAllMocks());
 
 describe('POST /api/learning', () => {
+  it('composes the real activity generator and guard without exposing an unchecked candidate', async () => {
+    authUser.mockResolvedValue({ userId: 'activity-account' });
+    const generated = {
+      title: 'Transport model',
+      html: '<input id="size" type="range"><output id="value"></output>',
+      css: 'output { display: block; }',
+      javascript:
+        'document.querySelector("#size").addEventListener("input", event => { document.querySelector("#value").textContent = event.target.value; });',
+      accessibleExplanation:
+        'Changing the slider changes the displayed particle size.',
+    };
+    const outputs = [generated, { allowed: true, reasonCode: 'safe' }];
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      metaResponse(outputs.shift()),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const response = await productionLearningPost(
+      postRequest({
+        ...tutorRequest,
+        requestId: 'ad6f6b84-ef17-4b64-9f5b-22af32083d84',
+        kind: 'activity-generate',
+        input: {
+          objective: 'Explore transport size',
+          sources: tutorRequest.input.sources,
+        },
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      proposedEffects: [
+        {
+          kind: 'create-activity',
+          candidate: {
+            ...generated,
+            objective: 'Explore transport size',
+            sourceReferences: [sourceReference],
+            runtimeVersion: 1,
+          },
+        },
+      ],
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const requests = fetchMock.mock.calls.map((call) =>
+      JSON.parse(String((call[1] as RequestInit).body)),
+    );
+    expect(requests.map((request) => request.model)).toEqual([
+      'muse-spark-1.3',
+      'muse-spark-1.3',
+    ]);
+    expect(requests[0].messages.at(-1).content).toContain(
+      tutorRequest.input.sources[0].text,
+    );
+    expect(
+      JSON.parse(requests[1].messages.at(-1).content).candidate
+        .proposedEffects[0].candidate.javascript,
+    ).toBe(generated.javascript);
+  });
   it('runs real practice generation and P13 assessment through the production route', async () => {
     authUser.mockResolvedValue({ userId: 'account-1' });
     Object.assign(serviceEnv, {

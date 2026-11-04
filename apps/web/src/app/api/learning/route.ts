@@ -1,5 +1,6 @@
 import { getCurrentUser } from '@/lib/auth/helpers';
 import { serverEnv } from '@/data/env/server';
+import { generateActivityCandidate } from '../../../../../../packages/services/src/ai/activity-generation';
 import {
   LearningDispatchError,
   createLearningDispatcher,
@@ -322,6 +323,32 @@ const dispatcher = createLearningDispatcher({
   getCapabilities: getLearningCapabilities,
   generateCandidate: generateTutorCandidate,
   operations: {
+    'activity-generate': async (request, signal) => {
+      if (request.kind !== 'activity-generate')
+        throw new LearningDispatchError('invalid-input');
+      const offeredSources = request.input.sources.map(
+        (source) => source.reference,
+      );
+      const candidate = await generateActivityCandidate(
+        {
+          objective: request.input.objective,
+          sourceReferences: offeredSources,
+          context: request.input.sources
+            .map((source) => source.text)
+            .join('\n\n')
+            .slice(0, 24_000),
+        },
+        signal,
+      );
+      return {
+        candidate: {
+          text: candidate.accessibleExplanation,
+          citationIndexes: offeredSources.map((_source, index) => index),
+          proposedEffects: [{ kind: 'create-activity', candidate }],
+        },
+        offeredSources,
+      };
+    },
     'practice-generate': generatePracticeCandidateForLearning,
     'practice-evaluate': evaluatePracticeAnswerForLearning,
   },
