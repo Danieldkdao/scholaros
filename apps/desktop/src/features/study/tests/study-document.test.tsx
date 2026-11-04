@@ -1789,3 +1789,53 @@ it('places a destructive leave control on the right and confirms that saved work
     'Cell biology review',
   );
 });
+
+it('bounds the study viewport and keeps wheel input native without turn-sized blank spacers', async () => {
+  const currentBridge = bridge(
+    vi.fn(async () =>
+      snapshot({
+        messages: [
+          message('message-1', 1, 'student', [
+            { kind: 'text', text: 'Explain loops' },
+          ]),
+          message('message-2', 2, 'tutor', [
+            { kind: 'text', text: 'A loop repeats a step.' },
+          ]),
+        ],
+      }),
+    ),
+  );
+  const { container } = await mountDocument({}, currentBridge);
+  const main = container.querySelector('main')!;
+  expect(main.className).toContain('h-dvh');
+  expect(main.className).toContain('overflow-hidden');
+  const viewport = container.querySelector<HTMLElement>(
+    '[data-slot="message-scroller-viewport"]',
+  )!;
+  expect(viewport.className).toContain('overflow-y-auto');
+  const items = [
+    ...container.querySelectorAll<HTMLElement>(
+      '[data-slot="message-scroller-item"]',
+    ),
+  ];
+  expect(items).toHaveLength(2);
+  for (const item of items) {
+    expect(item.dataset.scrollAnchor).toBe('false');
+    expect(item.className).not.toContain('content-visibility:auto');
+    expect(item.className).not.toContain('contain-intrinsic-size');
+  }
+  expect(
+    container.querySelector<HTMLElement>('[data-message-scroller-spacer]')
+      ?.hidden,
+  ).toBe(true);
+  const received = vi.fn();
+  viewport.addEventListener('wheel', received);
+  const wheel = new WheelEvent('wheel', {
+    bubbles: true,
+    cancelable: true,
+    deltaY: -120,
+  });
+  await act(async () => items[0]!.dispatchEvent(wheel));
+  expect(received).toHaveBeenCalledOnce();
+  expect(wheel.defaultPrevented).toBe(false);
+});

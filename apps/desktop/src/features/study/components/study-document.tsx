@@ -437,7 +437,7 @@ export const StudyDocument = ({
     <MessageScrollerProvider
       key={`${accountId}:${sessionId}`}
       autoScroll
-      defaultScrollPosition="last-anchor"
+      defaultScrollPosition="end"
     >
       <MessageScroller>
         <MessageScrollerViewport
@@ -491,15 +491,10 @@ export const StudyDocument = ({
                 </EmptyHeader>
               </Empty>
             ) : (
-              messages.map((message, index) => (
+              messages.map((message) => (
                 <MessageScrollerItem
                   key={message.id}
                   messageId={message.id}
-                  scrollAnchor={
-                    study.scrollAnchorId
-                      ? study.scrollAnchorId === message.id
-                      : index === messages.length - 1
-                  }
                   className="mx-auto w-full max-w-4xl"
                 >
                   <StudyMessage
@@ -531,7 +526,7 @@ export const StudyDocument = ({
   );
 
   return (
-    <main className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-background text-foreground">
+    <main className="flex h-dvh max-h-dvh min-h-0 w-full flex-col overflow-hidden bg-background text-foreground">
       <header className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b bg-background px-4 py-3">
         <div className="flex min-w-0 flex-1 items-center gap-3">
           <div className="flex min-w-0 flex-col gap-1">
