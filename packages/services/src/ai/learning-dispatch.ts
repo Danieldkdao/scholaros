@@ -66,6 +66,13 @@ const tutorInputSchema = z.strictObject({
     )
     .max(12),
   personalContext: personalContextSchema,
+  priorAssistanceSummary: z.string().max(2000).optional(),
+  safeRegeneration: z
+    .strictObject({
+      attemptNumber: z.literal(2),
+      reasonCode: z.string().min(1).max(100),
+    })
+    .optional(),
   freshness: z.strictObject({
     status: z.enum(['current', 'stale', 'partial', 'unavailable']),
     lastSuccessfulAt: instantSchema.nullable(),

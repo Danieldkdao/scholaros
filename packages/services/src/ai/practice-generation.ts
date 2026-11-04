@@ -24,6 +24,7 @@ export type PracticeDifficulty = (typeof practiceDifficulties)[number];
 export const practiceGenerationInputSchema = z
   .strictObject({
     topic: z.string().trim().min(1).max(1000),
+    priorAssistanceSummary: z.string().max(2000).optional(),
     difficulty: z.enum(practiceDifficulties),
     questionCount: z.number().int().min(1).max(20),
     objectives: z

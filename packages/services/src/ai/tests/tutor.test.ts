@@ -94,6 +94,7 @@ const practiceGenerationRequest: PracticeGenerateRequest = {
   contextRevision: 4,
   input: {
     topic: 'Cell transport',
+    priorAssistanceSummary: 'One earlier practice attempt covered transport.',
     difficulty: 'developing',
     questionCount: 1,
     objectives: [{ id: 'objective-1', description: 'Explain cell transport.' }],
@@ -206,6 +207,32 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('Meta model capability selection', () => {
+  it('passes the host assistance summary and safe retry directive to Meta', async () => {
+    const fetchMock = vi.fn(async (_url: string, _init: RequestInit) =>
+      metaChatResponse(candidate),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const priorAssistanceSummary = 'One earlier concept explanation was saved.';
+    const retryRequest = learningRequestSchema.parse({
+      ...request,
+      input: {
+        ...request.input,
+        priorAssistanceSummary,
+        safeRegeneration: {
+          attemptNumber: 2,
+          reasonCode: 'answer-risk',
+        },
+      },
+    });
+
+    await generateTutorCandidate(retryRequest, new AbortController().signal);
+
+    const prompt = JSON.parse(String(fetchMock.mock.calls[0]![1].body))
+      .messages[1].content;
+    expect(prompt).toContain(priorAssistanceSummary);
+    expect(prompt).toContain('safeRegeneration');
+  });
+
   it('fails closed on unsupported model configuration', async () => {
     serverEnv.META_MODEL = 'muse-spark-1.3-contributor';
 
@@ -304,9 +331,15 @@ describe('Meta practice handlers', () => {
         ([, options]) => JSON.parse(String(options.body)).model,
       ),
     ).toEqual(['muse-spark-1.3', 'muse-spark-1.3']);
-    expect(
-      JSON.stringify(JSON.parse(String(fetchMock.mock.calls[1]![1].body))),
-    ).toContain('hostAnswerKey');
+    const integrityRequest = JSON.stringify(
+      JSON.parse(String(fetchMock.mock.calls[1]![1].body)),
+    );
+    expect(integrityRequest).not.toContain('hostAnswerKey');
+    expect(integrityRequest).not.toContain('correctOptionId');
+    expect(integrityRequest).toContain('Which structure regulates cell transport?');
+    expect(integrityRequest).toContain(
+      'One earlier practice attempt covered transport.',
+    );
   });
 
   it('evaluates short explanations through the P23 evaluator on Meta Standard', async () => {
