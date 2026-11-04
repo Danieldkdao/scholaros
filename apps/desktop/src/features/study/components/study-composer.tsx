@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent, ReactNode } from 'react';
-import { useDebouncer } from '@tanstack/react-pacer';
 import {
   AlertCircleIcon,
   CircleCheckIcon,
@@ -38,7 +37,6 @@ import {
 import { LoadingSwap } from '@scholaros/ui/components/loading-swap';
 import { toast } from '@scholaros/ui/components/toast';
 import { TooltipWrapper } from '@scholaros/ui/components/tooltip-wrapper';
-import { cn } from '@scholaros/ui/lib/utils';
 import {
   formatStudyAttachmentStatus,
   formatStudyContextProvenance,
@@ -48,7 +46,6 @@ import {
 } from './study-message';
 
 type DraftValue = { text: string; revision: number };
-type DraftSaveResult = { draftRevision: number };
 type SendStudyTurnInput = {
   text: string;
   attachmentIds: string[];
@@ -58,12 +55,6 @@ type SendStudyTurnInput = {
 type SendStudyTurnResult = { turnId: string; draftRevision: number | null };
 type DraftSelection = { start: number; end: number };
 type TurnStatusPresentation = {
-  label: string;
-  isWorking: boolean;
-  Icon: LucideIcon;
-};
-type ComposerStatus = 'error' | 'saving' | 'sending' | 'saved';
-type ComposerStatusPresentation = {
   label: string;
   isWorking: boolean;
   Icon: LucideIcon;
@@ -98,10 +89,6 @@ export type StudyComposerProps = {
   activeTurn: TurnDTO | null;
   failedTurnId: string | null;
   attachmentRevision?: number;
-  onSaveDraft: (
-    text: string,
-    expectedDraftRevision: number,
-  ) => Promise<DraftSaveResult>;
   onSend: (input: SendStudyTurnInput) => Promise<SendStudyTurnResult>;
   onStop: () => Promise<void>;
   onRetry: (turnId: string) => Promise<void>;
@@ -151,30 +138,6 @@ const formatTurnStatus = (
   }
 };
 
-const formatComposerStatus = (
-  status: ComposerStatus,
-  error: string | null,
-): ComposerStatusPresentation => {
-  switch (status) {
-    case 'error':
-      return {
-        label: error ?? 'The message could not be completed.',
-        isWorking: false,
-        Icon: AlertCircleIcon,
-      };
-    case 'saving':
-      return { label: 'Saving draft', isWorking: true, Icon: LoaderCircleIcon };
-    case 'sending':
-      return {
-        label: 'Sending message',
-        isWorking: true,
-        Icon: LoaderCircleIcon,
-      };
-    case 'saved':
-      return { label: 'Draft saved', isWorking: false, Icon: CircleCheckIcon };
-  }
-};
-
 const getErrorCode = (error: unknown) =>
   typeof error === 'object' && error !== null && 'code' in error
     ? error.code
@@ -191,13 +154,13 @@ const formatComposerError = (error: unknown) => {
     case 'session-changed':
       return 'This session changed. Reopen it before sending.';
     case 'revision-conflict':
-      return 'Your draft changed elsewhere. Your text is still here; retry to save it.';
+      return 'This session changed elsewhere. Your text is still here; try sending again.';
     case 'limit-exceeded':
       return 'This message or its attachments exceed the allowed limit.';
     case 'cancelled':
       return 'The message was not sent. Your draft is still here.';
     case 'storage-failed':
-      return 'Your draft could not be saved. Keep this screen open and retry.';
+      return 'Your message could not be saved. Keep this screen open and retry.';
     case 'provider-failed':
       return 'The tutor could not respond. Your message is saved and can be retried.';
     default:
@@ -213,7 +176,6 @@ export const StudyComposer = ({
   activeTurn,
   failedTurnId,
   attachmentRevision = 0,
-  onSaveDraft,
   onSend,
   onStop,
   onRetry,
@@ -234,7 +196,6 @@ export const StudyComposer = ({
   const [recoverableTranscript, setRecoverableTranscript] = useState<
     string | null
   >(null);
-  const [saving, setSaving] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [addingAttachments, setAddingAttachments] = useState(false);
@@ -245,18 +206,13 @@ export const StudyComposer = ({
   const readOnlyRef = useRef(readOnly);
   const selectionRef = useRef(selection);
   const attachmentsRef = useRef(attachments);
-  const savedTextRef = useRef(initialDraft.text);
   const expectedDraftRevisionRef = useRef(initialDraft.revision);
-  const saveQueueRef = useRef(Promise.resolve());
-  const savingRequestRef = useRef(false);
   const submittingRef = useRef(false);
   const stoppingRef = useRef(false);
   const mountedRef = useRef(true);
-  const saveDraftRef = useRef(onSaveDraft);
   const sendRef = useRef(onSend);
   const requestSelectionRef = useRef<number | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  saveDraftRef.current = onSaveDraft;
   sendRef.current = onSend;
   attachmentsRef.current = attachments;
   readOnlyRef.current = readOnly;
@@ -269,17 +225,19 @@ export const StudyComposer = ({
   }, []);
 
   useEffect(() => {
-    if (textRef.current === savedTextRef.current) {
-      expectedDraftRevisionRef.current = initialDraft.revision;
-      savedTextRef.current = initialDraft.text;
-      textRef.current = initialDraft.text;
-      setText(initialDraft.text);
-    }
-  }, [initialDraft.revision, initialDraft.text]);
+    expectedDraftRevisionRef.current = Math.max(
+      expectedDraftRevisionRef.current,
+      initialDraft.revision,
+    );
+  }, [initialDraft.revision]);
 
   useEffect(() => {
     if (!offline) setOfflineFromService(false);
   }, [offline]);
+
+  const selectedAttachmentIds = JSON.stringify(
+    attachments.map((attachment) => attachment.itemId),
+  );
 
   useEffect(() => {
     if (!onRefreshAttachment || attachmentsRef.current.length === 0) return;
@@ -299,7 +257,7 @@ export const StudyComposer = ({
     return () => {
       active = false;
     };
-  }, [attachmentRevision, onRefreshAttachment]);
+  }, [attachmentRevision, onRefreshAttachment, selectedAttachmentIds]);
 
   useEffect(() => {
     const caret = requestSelectionRef.current;
@@ -309,61 +267,9 @@ export const StudyComposer = ({
     textareaRef.current?.setSelectionRange(caret, caret);
   }, [text]);
 
-  const saveText = async (nextText: string) => {
-    if (readOnlyRef.current) return;
-    if (nextText === savedTextRef.current) return;
-    if (submittingRef.current) return;
-    if (mountedRef.current) setSaving(true);
-    savingRequestRef.current = true;
-    try {
-      const result = await saveDraftRef.current(
-        nextText,
-        expectedDraftRevisionRef.current,
-      );
-      expectedDraftRevisionRef.current = result.draftRevision;
-      savedTextRef.current = nextText;
-      if (mountedRef.current && textRef.current === nextText) {
-        setSaving(false);
-        setError(null);
-      }
-    } catch (saveError) {
-      if (mountedRef.current) {
-        setSaving(false);
-        setError(formatComposerError(saveError));
-        toast.error(formatComposerError(saveError));
-      }
-      throw saveError;
-    } finally {
-      savingRequestRef.current = false;
-      if (mountedRef.current && readOnlyRef.current) setSaving(false);
-    }
-  };
-
-  const flushDraft = () => {
-    if (readOnlyRef.current) return;
-    if (submittingRef.current || textRef.current === savedTextRef.current)
-      return;
-    const nextText = textRef.current;
-    saveQueueRef.current = saveQueueRef.current
-      .then(() => saveText(nextText))
-      .catch(() => undefined);
-    return saveQueueRef.current;
-  };
-
-  const debouncer = useDebouncer(flushDraft, {
-    wait: 500,
-    onUnmount: (instance) => instance.flush(),
-  });
-
   useEffect(() => {
-    if (!readOnly) {
-      if (textRef.current !== savedTextRef.current) debouncer.maybeExecute();
-      return;
-    }
-    debouncer.cancel();
-    setProvisionalTranscript(null);
-    if (!savingRequestRef.current) setSaving(false);
-  }, [debouncer, readOnly]);
+    if (readOnly) setProvisionalTranscript(null);
+  }, [readOnly]);
 
   const updateText = (nextText: string, nextSelection?: DraftSelection) => {
     if (readOnlyRef.current) return;
@@ -378,8 +284,6 @@ export const StudyComposer = ({
     selectionRef.current = next;
     setSelection(next);
     setError(null);
-    setSaving(nextText !== savedTextRef.current);
-    debouncer.maybeExecute();
   };
 
   const insertTranscript = (transcript: string, target: DraftSelection) => {
@@ -457,17 +361,6 @@ export const StudyComposer = ({
   const activeTurnStatus = activeTurn
     ? formatTurnStatus(activeTurn.status)
     : null;
-  const composerStatus = formatComposerStatus(
-    error
-      ? 'error'
-      : submitting
-        ? 'sending'
-        : saving || text !== savedTextRef.current
-          ? 'saving'
-          : 'saved',
-    error,
-  );
-  const ComposerStatusIcon = composerStatus.Icon;
   const ActiveTurnStatusIcon = activeTurnStatus?.Icon;
   const hasProcessingAttachment = attachments.some((attachment) =>
     isStudyAttachmentProcessing(attachment.status, attachment.sourceRemoved),
@@ -486,7 +379,7 @@ export const StudyComposer = ({
   const sendingDisabledReason = readOnly
     ? 'Reconnect online to change this draft, attach files, or send a message.'
     : offline || offlineFromService
-      ? 'Connect to send; your draft remains saved.'
+      ? 'Connect to send; your text stays here.'
       : activeTurnStatus?.isWorking
         ? 'A response is already being prepared.'
         : hasProcessingAttachment
@@ -503,37 +396,20 @@ export const StudyComposer = ({
     setSubmitting(true);
     setError(null);
     setOfflineFromService(false);
-    debouncer.cancel();
     const submittedText = textRef.current;
     const submittedRevision = composerRevisionRef.current;
     const submittedAttachmentIds = readyAttachments.map(
       (attachment) => attachment.itemId,
     );
     try {
-      await saveQueueRef.current;
-      if (submittedText !== savedTextRef.current) {
-        const saved = await saveDraftRef.current(
-          submittedText,
-          expectedDraftRevisionRef.current,
-        );
-        expectedDraftRevisionRef.current = saved.draftRevision;
-        savedTextRef.current = submittedText;
-      }
       const result = await sendRef.current({
         text: submittedText,
         attachmentIds: submittedAttachmentIds,
         expectedDraftRevision: expectedDraftRevisionRef.current,
         composerRevision: submittedRevision,
       });
-      if (result.draftRevision === null) {
-        if (mountedRef.current)
-          setError(
-            'Message accepted; draft status is still syncing, so this text stays here for safety.',
-          );
-        return;
-      }
-      expectedDraftRevisionRef.current = result.draftRevision;
-      savedTextRef.current = '';
+      if (result.draftRevision !== null)
+        expectedDraftRevisionRef.current = result.draftRevision;
       const remainingAttachments = attachmentsRef.current.filter(
         (attachment) => !submittedAttachmentIds.includes(attachment.itemId),
       );
@@ -547,7 +423,6 @@ export const StudyComposer = ({
           setText('');
           setComposerRevision(composerRevisionRef.current);
           setSelection({ start: 0, end: 0 });
-          setSaving(false);
         }
       }
     } catch (sendError) {
@@ -559,15 +434,7 @@ export const StudyComposer = ({
       }
     } finally {
       submittingRef.current = false;
-      if (mountedRef.current) {
-        setSubmitting(false);
-        if (textRef.current !== savedTextRef.current) debouncer.maybeExecute();
-      } else if (textRef.current !== savedTextRef.current) {
-        const remainingText = textRef.current;
-        saveQueueRef.current = saveQueueRef.current
-          .then(() => saveText(remainingText))
-          .catch(() => undefined);
-      }
+      if (mountedRef.current) setSubmitting(false);
     }
   };
 
@@ -658,9 +525,14 @@ export const StudyComposer = ({
                       ? 'error'
                       : 'done'
                 }
-                size="sm"
+                size="default"
               >
-                <AttachmentMedia>
+                <AttachmentMedia
+                  role={status.state === 'processing' ? 'status' : undefined}
+                  aria-label={
+                    status.state === 'processing' ? status.label : undefined
+                  }
+                >
                   {isStudyAttachmentProcessing(
                     attachment.status,
                     attachment.sourceRemoved,
@@ -674,14 +546,19 @@ export const StudyComposer = ({
                   )}
                 </AttachmentMedia>
                 <AttachmentContent>
-                  <AttachmentTitle>{attachment.title}</AttachmentTitle>
-                  <AttachmentDescription className="flex flex-wrap items-center gap-1 text-base">
-                    <StatusIcon aria-hidden="true" className="size-4" />
-                    <span>{status.label}</span>
-                    <span aria-hidden="true">/</span>
+                  <AttachmentTitle className="text-base">
+                    {attachment.title}
+                  </AttachmentTitle>
+                  <AttachmentDescription className="flex flex-col items-start gap-1 text-sm">
                     <span>
                       {formatStudyContextProvenance(attachment.provenance)}
                     </span>
+                    {status.state === 'error' && (
+                      <span className="flex items-center gap-1">
+                        <StatusIcon aria-hidden="true" className="size-4" />
+                        {status.label}
+                      </span>
+                    )}
                   </AttachmentDescription>
                 </AttachmentContent>
                 <AttachmentActions>
@@ -745,7 +622,6 @@ export const StudyComposer = ({
           aria-label="Message"
           aria-describedby={
             [
-              'study-composer-status',
               error ? 'study-composer-error' : null,
               sendingDisabledReason ? 'study-send-reason' : null,
             ]
@@ -766,10 +642,6 @@ export const StudyComposer = ({
           onMouseUp={(event) => captureSelection(event.currentTarget)}
           onClick={(event) => captureSelection(event.currentTarget)}
           onKeyDown={handleKeyDown}
-          onBlur={() => {
-            debouncer.flush();
-            if (error) void flushDraft();
-          }}
         />
         {provisionalTranscript && (
           <p
@@ -839,27 +711,6 @@ export const StudyComposer = ({
             )}
           </div>
           <div className="flex items-center gap-2">
-            <TooltipWrapper content={composerStatus.label}>
-              <span
-                id="study-composer-status"
-                role="status"
-                aria-live="polite"
-                tabIndex={0}
-                className={cn(
-                  'inline-flex items-center',
-                  error ? 'text-destructive' : 'text-muted-foreground',
-                )}
-              >
-                <ComposerStatusIcon
-                  aria-hidden="true"
-                  className={cn(
-                    'size-4 shrink-0',
-                    composerStatus.isWorking && 'motion-safe:animate-spin',
-                  )}
-                />
-                <span className="sr-only">{composerStatus.label}</span>
-              </span>
-            </TooltipWrapper>
             {activeTurnStatus?.isWorking ? (
               <TooltipWrapper content="Stop response">
                 <InputGroupButton

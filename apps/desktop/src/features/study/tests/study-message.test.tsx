@@ -115,6 +115,14 @@ it('formats tutor Markdown while preserving student text', async () => {
 it.each([
   ['feature-unavailable', 'Study responses are unavailable right now.'],
   [
+    'learning-action-unavailable',
+    'Your explanation is saved, but a learning activity could not be created. Please try again.',
+  ],
+  [
+    'safe-response-unavailable',
+    'The tutor could not safely prepare this response. Try asking about a concept or another source.',
+  ],
+  [
     'provider-failed',
     'The study service could not finish this response. Please try again.',
   ],
@@ -171,4 +179,45 @@ it('keeps source inspection host-owned beside formatted tutor text', async () =>
   );
   act(() => sourceButton.click());
   expect(onInspectSource).toHaveBeenCalledWith(reference);
+});
+it('uses one accessible spinner and readable filename for a processing uploaded attachment', async () => {
+  await act(async () =>
+    root.render(
+      createElement(StudyMessage, {
+        message: message({
+          parts: [
+            { kind: 'attachment', itemId: 'item-1', versionId: 'version-1' },
+          ],
+        }),
+        gradeContentVisible: true,
+        gradeEvidenceVisible: true,
+        onInspectSource: vi.fn(),
+        loadAttachment: vi.fn(async () => ({
+          itemId: 'item-1',
+          title: 'Biology notes.pdf',
+          status: 'processing' as const,
+          provenance: 'user-uploaded' as const,
+          versionId: 'version-1',
+          sourceRemoved: false,
+          version: null,
+        })),
+      }),
+    ),
+  );
+  const attachment = container.querySelector(
+    '[data-slot="study-message-attachment"]',
+  )!;
+  expect(
+    attachment.querySelector('[data-slot="attachment-title"]')?.className,
+  ).toContain('text-base');
+  expect(
+    attachment.querySelectorAll('.motion-safe\\:animate-spin'),
+  ).toHaveLength(1);
+  expect(
+    attachment
+      .querySelector('[data-slot="attachment-media"]')
+      ?.getAttribute('aria-label'),
+  ).toBe('Reading file');
+  expect(attachment.textContent).toContain('Uploaded by you');
+  expect(attachment.textContent).not.toContain('Reading file');
 });

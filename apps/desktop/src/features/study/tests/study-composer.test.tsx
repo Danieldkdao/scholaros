@@ -31,9 +31,6 @@ const defaultProps = (
   offline: false,
   activeTurn: null,
   failedTurnId: null,
-  onSaveDraft: vi.fn(async (_text, expectedDraftRevision) => ({
-    draftRevision: expectedDraftRevision + 1,
-  })),
   onSend: vi.fn(async () => ({ turnId: 'turn-1', draftRevision: 2 })),
   onStop: vi.fn(async () => undefined),
   onRetry: vi.fn(async () => undefined),
@@ -407,12 +404,8 @@ describe('StudyComposer', () => {
   it('ignores late dictation events after the composer unmounts', async () => {
     vi.useFakeTimers();
     let dictationProps: StudyDictationControlProps | undefined;
-    const onSaveDraft = vi.fn(async (_text: string, revision: number) => ({
-      draftRevision: revision + 1,
-    }));
     await mount(
       defaultProps({
-        onSaveDraft,
         renderDictation: (props) => {
           dictationProps = props;
           return createElement('button', { type: 'button' }, 'Dictation');
@@ -433,8 +426,6 @@ describe('StudyComposer', () => {
       await vi.advanceTimersByTimeAsync(500);
       await drain();
     });
-
-    expect(onSaveDraft).not.toHaveBeenCalled();
   });
 
   it('offers an explicit recovery when the draft changed during dictation', async () => {
@@ -463,25 +454,44 @@ describe('StudyComposer', () => {
     expect(props.onSend).not.toHaveBeenCalled();
   });
 
-  it('flushes a pending autosave when the composer leaves the session', async () => {
+  it('never saves while typing, blurring, or leaving the session', async () => {
     vi.useFakeTimers();
     const props = defaultProps();
     const node = await mount(props);
-    await changeText(node.querySelector('textarea')!, 'Keep this draft');
-    expect(props.onSaveDraft).not.toHaveBeenCalled();
+    const input = node.querySelector('textarea')!;
+    await changeText(input, 'Keep this unsent message');
+    act(() =>
+      input.dispatchEvent(new FocusEvent('focusout', { bubbles: true })),
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(5_000));
 
+    expect(node.querySelector('#study-composer-status')).toBeNull();
     act(() => root?.unmount());
     root = undefined;
     await act(drain);
 
-    expect(props.onSaveDraft).toHaveBeenCalledWith('Keep this draft', 0);
+    expect(props.onSend).not.toHaveBeenCalled();
+  });
+
+  it('clears an accepted message without waiting for a draft synchronization acknowledgement', async () => {
+    const props = defaultProps({
+      onSend: vi.fn(async () => ({ turnId: 'turn-1', draftRevision: null })),
+    });
+    const node = await mount(props);
+    const input = node.querySelector('textarea')!;
+    await changeText(input, 'An accepted message');
+    await click(
+      node.querySelector<HTMLButtonElement>(
+        'button[aria-label="Send message"]',
+      )!,
+    );
+    await act(drain);
+    expect(input.value).toBe('');
+    expect(node.textContent).not.toContain('syncing');
   });
 
   it('keeps the saved draft readable while host read-only mode blocks composer writes', async () => {
     vi.useFakeTimers();
-    const onSaveDraft = vi.fn(async (_text: string, revision: number) => ({
-      draftRevision: revision + 1,
-    }));
     const onSend = vi.fn(async () => ({ turnId: 'turn-1', draftRevision: 2 }));
     const onAddAttachments = vi.fn(async () => [readyAttachment]);
     const onRetry = vi.fn(async () => undefined);
@@ -490,7 +500,7 @@ describe('StudyComposer', () => {
       initialDraft: { text: 'Saved study question', revision: 4 },
       readOnly: true,
       failedTurnId: 'turn-1',
-      onSaveDraft,
+
       onSend,
       onAddAttachments,
       onRetry,
@@ -522,69 +532,32 @@ describe('StudyComposer', () => {
     await act(async () => vi.advanceTimersByTimeAsync(1_000));
 
     expect(input.value).toBe('Saved study question');
-    expect(onSaveDraft).not.toHaveBeenCalled();
+
     expect(onSend).not.toHaveBeenCalled();
     expect(onAddAttachments).not.toHaveBeenCalled();
     expect(onRetry).not.toHaveBeenCalled();
   });
 
-  it('keeps an in-flight draft save pending across a read-only transition', async () => {
-    vi.useFakeTimers();
-    let resolveSave!: (value: { draftRevision: number }) => void;
-    const onSaveDraft = vi.fn(
-      () =>
-        new Promise<{ draftRevision: number }>((resolve) => {
-          resolveSave = resolve;
-        }),
-    );
-    const props = defaultProps({ onSaveDraft });
-    const node = await mount(props);
-    await changeText(node.querySelector('textarea')!, 'Pending draft');
-    await act(async () => vi.advanceTimersByTimeAsync(500));
-    expect(onSaveDraft).toHaveBeenCalledOnce();
-
-    await act(async () =>
-      root?.render(createElement(StudyComposer, { ...props, readOnly: true })),
-    );
-    expect(node.querySelector('[role="status"]')?.textContent).toContain(
-      'Saving draft',
-    );
-
-    await act(async () => resolveSave({ draftRevision: 1 }));
-    await vi.waitFor(() => {
-      expect(
-        node.querySelector('#study-composer-status .sr-only')?.textContent,
-      ).toBe('Draft saved');
-    });
-    expect(onSaveDraft).toHaveBeenCalledOnce();
-  });
-
-  it('saves a preserved draft after reconnecting from host read-only mode', async () => {
-    vi.useFakeTimers();
-    const onSaveDraft = vi.fn(async (_text: string, revision: number) => ({
-      draftRevision: revision + 1,
-    }));
+  it('preserves unsent text across reconnect without saving or replacing newer edits', async () => {
     const props = defaultProps({
-      initialDraft: { text: 'Saved draft', revision: 2 },
-      onSaveDraft,
+      initialDraft: { text: 'Earlier text', revision: 2 },
     });
     const node = await mount(props);
-    await changeText(node.querySelector('textarea')!, 'Pending offline draft');
-
+    await changeText(node.querySelector('textarea')!, 'New unsent message');
     await act(async () =>
       root?.render(createElement(StudyComposer, { ...props, readOnly: true })),
     );
-    await act(async () => vi.advanceTimersByTimeAsync(1_000));
-    expect(onSaveDraft).not.toHaveBeenCalled();
-    expect(node.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe(
-      'Pending offline draft',
+    await act(async () =>
+      root?.render(
+        createElement(StudyComposer, {
+          ...props,
+          initialDraft: { text: 'Stale saved text', revision: 3 },
+        }),
+      ),
     );
-
-    await act(async () => root?.render(createElement(StudyComposer, props)));
-    await act(async () => vi.advanceTimersByTimeAsync(500));
-
-    expect(onSaveDraft).toHaveBeenCalledOnce();
-    expect(onSaveDraft).toHaveBeenCalledWith('Pending offline draft', 2);
+    expect(node.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe(
+      'New unsent message',
+    );
   });
 });
 
@@ -593,9 +566,7 @@ it('keeps the idle composer plain without redundant help or saved indicators', a
   expect(node.textContent).not.toContain(
     'Enter a message or attach a readable file.',
   );
-  expect(
-    node.querySelector('#study-composer-status .sr-only')?.textContent,
-  ).toBe('Draft saved');
+  expect(node.querySelector('#study-composer-status')).toBeNull();
   expect(node.querySelector('textarea')?.className).toContain('resize-none');
   expect(node.querySelector('[data-slot="input-group"]')?.className).toContain(
     'border-0',
@@ -604,14 +575,6 @@ it('keeps the idle composer plain without redundant help or saved indicators', a
     node.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')
       ?.disabled,
   ).toBe(true);
-});
-
-it('shows an accessible quiet save icon inside the composer toolbar', async () => {
-  const node = await mount(defaultProps());
-  const status = node.querySelector('#study-composer-status')!;
-  expect(status.closest('[data-slot="input-group-addon"]')).not.toBeNull();
-  expect(status.querySelector('svg')).not.toBeNull();
-  expect(status.querySelector('.sr-only')?.textContent).toBe('Draft saved');
 });
 
 it('disables hosted dictation while the session is offline even with browser connectivity', async () => {
@@ -626,4 +589,95 @@ it('disables hosted dictation while the session is offline even with browser con
     }),
   );
   expect(captured?.disabled).toBe(true);
+});
+it('presents processing attachments with a large filename and one spinner beside provenance', async () => {
+  const node = await mount(
+    defaultProps({
+      onAddAttachments: vi.fn(async () => [
+        {
+          ...readyAttachment,
+          title: 'Biology notes.pdf',
+          status: 'processing' as const,
+          versionId: null,
+        },
+      ]),
+    }),
+  );
+  await click(
+    node.querySelector<HTMLButtonElement>(
+      'button[aria-label="Add attachment"]',
+    )!,
+  );
+  const attachment = node.querySelector('[data-slot="attachment"]')!;
+  expect(
+    attachment.querySelector('[data-slot="attachment-title"]')?.className,
+  ).toContain('text-base');
+  expect(
+    attachment.querySelectorAll('.motion-safe\\:animate-spin'),
+  ).toHaveLength(1);
+  expect(attachment.textContent).not.toContain('Reading file');
+  expect(
+    attachment.querySelector('[data-slot="attachment-description"]')
+      ?.textContent,
+  ).toBe('Uploaded by you');
+  expect(
+    node.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')
+      ?.disabled,
+  ).toBe(true);
+});
+it('refreshes newly selected files even when ingestion finished before selection returned', async () => {
+  const onRefreshAttachment = vi.fn(async (attachment: StudyAttachment) => ({
+    ...attachment,
+    status: 'complete' as const,
+    versionId: 'version-ready',
+  }));
+  const node = await mount(
+    defaultProps({
+      onAddAttachments: vi.fn(async () => [
+        { ...readyAttachment, status: 'queued' as const, versionId: null },
+      ]),
+      onRefreshAttachment,
+    }),
+  );
+  await click(
+    node.querySelector<HTMLButtonElement>(
+      'button[aria-label="Add attachment"]',
+    )!,
+  );
+  await act(drain);
+  expect(onRefreshAttachment).toHaveBeenCalledOnce();
+  expect(
+    node.querySelector('[data-slot="attachment"]')?.getAttribute('data-state'),
+  ).toBe('done');
+  expect(
+    node.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')
+      ?.disabled,
+  ).toBe(false);
+});
+it('does not restore a removed file when an attachment refresh finishes late', async () => {
+  let finishRefresh!: (attachment: StudyAttachment) => void;
+  const onRefreshAttachment = vi.fn(
+    () =>
+      new Promise<StudyAttachment>((resolve) => {
+        finishRefresh = resolve;
+      }),
+  );
+  const node = await mount(
+    defaultProps({
+      onAddAttachments: vi.fn(async () => [readyAttachment]),
+      onRefreshAttachment,
+    }),
+  );
+  await click(
+    node.querySelector<HTMLButtonElement>(
+      'button[aria-label="Add attachment"]',
+    )!,
+  );
+  await click(
+    node.querySelector<HTMLButtonElement>(
+      'button[aria-label="Remove Lecture notes from message"]',
+    )!,
+  );
+  await act(async () => finishRefresh(readyAttachment));
+  expect(node.querySelector('[data-slot="attachment"]')).toBeNull();
 });

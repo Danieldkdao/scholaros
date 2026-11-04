@@ -166,6 +166,10 @@ const formatSafeStatusPart = (code: string) => {
       return 'The response was interrupted.';
     case 'failed':
       return 'The response could not be completed.';
+    case 'learning-action-unavailable':
+      return 'Your explanation is saved, but a learning activity could not be created. Please try again.';
+    case 'safe-response-unavailable':
+      return 'The tutor could not safely prepare this response. Try asking about a concept or another source.';
     case 'feature-unavailable':
       return 'Study responses are unavailable right now.';
     case 'provider-failed':
@@ -228,9 +232,12 @@ const AttachmentPart = ({
       data-slot="study-message-attachment"
       data-item-id={itemId}
       state={status.state}
-      size="sm"
+      size="default"
     >
-      <AttachmentMedia>
+      <AttachmentMedia
+        role={status.state === 'processing' ? 'status' : undefined}
+        aria-label={status.state === 'processing' ? status.label : undefined}
+      >
         {status.state === 'processing' ? (
           <LoaderCircleIcon
             aria-hidden="true"
@@ -241,15 +248,16 @@ const AttachmentPart = ({
         )}
       </AttachmentMedia>
       <AttachmentContent>
-        <AttachmentTitle>{title}</AttachmentTitle>
-        <AttachmentDescription className="flex flex-wrap items-center gap-1 text-base">
-          <StatusIcon aria-hidden="true" className="size-4" />
-          <span>{status.label}</span>
+        <AttachmentTitle className="text-base">{title}</AttachmentTitle>
+        <AttachmentDescription className="flex flex-col items-start gap-1 text-sm">
           {details && (
-            <>
-              <span aria-hidden="true">/</span>
-              <span>{formatStudyContextProvenance(details.provenance)}</span>
-            </>
+            <span>{formatStudyContextProvenance(details.provenance)}</span>
+          )}
+          {status.state === 'error' && (
+            <span className="flex items-center gap-1">
+              <StatusIcon aria-hidden="true" className="size-4" />
+              {status.label}
+            </span>
           )}
         </AttachmentDescription>
       </AttachmentContent>
