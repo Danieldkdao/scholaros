@@ -9,6 +9,8 @@
     "./ai/academic": "./src/ai/academic.ts",
     "./ai/schemas": "./src/ai/schemas.ts",
     "./ai/dictation": "./src/ai/dictation.ts",
+    "./ai/learning-dispatch": "./src/ai/learning-dispatch.ts",
+    "./ai/practice-generation": "./src/ai/practice-generation.ts",
     "./ai/course-discovery": "./src/ai/course-discovery.ts",
     "./ai/connection-resolver": "./src/ai/connection-resolver.ts",
     "./ai/models/inference": "./src/ai/models/inference.ts",
