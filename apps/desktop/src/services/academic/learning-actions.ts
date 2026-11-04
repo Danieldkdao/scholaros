@@ -1,3 +1,7 @@
+import type {
+  SourcePassage,
+  SourceReference,
+} from '@scholaros/services/learning/context-contracts';
 import { createHash, randomUUID } from 'node:crypto';
 import { and, eq, isNull } from 'drizzle-orm';
 import type {
@@ -849,29 +853,110 @@ export const loadLearningActionModules = async (): Promise<
               throw new LearningClientError('permission-revoked');
           };
           assertCurrent();
+          const snapshot = await activeSessionStore.getStudySession(context, {
+            sessionId: input.sessionId,
+          });
+          assertCurrent();
+          if (!snapshot || snapshot.session.courseId !== input.courseId)
+            throw new LearningClientError('scope-denied');
+          const existingCourse = database.db
+            .select()
+            .from(tables.CourseTable)
+            .where(
+              and(
+                eq(tables.CourseTable.userId, context.userId),
+                eq(tables.CourseTable.id, snapshot.session.courseId),
+                eq(tables.CourseTable.active, true),
+                isNull(tables.CourseTable.suppressedAt),
+              ),
+            )
+            .get();
+          if (!existingCourse) throw new LearningClientError('scope-denied');
           const offered = new Set(
             input.references.map((reference) => JSON.stringify(reference)),
           );
-          const sources =
-            libraryRetrieval
-              .searchStudySources(context, {
-                sessionId: input.sessionId,
-                query: input.objective,
-                selectedIds: input.references.map(({ sourceId }) => sourceId),
-              })
-              ?.filter(({ reference }) =>
-                offered.has(JSON.stringify(reference)),
-              )
-              .flatMap((passage) => {
-                const text = sourcePreview.filterSourcePreview(context, {
+          const libraryReferences = input.references.filter(
+            ({ sourceKind }) => sourceKind !== 'assignment',
+          );
+          const passages: SourcePassage[] =
+            libraryReferences.length === 0
+              ? []
+              : (libraryRetrieval.searchStudySources(context, {
                   sessionId: input.sessionId,
-                  reference: passage.reference,
-                  text: passage.text,
-                });
-                return text === null ? [] : [{ ...passage, text }];
-              }) ?? [];
+                  query: input.objective,
+                  selectedIds: libraryReferences.map(
+                    ({ sourceId }) => sourceId,
+                  ),
+                }) ?? []);
+          if (
+            input.references.some(
+              ({ sourceKind }) => sourceKind === 'assignment',
+            )
+          ) {
+            const targetAssignmentId = snapshot.session.targetAssignmentId;
+            const existingAssignment =
+              targetAssignmentId === null
+                ? undefined
+                : database.db
+                    .select()
+                    .from(tables.CourseAssignmentTable)
+                    .where(
+                      and(
+                        eq(tables.CourseAssignmentTable.userId, context.userId),
+                        eq(
+                          tables.CourseAssignmentTable.courseId,
+                          snapshot.session.courseId,
+                        ),
+                        eq(tables.CourseAssignmentTable.id, targetAssignmentId),
+                        eq(tables.CourseAssignmentTable.active, true),
+                        isNull(tables.CourseAssignmentTable.suppressedAt),
+                      ),
+                    )
+                    .get();
+            if (!existingAssignment?.body)
+              throw new LearningClientError('scope-denied');
+            const reference: SourceReference = {
+              sourceKind: 'assignment',
+              sourceId: existingAssignment.id,
+              versionId: null,
+              courseId: snapshot.session.courseId,
+              locator: null,
+              title: existingAssignment.title,
+              provenance: 'connected-source',
+              observedAt: existingAssignment.lastSeenAt,
+              state: 'current',
+            };
+            if (!offered.has(JSON.stringify(reference)))
+              throw new LearningClientError('scope-denied');
+            passages.unshift({
+              reference,
+              text: existingAssignment.body.slice(0, 2000),
+              score: null,
+            });
+          }
+          const sources = [
+            ...new Map(
+              passages
+                .filter(({ reference }) =>
+                  offered.has(JSON.stringify(reference)),
+                )
+                .flatMap((passage) => {
+                  const text = sourcePreview.filterSourcePreview(context, {
+                    sessionId: input.sessionId,
+                    reference: passage.reference,
+                    text: passage.text,
+                  });
+                  return text === null ? [] : [{ ...passage, text }];
+                })
+                .map(
+                  (passage) =>
+                    [JSON.stringify(passage.reference), passage] as const,
+                ),
+            ).values(),
+          ];
           if (sources.length === 0 || sources.length !== offered.size)
             throw new LearningClientError('scope-denied');
+          assertCurrent();
           const response = learningResponseSchema.parse(
             await requestLearning(
               learningRequestSchema.parse({

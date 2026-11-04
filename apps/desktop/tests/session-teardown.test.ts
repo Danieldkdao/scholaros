@@ -623,6 +623,7 @@ describe('session teardown', () => {
 });
 
 describe('real learning module activity composition', () => {
+  let finishFixtureOperation: (() => void) | undefined;
   let sqlite: Database.Database;
   let dispose: ActionCleanup | undefined;
 
@@ -701,6 +702,8 @@ describe('real learning module activity composition', () => {
   });
 
   afterEach(async () => {
+    finishFixtureOperation?.();
+    finishFixtureOperation = undefined;
     await dispose?.();
     dispose = undefined;
     vi.restoreAllMocks();
@@ -775,7 +778,9 @@ describe('real learning module activity composition', () => {
       adapter,
       adapterFactory,
       sessionFactory,
+      sessionStore: sessionFactory.mock.results.at(-1)!.value,
       requestLearning: tutorRegistration.mock.calls.at(-1)![1].requestLearning,
+      createActivity: tutorRegistration.mock.calls.at(-1)![1].createActivity,
       context,
       invokeAction,
     };
@@ -838,6 +843,220 @@ describe('real learning module activity composition', () => {
         runtimeVersion: 1,
       },
     });
+
+  const assignmentActivityFixture = async (mixed = false) => {
+    const timestamp = '2026-11-03T00:00:00.000Z';
+    storage
+      .db!.insert(schema.CourseAssignmentTable)
+      .values({
+        id: 'assignment-a',
+        userId: 'student-a',
+        courseId: 'course-a',
+        sourceKey: 'schoology:assignment-a',
+        title: 'Wave concepts',
+        body: 'Explore how wave frequency changes when the input changes. '.repeat(
+          60,
+        ),
+        url: 'https://school.test.invalid/assignment-a',
+        lastSeenAt: timestamp,
+      })
+      .run();
+    sqlite
+      .prepare(
+        'UPDATE study_sessions SET target_assignment_id = ? WHERE id = ?',
+      )
+      .run('assignment-a', 'session-a');
+    const real = await registerRealModules();
+    const { registerStudySessionOperation } =
+      await import('../src/features/study/services/session-events');
+    finishFixtureOperation = registerStudySessionOperation(
+      real.context,
+      'session-a',
+      'turn-a',
+      new AbortController(),
+    );
+    const reference: import('@scholaros/services/learning/context-contracts').SourceReference =
+      {
+        sourceKind: 'assignment',
+        sourceId: 'assignment-a',
+        versionId: null,
+        courseId: 'course-a',
+        locator: null,
+        title: 'Wave concepts',
+        provenance: 'connected-source',
+        observedAt: timestamp,
+        state: 'current',
+      };
+    const references = [reference];
+    if (mixed) {
+      const note = (await real.invokeAction('createContextNote', {
+        requestId: randomUUID(),
+        title: 'Wave frequency',
+        text: 'Wave frequency describes waves per second.',
+        kind: 'note',
+        courseId: 'course-a',
+      })) as { id: string };
+      const { searchStudySources } =
+        await import('../src/features/context/services/library-retrieval');
+      const passages = searchStudySources(real.context, {
+        sessionId: 'session-a',
+        query: 'wave',
+        selectedIds: [note.id],
+      });
+      expect(passages?.length).toBeGreaterThan(0);
+      references.push(passages![0]!.reference);
+    }
+    const { resolveAssistancePolicy } =
+      await import('../src/features/integrity/services/policy');
+    const policy = resolveAssistancePolicy(real.context, {
+      sessionId: 'session-a',
+      targetAssignmentId: 'assignment-a',
+      sourceIds: ['assignment-a'],
+    });
+    const revisions = real.sessionStore.readStudySessionRevisions(
+      real.context,
+      { sessionId: 'session-a' },
+    );
+    sqlite
+      .prepare(
+        'UPDATE study_turns SET policy_revision = ?, context_revision = ? WHERE id = ?',
+      )
+      .run(revisions.policyRevision, revisions.contextRevision, 'turn-a');
+    const input = {
+      sessionId: 'session-a',
+      turnId: 'turn-a',
+      generationEpoch: 0,
+      ...revisions,
+      courseId: 'course-a',
+      targetAssignmentId: 'assignment-a',
+      requestId: randomUUID(),
+      idempotencyKey: 'fixture-activity',
+      payloadDigest: 'fixture-digest',
+      effectIndex: 0,
+      policy,
+      references,
+      objective: 'wave',
+    };
+    storage.fetch.mockImplementation(async (_url, options) => {
+      const request = JSON.parse(String(options?.body));
+      return Response.json({
+        version: 1,
+        requestId: request.requestId,
+        generationId: randomUUID(),
+        parts: [],
+        citations: [],
+        proposedEffects: [
+          {
+            kind: 'create-activity',
+            candidate: {
+              title: 'Wave control',
+              objective: 'Explore a wave.',
+              html: '<label for="frequency">Frequency</label><input id="frequency" type="range"><output aria-live="polite"></output>',
+              css: '',
+              javascript:
+                "const input = document.querySelector('#frequency'); const output = document.querySelector('output'); input.addEventListener('input', () => { output.textContent = input.value; });",
+              accessibleExplanation: 'Explore frequency conceptually.',
+              sourceReferences: request.input.sources.map(
+                (source: { reference: unknown }) => source.reference,
+              ),
+              runtimeVersion: 1,
+            },
+          },
+        ],
+        usage: { inputTokens: 1, outputTokens: 1 },
+        configurationRevision: 'fixture-meta-only',
+      });
+    });
+    return { ...real, input };
+  };
+
+  it.each([false, true])(
+    'creates an approved activity from the current target assignment with mixed library sources %s',
+    async (mixed) => {
+      const real = await assignmentActivityFixture(mixed);
+      const created = await real.createActivity(real.context, real.input);
+      expect(created.artifactId).toBeTruthy();
+      expect(storage.fetch).toHaveBeenCalledOnce();
+      const request = JSON.parse(String(storage.fetch.mock.calls[0]![1]?.body));
+      expect(request.kind).toBe('activity-generate');
+      expect(
+        request.input.sources.map(
+          (source: { reference: unknown }) => source.reference,
+        ),
+      ).toEqual(real.input.references);
+      expect(request.input.sources[0].text.length).toBeLessThanOrEqual(2000);
+      expect(
+        sqlite.prepare('SELECT COUNT(*) AS count FROM artifacts').get(),
+      ).toEqual({ count: 1 });
+    },
+  );
+
+  it.each([
+    'wrong-target',
+    'stale-reference',
+    'foreign-course',
+    'foreign-user',
+    'suppressed',
+    'removed',
+    'preview-denied',
+    'revoked',
+  ])(
+    'rejects assignment activity sources before inference for %s',
+    async (scenario) => {
+      const real = await assignmentActivityFixture();
+      let context = real.context;
+      if (scenario === 'wrong-target')
+        real.input.references[0] = {
+          ...real.input.references[0]!,
+          sourceId: 'assignment-b',
+        };
+      if (scenario === 'stale-reference')
+        real.input.references[0] = {
+          ...real.input.references[0]!,
+          observedAt: '2026-11-02T00:00:00.000Z',
+        };
+      if (scenario === 'foreign-course') real.input.courseId = 'course-b';
+      if (scenario === 'foreign-user')
+        context = { ...context, userId: 'student-b' };
+      if (scenario === 'suppressed')
+        sqlite
+          .prepare(
+            'UPDATE course_assignments SET suppressed_at = ? WHERE id = ?',
+          )
+          .run('2026-11-03T01:00:00.000Z', 'assignment-a');
+      if (scenario === 'removed')
+        sqlite
+          .prepare('UPDATE course_assignments SET active = 0 WHERE id = ?')
+          .run('assignment-a');
+      if (scenario === 'preview-denied') {
+        const preview =
+          await import('../src/features/integrity/services/source-preview');
+        vi.spyOn(preview, 'filterSourcePreview').mockReturnValue(null);
+      }
+      if (scenario === 'revoked') real.input.gradeConsentRevision += 1;
+      await expect(real.createActivity(context, real.input)).rejects.toThrow();
+      expect(storage.fetch).not.toHaveBeenCalled();
+      expect(
+        sqlite.prepare('SELECT COUNT(*) AS count FROM artifacts').get(),
+      ).toEqual({ count: 0 });
+    },
+  );
+
+  it('does not publish an activity after the session is revoked during inference', async () => {
+    const real = await assignmentActivityFixture();
+    const response = storage.fetch.getMockImplementation()!;
+    storage.fetch.mockImplementation(async (...args) => {
+      const result = await response(...args);
+      await real.lifecycle.invalidate();
+      return result;
+    });
+    await expect(
+      real.createActivity(real.context, real.input),
+    ).rejects.toThrow();
+    expect(
+      sqlite.prepare('SELECT COUNT(*) AS count FROM artifacts').get(),
+    ).toEqual({ count: 0 });
+  });
 
   it('loads actual registrars and shares one store for authorization, checkpoint, cache reads and release', async () => {
     const { handlers, store, adapterFactory, context, invokeAction } =
@@ -1179,7 +1398,13 @@ describe('real learning module activity composition', () => {
           'SELECT COUNT(*) AS count FROM study_messages WHERE turn_id = ? AND role = ?',
         )
         .get(admitted.turnId, 'tutor'),
-    ).toEqual({ count: 2 });
+    ).toEqual({ count: 1 });
+    const activityMessage = snapshot.messages.find(({ parts }) =>
+      parts.some(({ kind }) => kind === 'activity'),
+    );
+    expect(activityMessage?.parts.some(({ kind }) => kind === 'text')).toBe(
+      true,
+    );
     await vi.waitFor(() =>
       expect(
         sqlite
