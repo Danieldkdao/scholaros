@@ -88,7 +88,7 @@ const parseQuietHour = (value: string) => {
 const getPermissionMessage = (permission: NotificationPermission) => {
   switch (permission) {
     case 'granted':
-      return null;
+      return 'Enabled in ScholarOS. On macOS, also allow ScholarOS in System Settings → Notifications.';
     case 'denied':
       return 'Allow notifications in system settings, then try enabling them again.';
     case 'unsupported':

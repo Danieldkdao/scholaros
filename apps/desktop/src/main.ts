@@ -6,6 +6,7 @@ import {
   ipcMain,
   net,
   Notification,
+  shell,
   systemPreferences,
   webContents,
 } from 'electron';
@@ -51,6 +52,7 @@ import {
   requireTrustedSender,
 } from './lib/trusted-windows';
 import { protectWindowNavigation } from './lib/window-navigation';
+import { openSystemPermissionSettings } from './lib/permission-settings';
 import {
   contextFileSelectionResultSchema,
   contextFileSelectionSchema,
@@ -1242,6 +1244,12 @@ const registerTrustedNativeIpc = () => {
       const granted = await systemPreferences.askForMediaAccess('microphone');
       requireTrustedSender(event);
       await requireActiveStudySession(event, user, sessionId);
+      if (!granted)
+        await openSystemPermissionSettings(
+          'microphone',
+          process.platform,
+          (url) => shell.openExternal(url),
+        );
       return { state: granted ? 'granted' : 'denied' };
     },
   );
@@ -1270,6 +1278,12 @@ const registerTrustedNativeIpc = () => {
       if (!owner?.context.isCurrent())
         throw new Error('Your session changed; sign in again.');
       await owner.host.setPermission(owner.context, state);
+      // Chromium's permission result does not confirm the separate macOS alert setting.
+      await openSystemPermissionSettings(
+        'notifications',
+        process.platform,
+        (url) => shell.openExternal(url),
+      );
       return { state };
     },
   );

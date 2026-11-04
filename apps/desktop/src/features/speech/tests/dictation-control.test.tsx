@@ -226,7 +226,9 @@ it('explains transmission before requesting microphone permission', async () => 
   expect(bridge.requestMicrophonePermission).toHaveBeenCalledWith({
     sessionId: 'session-a',
   });
-  expect(container.textContent).toContain('Microphone permission was denied');
+  expect(container.textContent).toContain('Privacy & Security → Microphone');
+  await clickButton('Open microphone settings');
+  expect(bridge.requestMicrophonePermission).toHaveBeenCalledTimes(2);
 });
 
 it('disables dictation while offline without requesting microphone access', async () => {
@@ -286,7 +288,7 @@ it('stops capture when microphone permission is revoked', async () => {
   await vi.waitFor(() => expect(bridge.cancelDictation).toHaveBeenCalledOnce());
 
   expect(microphone.track.stop).toHaveBeenCalledOnce();
-  expect(container.textContent).toContain('Microphone permission was denied');
+  expect(container.textContent).toContain('Privacy & Security → Microphone');
 });
 
 it('preserves the draft when no microphone device is available', async () => {

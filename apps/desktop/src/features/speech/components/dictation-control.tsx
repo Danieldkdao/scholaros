@@ -123,6 +123,19 @@ export const DictationControl = ({
       ) : (
         button
       )}
+      {dictation.status === 'denied' && (
+        <Button
+          variant="link"
+          size="sm"
+          onClick={() =>
+            void window.scholar
+              .requestMicrophonePermission({ sessionId })
+              .catch(() => undefined)
+          }
+        >
+          Open microphone settings
+        </Button>
+      )}
       {isActive && (
         <TooltipWrapper content="Cancel dictation">
           <Button

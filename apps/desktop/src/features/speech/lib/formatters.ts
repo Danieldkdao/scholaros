@@ -45,7 +45,11 @@ export const formatDictationStatus = (
     case 'final':
       return { label: 'Transcript ready to edit.', Icon: CircleCheck };
     case 'denied':
-      return { label: 'Microphone permission was denied.', Icon: MicOff };
+      return {
+        label:
+          'Allow ScholarOS in System Settings → Privacy & Security → Microphone, then restart the app if needed.',
+        Icon: MicOff,
+      };
     case 'offline':
       return { label: 'Reconnect to transcribe speech.', Icon: CloudOff };
     case 'disconnected':
