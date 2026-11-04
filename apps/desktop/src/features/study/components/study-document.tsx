@@ -634,7 +634,7 @@ export const StudyDocument = ({
           {conversation}
         </ActivityPanel>
       </section>
-      <div className="sticky bottom-0 z-10 shrink-0 bg-background">
+      <div className="sticky bottom-0 z-10 shrink-0 border-t border-border bg-background">
         <StudyComposer
           key={`${accountId}:${sessionId}:composer`}
           sessionId={sessionId}
