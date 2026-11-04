@@ -475,19 +475,44 @@ export const registerTutorPracticeActions = (
       const revisions = sessionStore.readStudySessionRevisions(context, {
         sessionId: input.sessionId,
       });
-      const selected = readSources(context, {
-        sessionId: input.sessionId,
-        query: input.objective,
-        selectedIds: input.references.map(({ sourceId }) => sourceId),
-      });
+      const libraryReferences = input.references.filter(
+        ({ sourceKind }) => sourceKind !== 'assignment',
+      );
+      const selected =
+        libraryReferences.length > 0
+          ? readSources(context, {
+              sessionId: input.sessionId,
+              query: input.objective,
+              selectedIds: libraryReferences.map(({ sourceId }) => sourceId),
+            })
+          : null;
+      const gradeSettings = await getGradeSettings(context);
+      if (!gradeSettings) throw new TutorServiceError('permission-revoked');
+      const assignmentSources = input.references.some(
+        ({ sourceKind }) => sourceKind === 'assignment',
+      )
+        ? await studyContext.readCourseSources(context, {
+            sessionId: input.sessionId,
+            courseId: input.courseId,
+            targetAssignmentId: snapshot.session.targetAssignmentId,
+            gradeAccessEnabled: gradeSettings.enabled,
+            gradeConsentRevision: gradeSettings.revision,
+            query: input.objective,
+          })
+        : null;
       const offered = new Set(
         input.references.map((reference) => JSON.stringify(reference)),
       );
-      const sources =
-        selected?.passages
-          .filter(({ reference }) => offered.has(JSON.stringify(reference)))
-          .map(({ reference, text }) => ({ reference, excerpt: text })) ?? [];
-      if (sources.length === 0) throw new TutorServiceError('scope-denied');
+      const sources = [
+        ...(selected?.passages ?? []),
+        ...(assignmentSources?.passages.filter(
+          ({ reference }) => reference.sourceKind === 'assignment',
+        ) ?? []),
+      ]
+        .filter(({ reference }) => offered.has(JSON.stringify(reference)))
+        .map(({ reference, text }) => ({ reference, excerpt: text }));
+      if (sources.length === 0 || sources.length !== offered.size)
+        throw new TutorServiceError('scope-denied');
       const request: LearningRequest = learningRequestSchema.parse({
         version: 1,
         kind: 'practice-generate',

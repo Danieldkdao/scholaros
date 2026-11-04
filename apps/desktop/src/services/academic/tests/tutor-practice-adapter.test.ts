@@ -521,9 +521,29 @@ describe('real tutor and practice academic registration', () => {
     'stale-citation',
     'cross-course-citation',
     'invalid-question-reference',
+    'assignment-target',
+    'assignment-wrong',
+    'assignment-stale',
+    'assignment-cross-course',
   ] as const)(
     'validates practice source selection with %s',
     async (sourceMode) => {
+      const assignmentMode = sourceMode.startsWith('assignment-');
+      if (assignmentMode)
+        db.insert(CourseAssignmentTable)
+          .values({
+            id: 'practice-target-assignment',
+            userId: owner,
+            courseId,
+            sourceKey: 'manual:practice-target-assignment',
+            title: 'Membrane assignment',
+            body: 'Explain cell membranes conceptually. Describe transport through membranes.',
+            dateValue: null,
+            dateText: null,
+            url: '',
+            lastSeenAt: new Date().toISOString(),
+          })
+          .run();
       await createContextNote(context, {
         requestId: randomUUID(),
         title: 'Membrane notes',
@@ -539,25 +559,29 @@ describe('real tutor and practice academic registration', () => {
         courseId,
       });
       let selectedSourceId = '';
-      const succeeds = ['question-references', 'cited-source'].includes(
-        sourceMode,
-      );
+      const succeeds = [
+        'question-references',
+        'cited-source',
+        'assignment-target',
+      ].includes(sourceMode);
       const requestLearning = vi.fn<
         TutorPracticeDependencies['requestLearning']
       >(async (request, signal) => {
         if (request.kind === 'tutor-turn') {
-          expect(request.input.sources).toHaveLength(2);
+          expect(request.input.sources).toHaveLength(assignmentMode ? 3 : 2);
           const reference = request.input.sources[0]!.reference;
           selectedSourceId = reference.sourceId;
           const citation = {
             ...reference,
-            ...(sourceMode === 'foreign-citation'
+            ...(['foreign-citation', 'assignment-wrong'].includes(sourceMode)
               ? { sourceId: 'foreign-source' }
               : {}),
-            ...(sourceMode === 'stale-citation'
+            ...(['stale-citation', 'assignment-stale'].includes(sourceMode)
               ? { versionId: 'stale-version' }
               : {}),
-            ...(sourceMode === 'cross-course-citation'
+            ...(['cross-course-citation', 'assignment-cross-course'].includes(
+              sourceMode,
+            )
               ? { courseId: 'foreign-course' }
               : {}),
           };
@@ -659,7 +683,9 @@ describe('real tutor and practice academic registration', () => {
         requestId: randomUUID(),
         courseId,
         activity: 'prepare-exam',
-        targetAssignmentId: null,
+        targetAssignmentId: assignmentMode
+          ? 'practice-target-assignment'
+          : null,
         topic: 'Cell membranes',
         contextItemIds: [],
         durationMinutes: null,
