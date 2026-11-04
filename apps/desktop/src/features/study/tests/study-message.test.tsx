@@ -95,3 +95,80 @@ it('keeps tutor text unboxed and failure information visible without a redundant
   expect(article.textContent).not.toContain('ScholarOS');
   expect(article.querySelector('[role="status"]')).not.toBeNull();
 });
+it('formats tutor Markdown while preserving student text', async () => {
+  await render(
+    message({
+      role: 'tutor',
+      parts: [{ kind: 'text', text: '## Loops\n\nUse **repetition**.' }],
+    }),
+  );
+  expect(container.querySelector('h2')?.textContent).toBe('Loops');
+  expect(container.querySelector('strong')?.textContent).toBe('repetition');
+  await render(
+    message({
+      parts: [{ kind: 'text', text: '**Student text stays literal**' }],
+    }),
+  );
+  expect(container.querySelector('strong')).toBeNull();
+  expect(container.textContent).toContain('**Student text stays literal**');
+});
+it.each([
+  ['feature-unavailable', 'Study responses are unavailable right now.'],
+  [
+    'provider-failed',
+    'The study service could not finish this response. Please try again.',
+  ],
+  ['rate-limited', 'The study service is busy. Please try again shortly.'],
+  ['offline', 'Reconnect to the internet to continue this response.'],
+])(
+  'shows a safe explanation for %s without rendering provider text',
+  async (code, label) => {
+    await render(
+      message({
+        role: 'system-status',
+        status: 'failed',
+        parts: [{ kind: 'status', code, label: 'UNTRUSTED_SECRET_ERROR' }],
+      }),
+    );
+    expect(container.textContent).toContain(label);
+    expect(container.textContent).not.toContain('UNTRUSTED_SECRET_ERROR');
+  },
+);
+it('keeps source inspection host-owned beside formatted tutor text', async () => {
+  const reference = {
+    sourceKind: 'course-material' as const,
+    sourceId: 'material-1',
+    versionId: 'version-1',
+    courseId: 'course-1',
+    locator: { kind: 'page' as const, page: 2 },
+    title: 'Course notes',
+    provenance: 'connected-source' as const,
+    observedAt: null,
+    state: 'current' as const,
+  };
+  const onInspectSource = vi.fn();
+  await act(async () =>
+    root.render(
+      createElement(StudyMessage, {
+        message: message({
+          role: 'tutor',
+          parts: [
+            { kind: 'text', text: '**Saved explanation**' },
+            { kind: 'citation', reference },
+          ],
+        }),
+        gradeContentVisible: true,
+        gradeEvidenceVisible: true,
+        onInspectSource,
+      }),
+    ),
+  );
+  const sourceButton = container.querySelector(
+    '[aria-label="Inspect source Course notes"]',
+  ) as HTMLButtonElement;
+  expect(container.querySelector('strong')?.textContent).toBe(
+    'Saved explanation',
+  );
+  act(() => sourceButton.click());
+  expect(onInspectSource).toHaveBeenCalledWith(reference);
+});

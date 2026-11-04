@@ -35,6 +35,7 @@ import {
   MessageGroup,
 } from '@scholaros/ui/components/message';
 import type { StudyAttachmentDetails } from '../hooks/use-study-session';
+import { StudyMarkdown } from './study-markdown';
 
 type AttachmentPresentation = {
   label: string;
@@ -43,6 +44,7 @@ type AttachmentPresentation = {
 };
 export type StudyMessageProps = {
   message: StudyMessageDTO;
+  streaming?: boolean;
   gradeContentVisible: boolean;
   gradeEvidenceVisible: boolean;
   loadAttachment?: (
@@ -164,6 +166,14 @@ const formatSafeStatusPart = (code: string) => {
       return 'The response was interrupted.';
     case 'failed':
       return 'The response could not be completed.';
+    case 'feature-unavailable':
+      return 'Study responses are unavailable right now.';
+    case 'provider-failed':
+      return 'The study service could not finish this response. Please try again.';
+    case 'rate-limited':
+      return 'The study service is busy. Please try again shortly.';
+    case 'offline':
+      return 'Reconnect to the internet to continue this response.';
     default:
       return 'Study session update';
   }
@@ -300,6 +310,7 @@ const StatusPart = ({ code }: { code: string }) => {
 
 export const StudyMessage = ({
   message,
+  streaming = false,
   gradeContentVisible,
   gradeEvidenceVisible,
   loadAttachment,
@@ -336,7 +347,11 @@ export const StudyMessage = ({
         }
         switch (part.kind) {
           case 'text':
-            return <TextPart key={key} text={part.text} />;
+            return message.role === 'tutor' ? (
+              <StudyMarkdown key={key} text={part.text} streaming={streaming} />
+            ) : (
+              <TextPart key={key} text={part.text} />
+            );
           case 'citation':
             if (
               part.reference.sourceKind === 'grade-evidence' &&
