@@ -23,25 +23,27 @@ import { LoadingSwap } from '@scholaros/ui/components/loading-swap';
 import { useConfirm } from '../../../hooks/use-confirm';
 import { errorMessage } from '../../../lib/error-message';
 
+export type DeleteLocalData = (input: { requestId: string }) => Promise<void>;
+
 type LocalDataSettingsProps = {
-  onDeleteLocalData?: () => Promise<void>;
+  deleteLocalData?: DeleteLocalData;
   onDeleted?: () => void;
 };
 
 export const LocalDataSettings = ({
-  onDeleteLocalData,
+  deleteLocalData,
   onDeleted,
 }: LocalDataSettingsProps) => {
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const confirmation = useConfirm<boolean>();
 
-  const deleteLocalData = async () => {
-    if (!confirmation.pending || !onDeleteLocalData) return;
+  const removeLocalData = async () => {
+    if (!confirmation.pending || !deleteLocalData) return;
     setDeleting(true);
     setError(null);
     try {
-      await onDeleteLocalData();
+      await deleteLocalData({ requestId: window.crypto.randomUUID() });
       confirmation.cancel();
       onDeleted?.();
     } catch (cause) {
@@ -93,15 +95,15 @@ export const LocalDataSettings = ({
         <CardContent>
           <Button
             variant="destructive"
-            disabled={!onDeleteLocalData || deleting}
+            disabled={!deleteLocalData || deleting}
             onClick={() => confirmation.request(true)}
           >
             <Trash2 className="size-4" />
             Review local data removal
           </Button>
-          {!onDeleteLocalData && (
+          {!deleteLocalData && (
             <p className="text-base text-muted-foreground">
-              Local data removal is unavailable until the device service is
+              Local data removal is unavailable until the product adapter is
               connected.
             </p>
           )}
@@ -137,7 +139,7 @@ export const LocalDataSettings = ({
               disabled={deleting}
               onClick={(event) => {
                 event.preventDefault();
-                void deleteLocalData();
+                void removeLocalData();
               }}
             >
               <LoadingSwap isLoading={deleting}>Remove local data</LoadingSwap>

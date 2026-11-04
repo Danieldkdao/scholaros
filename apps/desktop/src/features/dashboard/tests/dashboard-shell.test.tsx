@@ -10,7 +10,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Providers } from '../../../components/providers';
 import { getCurrentUser } from '../../../lib/auth/helpers';
 import { routeTree } from '../../../route-tree.gen';
-import type { CurrentUser } from '../../onboarding/types';
+import type { CurrentUser, OnboardingState } from '../../onboarding/types';
+import type { NotificationSettings as NotificationSettingsValue } from '@scholaros/services/learning/notification-contracts';
+import type { NotificationPermission } from '../../notifications/services/notification-policy';
+import { createDefaultNotificationSettings } from '../../notifications/services/notification-policy';
 
 vi.mock('../../../lib/auth/helpers', () => ({ getCurrentUser: vi.fn() }));
 
@@ -53,6 +56,20 @@ const finishedUser: CurrentUser = {
   hasCompletedOnboarding: true,
 };
 
+type TestSettingsBridge = Omit<
+  typeof window.scholar,
+  'requestNotificationPermission' | 'deleteLocalAcademicData'
+> & {
+  getNotificationPermissionState?: () => Promise<NotificationPermission>;
+  requestNotificationPermission?: (
+    input: Record<string, never>,
+  ) => Promise<{ state: NotificationPermission }>;
+  deleteLocalAcademicData?: (input: {
+    requestId: string;
+    scope: 'account-local';
+  }) => Promise<void>;
+};
+
 const bridge = {
   getCurrentUser: vi.fn(),
   getState: vi.fn(async () => ({
@@ -71,7 +88,48 @@ const bridge = {
   onConnectChange: vi.fn(() => () => undefined),
   getConnectRun: vi.fn(async () => ({ status: 'idle', accountId: null })),
   signOut: vi.fn(async () => undefined),
-} as unknown as typeof window.scholar;
+  getNotificationSettings: vi.fn(async () =>
+    createDefaultNotificationSettings(),
+  ),
+  saveNotificationSettings: vi.fn(async (input) => ({
+    ...input.settings,
+    revision: input.expectedRevision + 1,
+  })),
+  getNotificationPermissionState: vi.fn(async () => 'unknown' as const),
+  requestNotificationPermission: vi.fn(async () => ({
+    state: 'granted' as const,
+  })),
+  deleteLocalAcademicData: vi.fn(async () => undefined),
+} as unknown as TestSettingsBridge;
+
+const makeSettingsState = (): OnboardingState =>
+  ({
+    accountId: 'student-a',
+    settings: {
+      step: 'review',
+      consent: true,
+      launchAtLogin: false,
+      backgroundSync: false,
+      decisionTimeSeconds: 1,
+      blockedWords: [],
+      notes: '',
+      localSetupCompletedAt: null,
+    },
+    workspace: null,
+    connections: [],
+    primaryLms: null,
+    discovery: {
+      status: 'pending',
+      message: null,
+      discoveredAt: null,
+      coverage: {},
+      entries: [],
+    },
+    preferences: {
+      launchAtLogin: { status: 'off', message: null },
+      backgroundSync: { status: 'off', message: null, lastSyncedAt: null },
+    },
+  }) as unknown as OnboardingState;
 
 const buildRouter = (path: string) =>
   createRouter({
@@ -140,8 +198,41 @@ beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(getCurrentUser).mockResolvedValue(finishedUser);
   bridge.getCurrentUser = vi.fn(async () => finishedUser);
+  bridge.getState = vi.fn(async () => makeSettingsState());
+  bridge.getWatchSettings = vi.fn(async () => ({
+    watchEnabled: false,
+    watchUrls: [],
+  }));
+  bridge.getWatchRuntimeState = vi.fn(async () => ({
+    enabled: false,
+    status: 'off' as const,
+  }));
+  bridge.saveWatchSettings = vi.fn(async (settings) => settings);
+  bridge.onWatchChange = vi.fn(() => () => undefined);
+  bridge.onCoursesChange = vi.fn(() => () => undefined);
+  bridge.onBackgroundSyncChange = vi.fn(() => () => undefined);
+  bridge.onConnectChange = vi.fn(() => () => undefined);
+  bridge.getConnectRun = vi.fn(async () => ({
+    status: 'idle' as const,
+    accountId: null,
+    awaiting: null,
+    events: [],
+    results: [],
+  }));
+  bridge.getNotificationSettings = vi.fn(async () =>
+    createDefaultNotificationSettings(),
+  );
+  bridge.saveNotificationSettings = vi.fn(async (input) => ({
+    ...input.settings,
+    revision: input.expectedRevision + 1,
+  }));
+  bridge.getNotificationPermissionState = vi.fn(async () => 'unknown' as const);
+  bridge.requestNotificationPermission = vi.fn(async () => ({
+    state: 'granted' as const,
+  }));
+  bridge.deleteLocalAcademicData = vi.fn(async () => undefined);
   bridge.signOut = vi.fn(async () => undefined);
-  window.scholar = bridge;
+  window.scholar = bridge as unknown as typeof window.scholar;
   window.onAuthenticated = vi.fn(() => () => undefined);
   window.onUserUpdated = vi.fn(() => () => undefined);
 });
@@ -178,6 +269,62 @@ describe('dashboard shell', () => {
       return target;
     });
     expect(document.activeElement).toBe(section);
+  });
+
+  it('loads notification settings without prompting and autosaves with a revision fence', async () => {
+    const initialSettings: NotificationSettingsValue =
+      createDefaultNotificationSettings();
+    bridge.getNotificationSettings = vi.fn(async () => initialSettings);
+    bridge.saveNotificationSettings = vi.fn(async (input) => ({
+      ...input.settings,
+      revision: input.expectedRevision + 1,
+    }));
+    await openRoute('/dashboard/settings?section=notifications');
+
+    await vi.waitFor(() =>
+      expect(
+        document.querySelector(
+          '[aria-labelledby="notification-settings-title"]',
+        ),
+      ).toBeTruthy(),
+    );
+    expect(bridge.getNotificationSettings).toHaveBeenCalledOnce();
+    expect(bridge.getNotificationPermissionState).toHaveBeenCalledOnce();
+    expect(bridge.requestNotificationPermission).not.toHaveBeenCalled();
+
+    await dispatchPointerClick(
+      document.querySelector('[aria-label="Sync completed"]')!,
+    );
+    await vi.waitFor(() =>
+      expect(bridge.saveNotificationSettings).toHaveBeenCalledOnce(),
+    );
+    expect(bridge.saveNotificationSettings).toHaveBeenCalledWith({
+      settings: expect.objectContaining({
+        enabled: false,
+        categories: expect.objectContaining({ 'sync-completed': true }),
+      }),
+      expectedRevision: 0,
+    });
+    expect(document.querySelector('button[type="submit"]')).toBeNull();
+  });
+
+  it('keeps local academic data removal disabled until the product adapter is available', async () => {
+    const deleteLocalAcademicData = vi.fn().mockResolvedValue(undefined);
+    bridge.deleteLocalAcademicData = deleteLocalAcademicData;
+    await openRoute('/dashboard/settings?section=local-data');
+
+    const reviewButton = await vi.waitFor(() => {
+      const button = [...document.querySelectorAll('button')].find((item) =>
+        item.textContent?.includes('Review local data removal'),
+      );
+      expect(button).toBeTruthy();
+      return button!;
+    });
+    expect(reviewButton.disabled).toBe(true);
+    expect(document.body.textContent).toContain(
+      'Local data removal is unavailable until the product adapter is connected.',
+    );
+    expect(deleteLocalAcademicData).not.toHaveBeenCalled();
   });
 
   it.each([

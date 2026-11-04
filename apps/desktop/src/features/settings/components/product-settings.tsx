@@ -50,6 +50,7 @@ import type { SettingsSaveStatus } from '../lib/formatters';
 import { DeviceSettings } from './device-settings';
 import type { DeviceReplacementActions } from './device-settings';
 import { LocalDataSettings } from './local-data-settings';
+import type { DeleteLocalData } from './local-data-settings';
 
 type SettingsLeafSections = Partial<
   Record<'grades' | 'personal-context' | 'notifications', ReactNode>
@@ -70,7 +71,7 @@ type ProductSettingsProps = {
   ) => Promise<OnboardingState | void>;
   onWatchSave: (settings: WatchSettings) => Promise<WatchSettings>;
   onStateChange: (state: OnboardingState) => void;
-  onDeleteLocalData?: () => Promise<void>;
+  deleteLocalData?: DeleteLocalData;
   onLocalDataDeleted?: () => void;
 };
 
@@ -272,11 +273,18 @@ export const ProductSettings = ({
   onSettingsSave,
   onWatchSave,
   onStateChange,
-  onDeleteLocalData,
+  deleteLocalData,
   onLocalDataDeleted,
 }: ProductSettingsProps) => {
   const activeSection = section === 'watch' ? 'background' : section;
   const focusWatch = section === 'watch';
+  const watchSetupMessage = !state.settings.consent
+    ? 'Approve academic access on this computer to enable watching.'
+    : !state.settings.localSetupCompletedAt
+      ? 'Finish this computer’s setup to enable watching.'
+      : state.workspace?.ready !== true
+        ? 'Set up your study browser to enable watching.'
+        : null;
 
   useEffect(() => {
     const target = document.getElementById(`settings-section-${activeSection}`);
@@ -393,6 +401,7 @@ export const ProductSettings = ({
                 status={watchRuntime?.status ?? state.watch?.status ?? 'off'}
                 health={watchHealth}
                 focusOnMount={focusWatch}
+                setupMessage={watchSetupMessage}
                 onSave={onWatchSave}
               />
             ) : watchError ? (
@@ -430,7 +439,7 @@ export const ProductSettings = ({
         )}
         {activeSection === 'local-data' && (
           <LocalDataSettings
-            onDeleteLocalData={onDeleteLocalData}
+            deleteLocalData={deleteLocalData}
             onDeleted={onLocalDataDeleted}
           />
         )}

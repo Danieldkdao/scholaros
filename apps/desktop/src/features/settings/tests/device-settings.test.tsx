@@ -264,3 +264,137 @@ it('disables replacement choices until the safe device bridge is available', asy
 
   await act(async () => root.unmount());
 });
+
+it('announces the selected browser choice to assistive technology', async () => {
+  const { container, root } = await mount(null);
+  const chromeButton = [...container.querySelectorAll('button')].find(
+    (button) => button.textContent?.includes('Google Chrome'),
+  )!;
+  const edgeButton = [...container.querySelectorAll('button')].find((button) =>
+    button.textContent?.includes('Microsoft Edge'),
+  )!;
+
+  expect(chromeButton.getAttribute('aria-pressed')).toBe('true');
+  expect(edgeButton.getAttribute('aria-pressed')).toBe('false');
+
+  await act(async () => root.unmount());
+});
+
+it('reports a cancelled commit without claiming browser replacement succeeded', async () => {
+  const actions: DeviceReplacementActions = {
+    stage: vi.fn(async () => dto),
+    commit: vi.fn(async () => ({ ...dto, state: 'cancelled' as const })),
+    cancel: vi.fn(async () => ({
+      ...dto,
+      state: 'cancelled' as const,
+      revision: 2,
+    })),
+  };
+  const onStateChange = vi.fn();
+  const { bridge, container, root } = await mount(actions, onStateChange);
+
+  await click(
+    [...container.querySelectorAll('button')].find((button) =>
+      button.textContent?.includes('Microsoft Edge'),
+    )!,
+  );
+  const confirmButton = await vi.waitFor(() => {
+    const button = document.body.querySelector(
+      '[data-slot="alert-dialog-action"]',
+    );
+    expect(button).toBeTruthy();
+    return button!;
+  });
+  await click(confirmButton);
+
+  await vi.waitFor(() =>
+    expect(container.textContent).toContain(
+      'Browser replacement was cancelled; your current study browser is unchanged.',
+    ),
+  );
+  expect(bridge.getState).not.toHaveBeenCalled();
+  expect(onStateChange).not.toHaveBeenCalled();
+  expect(container.textContent).not.toContain('Study browser replaced.');
+
+  await act(async () => root.unmount());
+});
+
+it('keeps confirmation open until browser replacement reaches a successful state', async () => {
+  const actions: DeviceReplacementActions = {
+    stage: vi.fn(async () => dto),
+    commit: vi.fn(async () => ({ ...dto, state: 'ready' as const })),
+    cancel: vi.fn(async () => ({
+      ...dto,
+      state: 'cancelled' as const,
+      revision: 2,
+    })),
+  };
+  const onStateChange = vi.fn();
+  const { bridge, container, root } = await mount(actions, onStateChange);
+
+  await click(
+    [...container.querySelectorAll('button')].find((button) =>
+      button.textContent?.includes('Microsoft Edge'),
+    )!,
+  );
+  const confirmButton = await vi.waitFor(() => {
+    const button = document.body.querySelector(
+      '[data-slot="alert-dialog-action"]',
+    );
+    expect(button).toBeTruthy();
+    return button!;
+  });
+  await click(confirmButton);
+
+  await vi.waitFor(() =>
+    expect(container.textContent).toContain(
+      'Browser replacement is still being verified; your current study browser remains selected.',
+    ),
+  );
+  expect(
+    document.body.querySelector('[data-slot="alert-dialog-action"]'),
+  ).toBeTruthy();
+  expect(bridge.getState).not.toHaveBeenCalled();
+  expect(onStateChange).not.toHaveBeenCalled();
+
+  await act(async () => root.unmount());
+});
+
+it('refreshes device settings when cancellation reports an already committed replacement', async () => {
+  const actions: DeviceReplacementActions = {
+    stage: vi.fn(async () => dto),
+    commit: vi.fn(async () => ({ ...dto, state: 'needs-sign-in' as const })),
+    cancel: vi.fn(async () => ({ ...dto, state: 'needs-sign-in' as const })),
+  };
+  const onStateChange = vi.fn();
+  const { bridge, container, root } = await mount(actions, onStateChange);
+
+  await click(
+    [...container.querySelectorAll('button')].find((button) =>
+      button.textContent?.includes('Microsoft Edge'),
+    )!,
+  );
+  await vi.waitFor(() =>
+    expect(
+      document.body.querySelector('[data-slot="alert-dialog-cancel"]'),
+    ).toBeTruthy(),
+  );
+  await click(
+    document.body.querySelector('[data-slot="alert-dialog-cancel"]')!,
+  );
+
+  await vi.waitFor(() => expect(bridge.getState).toHaveBeenCalledOnce());
+  expect(onStateChange).toHaveBeenCalledWith(
+    expect.objectContaining({
+      workspace: expect.objectContaining({ browser: 'edge' }),
+    }),
+  );
+  expect(container.textContent).toContain(
+    'Browser replaced. Sign in to your school again in the study browser.',
+  );
+  expect(container.textContent).not.toContain(
+    'Your current study browser remains selected.',
+  );
+
+  await act(async () => root.unmount());
+});

@@ -1,7 +1,9 @@
 import { expect, it, vi } from 'vitest';
+import { createDefaultNotificationSettings } from '../../notifications/services/notification-policy';
 import {
   clearSettingsSaveState,
   getSettingsSaveState,
+  queueNotificationSettingsSave,
   queueSettingsSave,
   queueWatchSettingsSave,
   reconcileSettingsSaveDraft,
@@ -174,6 +176,117 @@ it('restores an interrupted save after restart and retries with a fresh handler'
   } finally {
     vi.unstubAllGlobals();
   }
+});
+
+it('restores typed notification drafts after a renderer restart', async () => {
+  const values = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => values.set(key, value),
+    removeItem: (key: string) => values.delete(key),
+  } as unknown as Storage;
+  vi.stubGlobal('window', { localStorage: storage });
+  try {
+    vi.resetModules();
+    const firstQueue = await import('../settings-save-queue');
+    const accountId = `notification-restart-${crypto.randomUUID()}`;
+    const defaults = createDefaultNotificationSettings();
+    const draft = {
+      ...defaults,
+      enabled: true,
+      categories: { ...defaults.categories, 'sync-completed': true },
+    };
+    void firstQueue.queueNotificationSettingsSave(
+      accountId,
+      draft,
+      () => new Promise<void>(() => undefined),
+    );
+
+    vi.resetModules();
+    const restartedQueue = await import('../settings-save-queue');
+    const restored = restartedQueue.getSettingsSaveState(accountId);
+    expect(restored.draft.notificationSettings).toEqual(draft);
+    expect(restored.groups.notifications?.error).toContain('interrupted');
+
+    const retriedDrafts: unknown[] = [];
+    restartedQueue.registerSettingsSaveRetry(
+      accountId,
+      'notifications',
+      async (retryDraft) => {
+        retriedDrafts.push(retryDraft.notificationSettings);
+      },
+    );
+    await restartedQueue.retrySettingsSave(accountId, 'notifications');
+    expect(retriedDrafts).toEqual([draft]);
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+it('clears failed notification drafts only when persisted preferences match', async () => {
+  const accountId = `notification-reconcile-${crypto.randomUUID()}`;
+  const defaults = createDefaultNotificationSettings();
+  const draft = {
+    ...defaults,
+    enabled: true,
+    categories: { ...defaults.categories, 'sync-completed': true },
+  };
+  await expect(
+    queueNotificationSettingsSave(accountId, draft, async () => {
+      throw new Error('notification service offline');
+    }),
+  ).rejects.toThrow('notification service offline');
+
+  reconcileSettingsSaveDraft(accountId, {
+    notificationSettings: { ...defaults, revision: 4 },
+  });
+  expect(getSettingsSaveState(accountId).groups.notifications?.error).toBe(
+    'notification service offline',
+  );
+  expect(getSettingsSaveState(accountId).draft.notificationSettings).toEqual(
+    draft,
+  );
+
+  reconcileSettingsSaveDraft(accountId, {
+    notificationSettings: { ...draft, revision: 5 },
+  });
+  expect(getSettingsSaveState(accountId).groups.notifications).toMatchObject({
+    error: null,
+    draft: {},
+  });
+});
+
+it('retains a matching notification draft while newer saves are pending', async () => {
+  const accountId = `notification-stale-persisted-${crypto.randomUUID()}`;
+  const defaults = createDefaultNotificationSettings();
+  const changed = { ...defaults, enabled: true };
+  let releaseFirst!: () => void;
+  const firstSave = vi.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      }),
+  );
+  const first = queueNotificationSettingsSave(accountId, changed, firstSave);
+  await vi.waitFor(() => expect(firstSave).toHaveBeenCalledOnce());
+  const second = queueNotificationSettingsSave(
+    accountId,
+    defaults,
+    async () => undefined,
+  );
+
+  reconcileSettingsSaveDraft(accountId, {
+    notificationSettings: { ...defaults, revision: 0 },
+  });
+
+  expect(getSettingsSaveState(accountId).groups.notifications).toMatchObject({
+    pending: 2,
+    draft: { notificationSettings: defaults },
+  });
+
+  releaseFirst();
+  await first;
+  await second;
 });
 
 it('clears local retry drafts and fences queued writes after data removal', async () => {

@@ -32,6 +32,15 @@ type DeviceReplacementResult = {
   revision: number;
 };
 
+type CompletedDeviceReplacement = Omit<DeviceReplacementResult, 'state'> & {
+  state: 'committed' | 'needs-sign-in';
+};
+
+const isCompletedReplacement = (
+  result: DeviceReplacementResult,
+): result is CompletedDeviceReplacement =>
+  result.state === 'committed' || result.state === 'needs-sign-in';
+
 export type DeviceReplacementActions = {
   stage: (input: {
     requestId: string;
@@ -100,6 +109,17 @@ export const DeviceSettings = ({
     confirmation.request(staged);
   };
 
+  const completeReplacement = async (result: CompletedDeviceReplacement) => {
+    const nextState = await window.scholar.getState();
+    onStateChange(nextState);
+    confirmation.cancel();
+    setNotice(
+      result.state === 'needs-sign-in'
+        ? 'Browser replaced. Sign in to your school again in the study browser.'
+        : 'Study browser replaced.',
+    );
+  };
+
   const cancelReplacement = async () => {
     const replacement = confirmation.pending;
     if (!replacement || !replacementActions) return;
@@ -112,6 +132,14 @@ export const DeviceSettings = ({
           result.errorCode
             ? formatWorkspaceReplacementError(result.errorCode)
             : 'The candidate browser could not be closed safely.',
+        );
+      if (isCompletedReplacement(result)) {
+        await completeReplacement(result);
+        return;
+      }
+      if (result.state !== 'cancelled')
+        throw new Error(
+          'Browser replacement is still being verified; your current study browser remains selected.',
         );
       confirmation.cancel();
       setNotice('Your current study browser remains selected.');
@@ -126,6 +154,13 @@ export const DeviceSettings = ({
         operationId: replacement.operationId,
         expectedRevision: replacement.revision,
       });
+      if (result.state === 'cancelled') {
+        confirmation.cancel();
+        setNotice(
+          'Browser replacement was cancelled; your current study browser is unchanged.',
+        );
+        return;
+      }
       if (result.state === 'failed') {
         confirmation.cancel();
         throw new Error(
@@ -134,14 +169,11 @@ export const DeviceSettings = ({
             : 'The browser could not be replaced; review Settings and try again.',
         );
       }
-      const nextState = await window.scholar.getState();
-      onStateChange(nextState);
-      confirmation.cancel();
-      setNotice(
-        result.state === 'needs-sign-in'
-          ? 'Browser replaced. Sign in to your school again in the study browser.'
-          : 'Study browser replaced.',
-      );
+      if (!isCompletedReplacement(result))
+        throw new Error(
+          'Browser replacement is still being verified; your current study browser remains selected.',
+        );
+      await completeReplacement(result);
     });
   };
 

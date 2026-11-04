@@ -301,11 +301,41 @@ it('shows bounded durable pending, last-check, retry and failure-category health
   expect(
     container.querySelectorAll('[data-slot="card"]').length,
   ).toBeGreaterThan(0);
+  expect(
+    container.querySelector(
+      '[role="group"][aria-label="Watch health details"]',
+    ),
+  ).not.toBeNull();
   expect(container.textContent).toContain('Last successful check');
   expect(container.textContent).toContain('2 pending changes');
   expect(container.textContent).toContain('Connection problem: 1');
   expect(container.textContent).toContain('Next retry');
   expect(container.textContent).not.toContain('%');
+
+  await act(async () => root.unmount());
+});
+
+it('uses singular age for one pending day', async () => {
+  const health: WatchHealthSummary = {
+    status: 'watching',
+    pendingRevisionCount: 1,
+    oldestPendingSince: new Date(Date.now() - 24 * 60 * 60_000).toISOString(),
+    oldestPendingSinceEstimated: false,
+    lastSuccessfulCheckAt: null,
+    nextRetryAt: null,
+    failures: [],
+  };
+  const { container, root } = await mount(
+    { watchEnabled: true, watchUrls: [] },
+    undefined,
+    [connection],
+    `health-age-${crypto.randomUUID()}`,
+    false,
+    health,
+  );
+
+  expect(container.textContent).toContain('for 1 day');
+  expect(container.textContent).not.toContain('for 1 days');
 
   await act(async () => root.unmount());
 });

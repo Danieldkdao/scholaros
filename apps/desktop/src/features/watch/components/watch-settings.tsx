@@ -57,6 +57,7 @@ type WatchSettingsProps = {
   connections: WatchSettingsConnection[];
   status: WatchRuntimeStatus;
   health?: WatchHealthSummary | null;
+  setupMessage?: string | null;
   onSave: (settings: WatchSettingsValue) => Promise<WatchSettingsValue>;
   focusOnMount?: boolean;
 };
@@ -67,6 +68,7 @@ export const WatchSettings = ({
   connections,
   status,
   health = null,
+  setupMessage = null,
   onSave,
   focusOnMount = false,
 }: WatchSettingsProps) => {
@@ -104,6 +106,12 @@ export const WatchSettings = ({
   const configuredResourceConnections = connections.filter(
     (connection) => connection.isCourseResource,
   );
+  const connectionEligibilityMessage = !configuredResourceConnections.length
+    ? 'Add a course resource connection to enable watching.'
+    : !activeResourceConnections.length
+      ? 'Sign in to a course resource connection to enable watching.'
+      : null;
+  const eligibilityMessage = setupMessage ?? connectionEligibilityMessage;
   const defaultTargets = getEffectiveWatchTargetInputs(
     { watchEnabled: true, watchUrls: [] },
     activeResourceConnections,
@@ -283,9 +291,10 @@ export const WatchSettings = ({
           <Switch
             id="watch-course-pages-switch"
             checked={settings.watchEnabled}
-            disabled={
-              !activeResourceConnections.length && !settings.watchEnabled
+            aria-describedby={
+              eligibilityMessage ? 'watch-eligibility-message' : undefined
             }
+            disabled={!settings.watchEnabled && Boolean(eligibilityMessage)}
             onCheckedChange={(checked) => toggleWatching(checked === true)}
           />
         </CardHeader>
@@ -295,13 +304,14 @@ export const WatchSettings = ({
             role="status"
             aria-live="polite"
           >
-            <statusView.Icon className="size-4 shrink-0" />
+            <statusView.Icon className="size-4 shrink-0" aria-hidden="true" />
             {statusView.label}
           </p>
           {health && healthView && (
             <div
               className="flex flex-col gap-2 text-base text-muted-foreground"
               aria-label="Watch health details"
+              role="group"
             >
               <p>Last successful check: {healthView.lastSuccessfulCheckAt}</p>
               {health.pendingRevisionCount > 0 && (
@@ -325,38 +335,43 @@ export const WatchSettings = ({
                 );
                 return (
                   <p key={failure.category} className="flex items-center gap-2">
-                    <formattedFailure.Icon className="size-4 shrink-0" />
+                    <formattedFailure.Icon
+                      className="size-4 shrink-0"
+                      aria-hidden="true"
+                    />
                     {formattedFailure.label}: {failure.targetCount}
                   </p>
                 );
               })}
             </div>
           )}
-          {!configuredResourceConnections.length ? (
-            <p className="flex flex-wrap items-center gap-2 text-base text-muted-foreground">
-              <CircleAlert className="size-4 shrink-0" />
-              Add a course resource connection to enable watching.
-              <Link
-                to="/dashboard/connections"
-                search={defaultConnectionSearch}
-                className="text-primary underline underline-offset-4"
-              >
-                Connections
-              </Link>
+          {eligibilityMessage && (
+            <p
+              id="watch-eligibility-message"
+              className="flex flex-wrap items-center gap-2 text-base text-muted-foreground"
+              role="status"
+            >
+              <CircleAlert className="size-4 shrink-0" aria-hidden="true" />
+              {eligibilityMessage}
+              {setupMessage ? (
+                <Link
+                  to="/dashboard/settings"
+                  search={{ section: 'device' }}
+                  className="text-primary underline underline-offset-4"
+                >
+                  Device setup
+                </Link>
+              ) : (
+                <Link
+                  to="/dashboard/connections"
+                  search={defaultConnectionSearch}
+                  className="text-primary underline underline-offset-4"
+                >
+                  Connections
+                </Link>
+              )}
             </p>
-          ) : !activeResourceConnections.length ? (
-            <p className="flex flex-wrap items-center gap-2 text-base text-muted-foreground">
-              <CircleAlert className="size-4 shrink-0" />
-              Sign in to a course resource connection to enable watching.
-              <Link
-                to="/dashboard/connections"
-                search={defaultConnectionSearch}
-                className="text-primary underline underline-offset-4"
-              >
-                Connections
-              </Link>
-            </p>
-          ) : null}
+          )}
         </CardContent>
       </Card>
 

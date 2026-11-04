@@ -5,6 +5,11 @@ import {
 } from '../onboarding/schemas';
 import { watchSettingsSchema } from '../watch/schemas';
 import type { WatchSettings } from '../watch/types';
+import {
+  notificationCategories,
+  notificationSettingsSchema,
+} from '@scholaros/services/learning/notification-contracts';
+import type { NotificationSettings } from '@scholaros/services/learning/notification-contracts';
 
 export const settingsSaveGroups = [
   'account',
@@ -23,6 +28,7 @@ export type SettingsSaveGroup = (typeof settingsSaveGroups)[number];
 
 export type SettingsSaveDraft = Partial<SettingsUpdateSchema> & {
   watchSettings?: WatchSettings;
+  notificationSettings?: NotificationSettings;
 };
 
 type SettingsSaveGroupState = {
@@ -41,7 +47,11 @@ export type SettingsSaveState = {
 };
 
 export const settingsUpdateFromSaveDraft = (draft: SettingsSaveDraft) => {
-  const { watchSettings: _watchSettings, ...changes } = draft;
+  const {
+    watchSettings: _watchSettings,
+    notificationSettings: _notificationSettings,
+    ...changes
+  } = draft;
   return settingsUpdateSchema.parse(changes);
 };
 
@@ -100,7 +110,7 @@ const readPersistedAccounts = () => {
 
 const parsePersistedDraft = (value: unknown): SettingsSaveDraft | null => {
   if (!isRecord(value)) return null;
-  const { watchSettings, ...settingsDraft } = value;
+  const { watchSettings, notificationSettings, ...settingsDraft } = value;
   const parsedSettings = settingsUpdateSchema.safeParse(settingsDraft);
   if (!parsedSettings.success) return null;
   const draft: SettingsSaveDraft = parsedSettings.data;
@@ -108,6 +118,12 @@ const parsePersistedDraft = (value: unknown): SettingsSaveDraft | null => {
     const parsedWatchSettings = watchSettingsSchema.safeParse(watchSettings);
     if (!parsedWatchSettings.success) return null;
     draft.watchSettings = parsedWatchSettings.data;
+  }
+  if (notificationSettings !== undefined) {
+    const parsedNotificationSettings =
+      notificationSettingsSchema.safeParse(notificationSettings);
+    if (!parsedNotificationSettings.success) return null;
+    draft.notificationSettings = parsedNotificationSettings.data;
   }
   return draft;
 };
@@ -251,6 +267,19 @@ const areEqual = (left: unknown, right: unknown) => {
   return left === right;
 };
 
+const notificationPreferencesMatch = (
+  left: NotificationSettings,
+  right: NotificationSettings,
+) =>
+  left.enabled === right.enabled &&
+  notificationCategories.every(
+    (category) => left.categories[category] === right.categories[category],
+  ) &&
+  left.quietHours.enabled === right.quietHours.enabled &&
+  left.quietHours.startMinute === right.quietHours.startMinute &&
+  left.quietHours.endMinute === right.quietHours.endMinute &&
+  left.quietHours.timeZone === right.quietHours.timeZone;
+
 const aggregateState = (
   previous: SettingsSaveState,
   groups: SettingsSaveState['groups'],
@@ -271,6 +300,7 @@ export const reconcileSettingsSaveDraft = (
   accountId: string,
   persisted: Partial<SettingsUpdateSchema> & {
     watchSettings?: WatchSettings;
+    notificationSettings?: NotificationSettings;
   },
 ) => {
   const state = getSettingsSaveState(accountId);
@@ -279,8 +309,24 @@ export const reconcileSettingsSaveDraft = (
 
   for (const groupName of settingsSaveGroups) {
     const group = groups[groupName];
-    if (!group || group.pending > 0 || group.error) continue;
+    if (!group) continue;
     const draft = { ...group.draft };
+    if (
+      groupName === 'notifications' &&
+      group.pending === 0 &&
+      draft.notificationSettings &&
+      persisted.notificationSettings &&
+      notificationPreferencesMatch(
+        draft.notificationSettings,
+        persisted.notificationSettings,
+      )
+    ) {
+      delete draft.notificationSettings;
+      groups[groupName] = { ...group, draft, error: null };
+      changed = true;
+      continue;
+    }
+    if (group.pending > 0 || group.error) continue;
     if (
       groupName === 'watch' &&
       draft.watchSettings &&
@@ -407,6 +453,18 @@ export const queueWatchSettingsSave = (
   save: RetryOperation,
 ) =>
   queueSettingsOperation(accountId, 'watch', { watchSettings: settings }, save);
+
+export const queueNotificationSettingsSave = (
+  accountId: string,
+  settings: NotificationSettings,
+  save: RetryOperation,
+) =>
+  queueSettingsOperation(
+    accountId,
+    'notifications',
+    { notificationSettings: settings },
+    save,
+  );
 
 export const retrySettingsSave = (
   accountId: string,

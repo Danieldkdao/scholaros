@@ -90,6 +90,7 @@ export const BrowserStep = ({
             <button
               key={browser.id}
               type="button"
+              aria-pressed={selected}
               disabled={
                 busy ||
                 browserSelectionDisabled ||
