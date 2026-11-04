@@ -26,24 +26,30 @@ export const saveGradeSettingsInputSchema = z.strictObject({
   expectedRevision: revisionSchema,
   deleteCollected: z.boolean().optional(),
 });
-export type SaveGradeSettingsInput = z.infer<
+export type SaveGradeSettingsInputSchema = z.infer<
   typeof saveGradeSettingsInputSchema
 >;
+export type SaveGradeSettingsInput = SaveGradeSettingsInputSchema;
 
 export const verifyCourseworkInputSchema = z.strictObject({
   courseId: idSchema,
   assignmentId: idSchema,
   requestId: requestIdSchema,
 });
-export type VerifyCourseworkInput = z.infer<typeof verifyCourseworkInputSchema>;
+export type VerifyCourseworkInputSchema = z.infer<
+  typeof verifyCourseworkInputSchema
+>;
+export type VerifyCourseworkInput = VerifyCourseworkInputSchema;
 
 export const getVerifiedCourseworkEvidenceInputSchema = z.strictObject({
   courseId: idSchema,
   assignmentId: idSchema,
 });
-export type GetVerifiedCourseworkEvidenceInput = z.infer<
+export type GetVerifiedCourseworkEvidenceInputSchema = z.infer<
   typeof getVerifiedCourseworkEvidenceInputSchema
 >;
+export type GetVerifiedCourseworkEvidenceInput =
+  GetVerifiedCourseworkEvidenceInputSchema;
 
 export type StoredGradeEvidence = {
   consentRevision: number;
@@ -173,17 +179,18 @@ const sourceReferencesFor = (
   source: GradeSourceRecord,
   observation: GradeObservation,
   evidenceId: string,
+  sourceVersion: string,
 ) => {
   const locators = [
     observation.locators.grade,
     observation.locators.completion,
     observation.locators.opportunity,
   ].filter((locator) => locator !== null);
-  return locators.map((locator) =>
+  const gradeReferences = locators.map((locator) =>
     sourceReferenceSchema.parse({
       sourceKind: 'grade-evidence',
       sourceId: evidenceId,
-      versionId: observation.contentDigest,
+      versionId: sourceVersion,
       courseId: source.courseId,
       locator,
       title: source.assignmentTitle.slice(0, 300),
@@ -192,6 +199,20 @@ const sourceReferencesFor = (
       state: 'current',
     }),
   );
+  return [
+    ...gradeReferences,
+    sourceReferenceSchema.parse({
+      sourceKind: 'assignment',
+      sourceId: source.assignmentId,
+      versionId: null,
+      courseId: source.courseId,
+      locator: null,
+      title: source.assignmentTitle.slice(0, 300),
+      provenance: 'connected-source',
+      observedAt: observation.observedAt,
+      state: 'current',
+    }),
+  ];
 };
 
 export const createGradeService = ({
@@ -378,6 +399,10 @@ export const createGradeService = ({
           );
         const state = stateForObservation(observation);
         const evidenceId = randomUUID();
+        const sourceVersion = JSON.stringify({
+          assignmentVersion: source.sourceVersion,
+          contentDigest: observation.contentDigest,
+        });
         const verification: GradeVerificationDTO = {
           courseId: source.courseId,
           assignmentId: source.assignmentId,
@@ -394,13 +419,10 @@ export const createGradeService = ({
             source,
             observation,
             evidenceId,
+            sourceVersion,
           ),
           reasonCode: reasonForObservation(observation),
         };
-        const sourceVersion = JSON.stringify({
-          assignmentVersion: source.sourceVersion,
-          contentDigest: observation.contentDigest,
-        });
         const savedEvidence = store.saveEvidence(context, {
           source,
           consentRevision,
@@ -443,17 +465,22 @@ export const createGradeService = ({
             reasonCode,
           );
         }
-        onEvidenceUpdated?.(context, savedEvidence.verification);
-        if (savedEvidence.verification.feedback) {
-          const key = `${context.userId}:${source.courseId}:${source.assignmentId}`;
+        const key = `${context.userId}:${source.courseId}:${source.assignmentId}`;
+        const feedback =
+          savedEvidence.verification.state === 'verified-completed'
+            ? observation.feedback
+            : null;
+        feedbackCache.delete(key);
+        if (feedback)
           feedbackCache.set(key, {
             assignmentVersion: source.sourceVersion,
             consentRevision,
-            feedback: savedEvidence.verification.feedback,
+            feedback,
             expiresAt: now() + verificationFreshnessMs,
           });
-        }
-        return savedEvidence.verification;
+        const result = { ...savedEvidence.verification, feedback };
+        onEvidenceUpdated?.(context, result);
+        return result;
       } catch {
         if (!isCurrent(context))
           throw new GradeServiceError(

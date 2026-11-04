@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { isReadNavigation } from '../../onboarding/lib/browser-policy';
 import { db } from '../../../db';
 import {
@@ -51,20 +51,20 @@ const gradesFromSettings = (settings: SettingSelectData | undefined) =>
   settings?.productPreferences?.grades ?? defaultGradePreference;
 
 const gradeSettingsFor = (userId: string): GradeSettings => {
-  const setting = db
+  const existingSettings = db
     .select()
     .from(SettingTable)
     .where(eq(SettingTable.userId, userId))
     .get();
-  const collectedGrades = db
+  const existingGradeEvidenceIds = db
     .select({ id: GradeEvidenceTable.id })
     .from(GradeEvidenceTable)
     .where(eq(GradeEvidenceTable.userId, userId))
     .all();
   return gradeSettingsSchema.parse({
-    ...gradesFromSettings(setting),
-    collectedCount: collectedGrades.length,
-    updatedAt: setting?.updatedAt ?? new Date().toISOString(),
+    ...gradesFromSettings(existingSettings),
+    collectedCount: existingGradeEvidenceIds.length,
+    updatedAt: existingSettings?.updatedAt ?? new Date().toISOString(),
   });
 };
 
@@ -101,18 +101,32 @@ const protectionFor = (
   userId: string,
   courseId: string,
   assignmentIdentity: string,
-) =>
-  reader
+  assignmentId: string,
+) => {
+  const existingProtections = reader
     .select()
     .from(CourseworkProtectionTable)
     .where(
       and(
         eq(CourseworkProtectionTable.userId, userId),
         eq(CourseworkProtectionTable.courseId, courseId),
-        eq(CourseworkProtectionTable.canonicalIdentity, assignmentIdentity),
       ),
     )
-    .get();
+    .all()
+    .filter(
+      (protection) =>
+        protection.canonicalIdentity === assignmentIdentity ||
+        protection.canonicalIdentity === `assignment:${assignmentId}` ||
+        protection.aliases.includes(assignmentIdentity) ||
+        protection.aliases.includes(assignmentId),
+    );
+  if (existingProtections.length > 1)
+    throw new GradeServiceError(
+      'scope-denied',
+      'This assignment has conflicting protected identities.',
+    );
+  return existingProtections[0];
+};
 
 const sourceFromRows = (
   reader: GradeReader,
@@ -120,7 +134,7 @@ const sourceFromRows = (
   courseId: string,
   assignmentId: string,
 ): GradeSourceRecord | null => {
-  const assignment = reader
+  const existingAssignment = reader
     .select()
     .from(CourseAssignmentTable)
     .where(
@@ -131,7 +145,7 @@ const sourceFromRows = (
       ),
     )
     .get();
-  if (!assignment) {
+  if (!existingAssignment) {
     const existingProtection = reader
       .select()
       .from(CourseworkProtectionTable)
@@ -160,79 +174,83 @@ const sourceFromRows = (
     };
   }
 
-  const course = reader
+  const existingCourse = reader
     .select()
     .from(CourseTable)
     .where(
       and(eq(CourseTable.userId, context.userId), eq(CourseTable.id, courseId)),
     )
     .get();
-  if (!course) return null;
-  const connection = course.connectionId
+  if (!existingCourse) return null;
+  const existingConnection = existingCourse.connectionId
     ? (reader
         .select()
         .from(AcademicConnectionTable)
         .where(
           and(
             eq(AcademicConnectionTable.userId, context.userId),
-            eq(AcademicConnectionTable.id, course.connectionId),
+            eq(AcademicConnectionTable.id, existingCourse.connectionId),
           ),
         )
         .get() ?? null)
     : null;
-  const setting = reader
+  const existingSettings = reader
     .select()
     .from(SettingTable)
     .where(eq(SettingTable.userId, context.userId))
     .get();
-  const workspace =
+  const existingWorkspace =
     reader
       .select()
       .from(BrowserWorkspaceTable)
       .where(eq(BrowserWorkspaceTable.userId, context.userId))
       .get() ?? null;
-  const identityConflicts = assignment.identityConflicts ?? [];
-  const protectedAssignment = protectionFor(
+  const identityConflicts = existingAssignment.identityConflicts ?? [];
+  const existingAssignmentProtection = protectionFor(
     reader,
     context.userId,
     courseId,
-    assignment.sourceKey,
+    existingAssignment.sourceKey,
+    existingAssignment.id,
   );
-  const sourceHost = connection?.host ?? null;
+  const sourceHost = existingConnection?.host ?? null;
   const sourceUrlAllowed =
-    !!sourceHost && isReadNavigation(assignment.url, [sourceHost]);
+    !!sourceHost && isReadNavigation(existingAssignment.url, [sourceHost]);
   const eligible =
-    !!connection &&
-    connection.status === 'verified' &&
-    !!connection.verifiedAt &&
-    connection.isCourseResource &&
-    !!setting?.consent &&
-    course.active &&
-    !!workspace?.verifiedAt &&
+    !!existingConnection &&
+    existingConnection.status === 'verified' &&
+    !!existingConnection.verifiedAt &&
+    existingConnection.isCourseResource &&
+    !!existingSettings?.consent &&
+    existingCourse.active &&
+    existingAssignment.active &&
+    !!existingWorkspace?.verifiedAt &&
     sourceUrlAllowed &&
     identityConflicts.length === 0 &&
-    assignment.suppressedAt === null &&
-    !protectedAssignment?.suppressed;
+    existingAssignment.suppressedAt === null &&
+    !existingAssignmentProtection?.suppressed;
   return {
-    assignmentId: assignment.id,
-    assignmentIdentity: assignment.sourceKey,
-    courseId: course.id,
-    connectionId: course.connectionId,
+    assignmentId: existingAssignment.id,
+    assignmentIdentity: existingAssignment.sourceKey,
+    courseId: existingCourse.id,
+    connectionId: existingCourse.connectionId,
     connectionHost: sourceHost,
-    assignmentUrl: assignment.url,
-    assignmentTitle: assignment.content?.title ?? assignment.title,
-    courseTitle: course.name,
+    assignmentUrl: existingAssignment.url,
+    assignmentTitle:
+      existingAssignment.content?.title ?? existingAssignment.title,
+    courseTitle: existingCourse.name,
     sourceVersion: assignmentVersionFor({
-      assignment,
-      course,
-      connection,
-      workspace,
-      academicConsent: !!setting?.consent,
+      assignment: existingAssignment,
+      course: existingCourse,
+      connection: existingConnection,
+      workspace: existingWorkspace,
+      academicConsent: !!existingSettings?.consent,
     }),
     eligible,
     suppressed:
-      assignment.suppressedAt !== null || !!protectedAssignment?.suppressed,
-    policyRevision: protectedAssignment?.policyRevision ?? 0,
+      existingAssignment.suppressedAt !== null ||
+      !!existingAssignmentProtection?.suppressed,
+    policyRevision: existingAssignmentProtection?.policyRevision ?? 0,
   };
 };
 
@@ -311,6 +329,7 @@ const ensureProtection = (
       context.userId,
       source.courseId,
       source.assignmentIdentity,
+      source.assignmentId,
     );
     const aliases = [
       ...new Set([
@@ -368,7 +387,7 @@ const ensureProtection = (
         userId: context.userId,
         courseId: source.courseId,
         connectionId: source.connectionId,
-        canonicalIdentity: source.assignmentIdentity,
+        canonicalIdentity: `assignment:${source.assignmentId}`,
         aliases,
         state: 'unknown',
         policyRevision: 0,
@@ -439,26 +458,32 @@ const getEvidence = (
   context: AuthorizedContext,
   source: GradeSourceRecord,
 ): StoredGradeEvidence | null => {
-  const protection = protectionFor(
+  const existingProtection = protectionFor(
     db,
     context.userId,
     source.courseId,
     source.assignmentIdentity,
+    source.assignmentId,
   );
-  if (!protection?.sourceEvidenceId || protection.suppressed) return null;
-  const row = db
+  if (!existingProtection?.sourceEvidenceId || existingProtection.suppressed)
+    return null;
+  const existingEvidence = db
     .select()
     .from(GradeEvidenceTable)
     .where(
       and(
         eq(GradeEvidenceTable.userId, context.userId),
-        eq(GradeEvidenceTable.id, protection.sourceEvidenceId),
+        eq(GradeEvidenceTable.id, existingProtection.sourceEvidenceId),
         isNull(GradeEvidenceTable.revokedAt),
       ),
     )
     .get();
-  return row
-    ? storedEvidenceFromRows(row, protection, source.assignmentId)
+  return existingEvidence
+    ? storedEvidenceFromRows(
+        existingEvidence,
+        existingProtection,
+        source.assignmentId,
+      )
     : null;
 };
 
@@ -477,12 +502,12 @@ const saveEvidence = (
         'session-changed',
         'Your session changed; sign in again.',
       );
-    const settingsRow = tx
+    const existingSettings = tx
       .select()
       .from(SettingTable)
       .where(eq(SettingTable.userId, context.userId))
       .get();
-    const consent = gradesFromSettings(settingsRow);
+    const consent = gradesFromSettings(existingSettings);
     if (!consent.enabled || consent.revision !== input.consentRevision)
       return null;
     const currentSource = sourceFromRows(
@@ -511,6 +536,7 @@ const saveEvidence = (
       context.userId,
       input.source.courseId,
       input.source.assignmentIdentity,
+      input.source.assignmentId,
     );
     if (
       (existingProtection?.policyRevision ?? 0) !== input.source.policyRevision
@@ -519,7 +545,18 @@ const saveEvidence = (
     const protectionId = existingProtection?.id ?? randomUUID();
     const policyRevision = (existingProtection?.policyRevision ?? 0) + 1;
     const sourceReferences = input.verification.sourceReferences;
-    const evidenceId = sourceReferences[0]?.sourceId ?? randomUUID();
+    const gradeReferences = sourceReferences.filter(
+      ({ sourceKind }) => sourceKind === 'grade-evidence',
+    );
+    const evidenceId = gradeReferences[0]?.sourceId;
+    if (
+      !evidenceId ||
+      gradeReferences.some((reference) => reference.sourceId !== evidenceId)
+    )
+      throw new GradeServiceError(
+        'invalid-input',
+        'Grade evidence is missing its trusted identity.',
+      );
     const aliases = [
       ...new Set([
         ...(existingProtection?.aliases ?? []),
@@ -534,10 +571,7 @@ const saveEvidence = (
           eq(GradeEvidenceTable.userId, context.userId),
           eq(GradeEvidenceTable.connectionId, input.source.connectionId),
           eq(GradeEvidenceTable.courseId, input.source.courseId),
-          eq(
-            GradeEvidenceTable.assignmentIdentity,
-            input.source.assignmentIdentity,
-          ),
+          inArray(GradeEvidenceTable.assignmentIdentity, aliases),
           isNull(GradeEvidenceTable.revokedAt),
         ),
       )
@@ -567,7 +601,9 @@ const saveEvidence = (
       userId: context.userId,
       courseId: input.source.courseId,
       connectionId: input.source.connectionId,
-      canonicalIdentity: input.source.assignmentIdentity,
+      canonicalIdentity:
+        existingProtection?.canonicalIdentity ??
+        `assignment:${input.source.assignmentId}`,
       aliases,
       state: input.verification.state,
       policyRevision,
@@ -595,15 +631,15 @@ const saveEvidence = (
       .from(GradeEvidenceTable)
       .where(eq(GradeEvidenceTable.id, evidenceId))
       .get();
-    const savedProtection = tx
+    const persistedProtection = tx
       .select()
       .from(CourseworkProtectionTable)
       .where(eq(CourseworkProtectionTable.id, protectionId))
       .get();
-    return insertedEvidence && savedProtection
+    return insertedEvidence && persistedProtection
       ? storedEvidenceFromRows(
           insertedEvidence,
-          savedProtection,
+          persistedProtection,
           input.source.assignmentId,
         )
       : null;
@@ -625,12 +661,12 @@ const revokeEvidence = (context: AuthorizedContext, now: string) => {
         ),
       )
       .run();
-    const protections = tx
+    const existingProtections = tx
       .select()
       .from(CourseworkProtectionTable)
       .where(eq(CourseworkProtectionTable.userId, context.userId))
       .all();
-    for (const protection of protections)
+    for (const protection of existingProtections)
       tx.update(CourseworkProtectionTable)
         .set({
           state: 'unknown',
@@ -653,12 +689,12 @@ const deleteCollected = (context: AuthorizedContext) =>
     tx.delete(GradeEvidenceTable)
       .where(eq(GradeEvidenceTable.userId, context.userId))
       .run();
-    const protections = tx
+    const existingProtections = tx
       .select()
       .from(CourseworkProtectionTable)
       .where(eq(CourseworkProtectionTable.userId, context.userId))
       .all();
-    for (const protection of protections)
+    for (const protection of existingProtections)
       tx.update(CourseworkProtectionTable)
         .set({
           state: 'unknown',

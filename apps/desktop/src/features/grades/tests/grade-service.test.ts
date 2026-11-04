@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import type {
@@ -46,6 +47,9 @@ const {
   CourseAssignmentTable,
   CourseTable,
   CourseworkProtectionTable,
+  GradeEvidenceTable,
+  StudySessionTable,
+  AssistanceLedgerTable,
   SettingTable,
 } = await import('../../../db/schema');
 const { gradeStore } = await import('../services/grade-store');
@@ -701,5 +705,304 @@ describe('grade action integration boundary', () => {
       }),
     );
     await cleanup();
+  });
+});
+
+describe('actual grade service/store/policy composition', () => {
+  it.each(['tutor-first', 'grade-first', 'legacy-alias'] as const)(
+    'keeps evidence, feedback and protection history consistent for %s',
+    async (order) => {
+      const userId = `grade-composed-${order}`;
+      const fixture = seedPersistentGradeSource(userId);
+      const authorized = context(userId);
+      const sessionId = randomUUID();
+      const timestamp = new Date().toISOString();
+      db.insert(StudySessionTable)
+        .values({
+          id: sessionId,
+          userId,
+          courseId: fixture.courseId,
+          title: 'Graded review',
+          activity: 'review-graded-mistakes',
+          targetAssignmentId: fixture.assignmentId,
+          status: 'in-progress',
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          lastOpenedAt: timestamp,
+        })
+        .run();
+      const { resolveAssistancePolicy } =
+        await import('../../integrity/services/policy');
+      const { isCurrentSourceReference } =
+        await import('../../integrity/services/source-preview');
+      const policyInput = {
+        sessionId,
+        targetAssignmentId: fixture.assignmentId,
+        sourceIds: [fixture.assignmentId],
+      };
+      let existingProtectionId: string | undefined;
+      if (order !== 'grade-first') {
+        const priorPolicy = resolveAssistancePolicy(authorized, policyInput);
+        existingProtectionId = priorPolicy.canonicalProtectionId!;
+        if (order === 'legacy-alias')
+          db.update(CourseworkProtectionTable)
+            .set({ canonicalIdentity: 'id:school-lab-1' })
+            .where(eq(CourseworkProtectionTable.id, existingProtectionId))
+            .run();
+        db.insert(AssistanceLedgerTable)
+          .values({
+            id: randomUUID(),
+            userId,
+            courseId: fixture.courseId,
+            protectionId: existingProtectionId,
+            questionFingerprint: 'a'.repeat(64),
+            assistanceUnits: 1,
+            createdAt: timestamp,
+            allowedSupportSummary: {
+              version: 1,
+              operations: {
+                concept: 1,
+                requirements: 0,
+                'bounded-hint': 0,
+                'distinct-practice': 0,
+                'source-feedback-review': 0,
+              },
+              candidateDigests: [],
+            },
+          })
+          .run();
+      }
+      const enabled = gradeStore.saveSettings(authorized, {
+        enabled: true,
+        notes: '',
+        expectedRevision: 0,
+      });
+      let collected = observation({
+        observedAt: timestamp,
+        feedback: 'SYNTHETIC_PRIVATE_FEEDBACK',
+      });
+      const collect = vi.fn(async () => collected);
+      const service = createGradeService({ store: gradeStore, collect });
+      const evidenceInput = {
+        courseId: fixture.courseId,
+        assignmentId: fixture.assignmentId,
+      };
+      const input = { ...evidenceInput, requestId: randomUUID() };
+      const verified = await service.verifyCoursework(authorized, input);
+      expect(verified.state).toBe('verified-completed');
+      expect(verified.feedback).toBe('SYNTHETIC_PRIVATE_FEEDBACK');
+      const protections = db
+        .select()
+        .from(CourseworkProtectionTable)
+        .where(eq(CourseworkProtectionTable.userId, userId))
+        .all();
+      expect(protections).toHaveLength(1);
+      expect(protections[0]!.aliases).toEqual(
+        expect.arrayContaining([fixture.assignmentId, 'id:school-lab-1']),
+      );
+      if (existingProtectionId)
+        expect(protections[0]!.id).toBe(existingProtectionId);
+      else
+        expect(protections[0]!.canonicalIdentity).toBe(
+          `assignment:${fixture.assignmentId}`,
+        );
+      const actualPolicy = resolveAssistancePolicy(authorized, policyInput);
+      expect(actualPolicy.state).toBe('verified-completed');
+      expect(actualPolicy.allowedOperations).toContain(
+        'source-feedback-review',
+      );
+      if (existingProtectionId)
+        expect(JSON.parse(actualPolicy.priorAssistanceSummary).units).toBe(1);
+      const actualSession = db
+        .select()
+        .from(StudySessionTable)
+        .where(eq(StudySessionTable.id, sessionId))
+        .get()!;
+      const evidence = db
+        .select()
+        .from(GradeEvidenceTable)
+        .where(eq(GradeEvidenceTable.userId, userId))
+        .get()!;
+      expect(evidence.id).not.toBe(fixture.assignmentId);
+      expect(
+        verified.sourceReferences.some(
+          ({ sourceKind }) => sourceKind === 'assignment',
+        ),
+      ).toBe(true);
+      for (const reference of verified.sourceReferences) {
+        expect(
+          isCurrentSourceReference(authorized, actualSession, reference),
+        ).toBe(true);
+        if (reference.sourceKind === 'grade-evidence') {
+          expect(reference.sourceId).toBe(evidence.id);
+          expect(reference.versionId).toBe(evidence.sourceVersion);
+        }
+      }
+      expect(JSON.stringify(evidence)).not.toContain(
+        'SYNTHETIC_PRIVATE_FEEDBACK',
+      );
+      expect(
+        (await service.getVerifiedCourseworkEvidence(authorized, evidenceInput))
+          ?.feedback,
+      ).toBe('SYNTHETIC_PRIVATE_FEEDBACK');
+      const restarted = createGradeService({ store: gradeStore, collect });
+      expect(
+        (
+          await restarted.getVerifiedCourseworkEvidence(
+            authorized,
+            evidenceInput,
+          )
+        )?.feedback,
+      ).toBeNull();
+      await restarted.dispose();
+      collected = { ...collected, feedback: null };
+      expect(
+        (
+          await service.verifyCoursework(authorized, {
+            ...input,
+            requestId: randomUUID(),
+          })
+        ).feedback,
+      ).toBeNull();
+      expect(
+        (await service.getVerifiedCourseworkEvidence(authorized, evidenceInput))
+          ?.feedback,
+      ).toBeNull();
+      db.update(CourseAssignmentTable)
+        .set({ sourceKey: 'id:renamed-same-assignment' })
+        .where(eq(CourseAssignmentTable.id, fixture.assignmentId))
+        .run();
+      collected = { ...collected, observedAt: new Date().toISOString() };
+      expect(
+        (
+          await service.verifyCoursework(authorized, {
+            ...input,
+            requestId: randomUUID(),
+          })
+        ).state,
+      ).toBe('verified-completed');
+      expect(
+        db
+          .select()
+          .from(CourseworkProtectionTable)
+          .where(eq(CourseworkProtectionTable.userId, userId))
+          .all(),
+      ).toHaveLength(1);
+      gradeStore.saveSettings(authorized, {
+        enabled: false,
+        notes: '',
+        expectedRevision: enabled.revision,
+      });
+      expect(
+        resolveAssistancePolicy(authorized, policyInput).allowedOperations,
+      ).not.toContain('source-feedback-review');
+      expect(
+        (await service.getVerifiedCourseworkEvidence(authorized, evidenceInput))
+          ?.feedback,
+      ).toBeNull();
+      await service.dispose();
+    },
+  );
+});
+
+describe('actual grade composition fail-closed cases', () => {
+  it.each([
+    'retake',
+    'conflicting-evidence',
+    'inactive',
+    'suppressed',
+    'ambiguous',
+  ] as const)('does not unlock source feedback for %s', async (scenario) => {
+    const userId = `grade-guard-${scenario}`;
+    const fixture = seedPersistentGradeSource(userId);
+    const authorized = context(userId);
+    const timestamp = new Date().toISOString();
+    const sessionId = randomUUID();
+    db.insert(StudySessionTable)
+      .values({
+        id: sessionId,
+        userId,
+        courseId: fixture.courseId,
+        title: 'Protected review',
+        activity: 'review-graded-mistakes',
+        targetAssignmentId: fixture.assignmentId,
+        status: 'in-progress',
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        lastOpenedAt: timestamp,
+      })
+      .run();
+    gradeStore.saveSettings(authorized, {
+      enabled: true,
+      notes: '',
+      expectedRevision: 0,
+    });
+    if (scenario === 'inactive')
+      db.update(CourseAssignmentTable)
+        .set({ active: false })
+        .where(eq(CourseAssignmentTable.id, fixture.assignmentId))
+        .run();
+    if (scenario === 'suppressed')
+      db.update(CourseAssignmentTable)
+        .set({ suppressedAt: timestamp })
+        .where(eq(CourseAssignmentTable.id, fixture.assignmentId))
+        .run();
+    if (scenario === 'ambiguous')
+      for (const canonicalIdentity of [
+        `assignment:${fixture.assignmentId}`,
+        'id:school-lab-1',
+      ])
+        db.insert(CourseworkProtectionTable)
+          .values({
+            id: randomUUID(),
+            userId,
+            courseId: fixture.courseId,
+            canonicalIdentity,
+            aliases: [fixture.assignmentId, 'id:school-lab-1'],
+            state: 'unknown',
+          })
+          .run();
+    const collect = vi.fn(async () =>
+      observation({
+        observedAt: timestamp,
+        remainingOpportunity: scenario === 'retake' ? 'yes' : 'no',
+        conflicts:
+          scenario === 'conflicting-evidence' ? ['conflicting-grade'] : [],
+      }),
+    );
+    const service = createGradeService({ store: gradeStore, collect });
+    const input = {
+      courseId: fixture.courseId,
+      assignmentId: fixture.assignmentId,
+      requestId: randomUUID(),
+    };
+    if (scenario === 'ambiguous') {
+      await expect(
+        service.verifyCoursework(authorized, input),
+      ).rejects.toMatchObject({ code: 'scope-denied' });
+      expect(
+        db
+          .select()
+          .from(CourseworkProtectionTable)
+          .where(eq(CourseworkProtectionTable.userId, userId))
+          .all(),
+      ).toHaveLength(2);
+    } else {
+      const result = await service.verifyCoursework(authorized, input);
+      expect(result.state).not.toBe('verified-completed');
+      expect(result.feedback).toBeNull();
+    }
+    if (['inactive', 'suppressed', 'ambiguous'].includes(scenario))
+      expect(collect).not.toHaveBeenCalled();
+    const { resolveAssistancePolicy } =
+      await import('../../integrity/services/policy');
+    expect(
+      resolveAssistancePolicy(authorized, {
+        sessionId,
+        targetAssignmentId: fixture.assignmentId,
+        sourceIds: [fixture.assignmentId],
+      }).allowedOperations,
+    ).not.toContain('source-feedback-review');
+    await service.dispose();
   });
 });
