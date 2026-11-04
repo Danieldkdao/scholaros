@@ -147,3 +147,28 @@ it('rejects an empty explanation instead of returning an inaccessible activity',
     ),
   ).rejects.toThrow('Activity generation returned an incomplete candidate.');
 });
+
+it('reserves a bounded visible activity answer by using explicit Meta low reasoning and nonstored structured output', async () => {
+  await generateActivityCandidate(
+    {
+      objective: 'Draw y = 2x with an adjustable slope.',
+      sourceReferences: [],
+    },
+    new AbortController().signal,
+  );
+  const request = mocks.generateText.mock.calls[0]?.[0];
+  expect(request.reasoning).toBe('low');
+  expect(request.instructions).toContain(
+    'Never use innerHTML, outerHTML, document.write',
+  );
+  expect(request.instructions).toContain('including SVG namespace URLs');
+  expect(request.maxOutputTokens).toBe(6000);
+  expect(request.providerOptions).toEqual({
+    openai: {
+      forceReasoning: true,
+      systemMessageMode: 'developer',
+      store: false,
+    },
+  });
+  expect(request.maxRetries).toBe(0);
+});
