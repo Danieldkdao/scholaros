@@ -415,36 +415,39 @@ describe('watch persistence', () => {
     });
   });
 
-  it('rejects a late observation after watch permission is revoked', () => {
-    enableWatch(student);
-    const target = upsertWatchTarget(student, {
-      connectionId,
-      courseId: 'course-a',
-      requestedUrl: watchUrl,
-      recipeVersion: 1,
-    })!;
-    db.update(SettingTable)
-      .set({ watchEnabled: false, consent: false })
-      .where(eq(SettingTable.userId, student))
-      .run();
+  it.each(['watchEnabled', 'consent'] as const)(
+    'rejects a late observation after %s is revoked',
+    (permission) => {
+      enableWatch(student);
+      const target = upsertWatchTarget(student, {
+        connectionId,
+        courseId: 'course-a',
+        requestedUrl: watchUrl,
+        recipeVersion: 1,
+      })!;
+      db.update(SettingTable)
+        .set({ [permission]: false })
+        .where(eq(SettingTable.userId, student))
+        .run();
 
-    const observation = recordWatchObservation({
-      userId: student,
-      targetId: target.id,
-      fingerprint: 'a'.repeat(64),
-      checkedAt: now,
-      nextCheckAt: '2026-11-01T12:05:00.000Z',
-      verifiedUrl: watchUrl,
-      recipeVersion: 1,
-    });
+      const observation = recordWatchObservation({
+        userId: student,
+        targetId: target.id,
+        fingerprint: 'a'.repeat(64),
+        checkedAt: now,
+        nextCheckAt: '2026-11-01T12:05:00.000Z',
+        verifiedUrl: watchUrl,
+        recipeVersion: 1,
+      });
 
-    expect(observation).toBeNull();
-    expect(getWatchTargets(student)[0]).toMatchObject({
-      detectedFingerprint: null,
-      pendingChange: false,
-      status: 'active',
-    });
-  });
+      expect(observation).toBeNull();
+      expect(getWatchTargets(student)[0]).toMatchObject({
+        detectedFingerprint: null,
+        pendingChange: false,
+        status: 'active',
+      });
+    },
+  );
 
   it('persists pending age only for the current revision and clears it on coverage', () => {
     enableWatch(student);

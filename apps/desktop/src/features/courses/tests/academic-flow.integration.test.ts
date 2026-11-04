@@ -136,6 +136,9 @@ beforeEach(() => {
   db.delete(CourseTable).run();
   db.delete(SettingTable).run();
   db.delete(AcademicConnectionTable).run();
+  db.insert(SettingTable)
+    .values({ userId, consent: true, updatedAt: firstTime })
+    .run();
   db.insert(AcademicConnectionTable)
     .values({
       id: connectionId,
@@ -245,23 +248,34 @@ describe('synthetic course context and watch flow', () => {
     })!;
     const baseline = makeSnapshot('Lab report due November 5, 2026');
     const baselineFingerprint = createPageFingerprint(baseline);
-    recordWatchObservation({
-      userId,
-      targetId: target.id,
-      fingerprint: baselineFingerprint,
-      checkedAt: firstTime,
-      nextCheckAt: nextCheck,
-      verifiedUrl: assignmentsUrl,
-      recipeVersion: 1,
+    expect(
+      recordWatchObservation({
+        userId,
+        targetId: target.id,
+        fingerprint: baselineFingerprint,
+        checkedAt: firstTime,
+        nextCheckAt: nextCheck,
+        verifiedUrl: assignmentsUrl,
+        recipeVersion: 1,
+      }),
+    ).toMatchObject({
+      detectedFingerprint: baselineFingerprint,
+      pendingChange: true,
     });
-    markWatchTargetProcessed({
-      userId,
-      targetId: target.id,
-      fingerprint: baselineFingerprint,
-      processedAt: firstTime,
+    expect(
+      markWatchTargetProcessed({
+        userId,
+        targetId: target.id,
+        fingerprint: baselineFingerprint,
+        processedAt: firstTime,
+      }),
+    ).toMatchObject({
+      processedFingerprint: baselineFingerprint,
+      pendingChange: false,
     });
 
     let processSucceeds = false;
+    let refreshAttempts = 0;
     let watchNow = Date.parse('2026-11-01T12:03:00.000Z');
     let releaseCapacity: () => void = () => {};
     const controller = createWatchController({
@@ -273,6 +287,7 @@ describe('synthetic course context and watch flow', () => {
       recordFailure: recordWatchFailure,
       scheduleCheck: scheduleWatchTargetCheck,
       processChange: async (watchTarget, fingerprint, signal) => {
+        refreshAttempts += 1;
         if (!processSucceeds) return false;
         signal.throwIfAborted();
         applyCourseRefresh(
@@ -302,6 +317,16 @@ describe('synthetic course context and watch flow', () => {
       baselineFingerprint,
     );
     expect(getWatchSettings(userId).watchEnabled).toBe(true);
+    expect(refreshAttempts).toBe(1);
+    expect(controller.getMetrics(userId)).toMatchObject({
+      changesDetected: 1,
+      changesProcessed: 0,
+    });
+
+    releaseCapacity();
+    await controller.tick(userId);
+    expect(refreshAttempts).toBe(1);
+    expect(getWatchTargets(userId)[0]?.pendingChange).toBe(true);
 
     processSucceeds = true;
     watchNow += 5 * 60_000;
@@ -314,6 +339,7 @@ describe('synthetic course context and watch flow', () => {
       changesProcessed: 1,
       pendingChangeAgeMs: null,
     });
+    expect(refreshAttempts).toBe(2);
     expect(
       getCourseDetail(userId, initialCourse.id)?.assignments[0],
     ).toMatchObject({
