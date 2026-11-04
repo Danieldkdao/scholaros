@@ -334,7 +334,7 @@ it('keeps the captured selection and revision and exposes one editable final', a
       text: 'Please explain this concept',
     });
   });
-  await act(async () => render(3));
+  await act(async () => render());
   bridge.stopDictation.mockImplementation(async () => undefined);
   await clickButton('Stop dictation');
   await vi.waitFor(() => expect(bridge.stopDictation).toHaveBeenCalledOnce());
@@ -368,6 +368,35 @@ it('keeps the captured selection and revision and exposes one editable final', a
   await vi.waitFor(() =>
     expect(FakeAudioWorkletNode.instance?.port.close).toHaveBeenCalledOnce(),
   );
+});
+
+it('cancels capture and discards a late final when the composer revision changes', async () => {
+  const microphone = installFakeMicrophone();
+  const { bridge, getListener } = installDictationBridge();
+  const onFinal = vi.fn();
+  const onProvisional = vi.fn();
+  const { render } = await mountControl({ onFinal, onProvisional });
+
+  await clickButton('Start dictation');
+  await clickButton('Start recording');
+  await vi.waitFor(() => expect(bridge.startDictation).toHaveBeenCalledOnce());
+  const lateEvent = getListener();
+  await act(async () => render(3));
+  await vi.waitFor(() => expect(bridge.cancelDictation).toHaveBeenCalledOnce());
+  lateEvent?.({
+    version: 1,
+    operationId: 'operation-a',
+    sessionId: 'session-a',
+    composerRevision: 2,
+    sequence: 1,
+    kind: 'final',
+    text: 'must not replace the edited draft',
+  });
+
+  expect(microphone.track.stop).toHaveBeenCalledOnce();
+  expect(onProvisional).toHaveBeenLastCalledWith(null);
+  expect(onFinal).not.toHaveBeenCalled();
+  expect(bridge.sendStudyTurn).not.toHaveBeenCalled();
 });
 
 it('stops capture if the relay finalizes before the user presses Stop', async () => {

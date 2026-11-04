@@ -386,7 +386,10 @@ export const useDictation = ({
     event: DictationEvent,
   ) => {
     if (active.cancelled || active.settled) return;
-    if (sessionIdRef.current !== active.capture.sessionId) {
+    if (
+      sessionIdRef.current !== active.capture.sessionId ||
+      composerRevisionRef.current !== active.capture.composerRevision
+    ) {
       void cancelActive(active, 'cancelled', false);
       return;
     }
@@ -715,13 +718,29 @@ export const useDictation = ({
     return () => {
       mountedRef.current = false;
       const active = activeRef.current;
-      if (active?.capture.sessionId === sessionId)
-        void cancelActive(active, 'cancelled', false);
+      if (active) void cancelActive(active, 'cancelled', false);
       const pending = pendingRef.current;
-      if (pending?.capture.sessionId === sessionId)
-        void cancelPending(pending, false);
+      if (pending) void cancelPending(pending, false);
     };
-  }, [sessionId]);
+  }, []);
+
+  useEffect(() => {
+    const active = activeRef.current;
+    if (
+      active &&
+      (active.capture.sessionId !== sessionId ||
+        active.capture.composerRevision !== composerRevision)
+    )
+      void cancelActive(active, 'cancelled', false);
+
+    const pending = pendingRef.current;
+    if (
+      pending &&
+      (pending.capture.sessionId !== sessionId ||
+        pending.capture.composerRevision !== composerRevision)
+    )
+      void cancelPending(pending, false);
+  }, [sessionId, composerRevision]);
 
   return { status, start, stop, cancel };
 };
