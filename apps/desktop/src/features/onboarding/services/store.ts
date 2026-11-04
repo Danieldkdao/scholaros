@@ -48,20 +48,38 @@ const readDiscoveryRow = (userId: string) => {
   };
 };
 
-export const getOnboardingState = (userId: string): OnboardingState => {
-  db.insert(SettingTable)
-    .values({ userId, updatedAt: new Date().toISOString() })
-    .onConflictDoNothing()
-    .run();
-  db.insert(AcademicContextTable)
-    .values({ userId })
-    .onConflictDoNothing()
-    .run();
+type GetOnboardingStateOptions = { readOnly?: boolean };
+
+export const getOnboardingState = (
+  userId: string,
+  options: GetOnboardingStateOptions = {},
+): OnboardingState => {
+  if (!options.readOnly) {
+    db.insert(SettingTable)
+      .values({ userId, updatedAt: new Date().toISOString() })
+      .onConflictDoNothing()
+      .run();
+    db.insert(AcademicContextTable)
+      .values({ userId })
+      .onConflictDoNothing()
+      .run();
+  }
   const existingSettings = db
     .select()
     .from(SettingTable)
     .where(eq(SettingTable.userId, userId))
-    .get()!;
+    .get();
+  const existingContext = db
+    .select()
+    .from(AcademicContextTable)
+    .where(eq(AcademicContextTable.userId, userId))
+    .get();
+  if (!existingSettings || !existingContext)
+    throw new Error(
+      options.readOnly
+        ? 'Saved offline onboarding state is unavailable.'
+        : 'Onboarding state is unavailable.',
+    );
   const decisionTimeSeconds = Math.min(
     5,
     Math.max(
@@ -71,16 +89,14 @@ export const getOnboardingState = (userId: string): OnboardingState => {
         : 1,
     ),
   );
-  if (decisionTimeSeconds !== existingSettings.decisionTimeSeconds)
+  if (
+    !options.readOnly &&
+    decisionTimeSeconds !== existingSettings.decisionTimeSeconds
+  )
     db.update(SettingTable)
       .set({ decisionTimeSeconds })
       .where(eq(SettingTable.userId, userId))
       .run();
-  const existingContext = db
-    .select()
-    .from(AcademicContextTable)
-    .where(eq(AcademicContextTable.userId, userId))
-    .get()!;
   const existingWorkspace = db
     .select()
     .from(BrowserWorkspaceTable)
@@ -113,8 +129,10 @@ export const getOnboardingState = (userId: string): OnboardingState => {
     .from(AcademicContextEntryTable)
     .where(eq(AcademicContextEntryTable.userId, userId))
     .all();
-  configureBrowserPolicy(existingSettings.blockedWords);
-  missionTraffic.setIntervalSeconds(decisionTimeSeconds);
+  if (!options.readOnly) {
+    configureBrowserPolicy(existingSettings.blockedWords);
+    missionTraffic.setIntervalSeconds(decisionTimeSeconds);
+  }
   return {
     accountId: userId,
     settings: {

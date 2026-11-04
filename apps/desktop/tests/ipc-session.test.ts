@@ -24,6 +24,9 @@ const mocks = vi.hoisted(() => ({
   clearOfflineGrant: vi.fn(async () => undefined),
   clientSignOut: vi.fn(async () => undefined),
   getCurrentUser: vi.fn(),
+  getOnboardingState: vi.fn(
+    (_userId: string, _options?: { readOnly?: boolean }) => mocks.state,
+  ),
   authFetch: vi.fn(),
   readGrant: vi.fn(),
   saveGrant: vi.fn(),
@@ -142,7 +145,7 @@ vi.mock('../src/db', () => ({
   },
 }));
 vi.mock('../src/features/onboarding/services/store', () => ({
-  getOnboardingState: () => mocks.state,
+  getOnboardingState: mocks.getOnboardingState,
   removeAcademicConnection: vi.fn(() => mocks.state),
   saveOnboardingSettings: mocks.saveOnboardingSettings,
   settleLocalSetup: (
@@ -522,6 +525,9 @@ describe('academic service session boundaries', () => {
 
     const state = await invoke('getState');
 
+    expect(mocks.getOnboardingState).toHaveBeenLastCalledWith('student-a', {
+      readOnly: true,
+    });
     expect(mocks.applyLaunchAtLogin).not.toHaveBeenCalled();
     expect(mocks.backgroundSyncConfigure).not.toHaveBeenCalled();
     expect(mocks.settleLocalSetup).not.toHaveBeenCalled();
