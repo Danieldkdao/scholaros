@@ -358,10 +358,10 @@ it('reports a verified empty result as an answer', async () => {
     lastSuccessfulAt: '2026-03-08T09:00:00.000Z',
   };
   await open();
-  expect(text()).toContain('listed no courses');
+  expect(text()).toContain('No courses saved yet.');
 });
 
-it('reports an unreadable resource instead of claiming it was empty', async () => {
+it('shows the standing disclaimer without a per-run unreadable-resource notice', async () => {
   snapshot = {
     courses: [],
     sources: [
@@ -376,12 +376,12 @@ it('reports an unreadable resource instead of claiming it was empty', async () =
     lastSuccessfulAt: null,
   };
   await open();
-  expect(text()).toContain('not found');
-  expect(text()).not.toContain('listed no courses');
-  const notice = [...document.querySelectorAll('p')].find((node) =>
-    node.textContent?.includes('saved courses are unchanged'),
+  expect(text()).toContain('No courses saved yet.');
+  expect(text()).toContain('Sync may not pick up everything.');
+  expect(text()).not.toContain(
+    'ScholarOS could not read this resource safely.',
   );
-  expect(notice?.classList.contains('text-base')).toBe(true);
+  expect(text()).not.toContain('saved courses are unchanged');
 });
 
 it('shows a source sign-in failure even when the connection was previously confirmed', async () => {
@@ -439,7 +439,7 @@ it('keeps saved courses visible while refreshing and offers a way to stop', asyn
   });
 });
 
-it('reports a failed refresh and keeps the saved courses', async () => {
+it('finishes non-authentication refresh presentation while keeping saved courses', async () => {
   vi.mocked(window.scholar.refreshCourses).mockRejectedValueOnce(
     new Error(
       'Another academic task is running; stop it or try again shortly.',
@@ -451,7 +451,8 @@ it('reports a failed refresh and keeps the saved courses', async () => {
     syncOption()?.click();
   });
   await act(async () => {});
-  expect(text()).toContain('Another academic task is running');
+  expect(text()).not.toContain('Another academic task is running');
+  expect(text()).toContain('Refresh complete');
   expect(text()).toContain('Biology 101');
   expect(text()).toContain('Updated');
 });

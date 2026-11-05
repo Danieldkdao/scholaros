@@ -1,3 +1,4 @@
+import { SyncDisclaimer } from '../../../features/courses/components/sync-disclaimer';
 import { CourseRefreshActivity } from '../../../features/courses/components/course-refresh-activity';
 import { CourseRecordActions } from '../../../features/courses/components/course-record-actions';
 import { createFileRoute, Link } from '@tanstack/react-router';
@@ -410,6 +411,7 @@ const CoursePage = () => {
           )}
         </div>
       </div>
+      <SyncDisclaimer />
       <CourseRefreshActivity activity={course?.activity} />
       {loading && (
         <Loader2

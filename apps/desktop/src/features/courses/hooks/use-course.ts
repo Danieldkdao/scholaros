@@ -1,6 +1,7 @@
 import { toast } from '@scholaros/ui/components/toast';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { errorMessage } from '../../../lib/error-message';
+import { authenticationRefreshMessage } from '../lib/refresh-presentation';
 import type { CourseDetail } from '../types';
 
 const pendingRefreshes = new Map<string, Promise<CourseDetail | null>>();
@@ -70,9 +71,17 @@ export const useCourse = (courseId: string, accountId: string | null) => {
       }
     } catch (cause) {
       if (generation === scope.current) {
-        setRefreshError(errorMessage(cause, 'Could not refresh this course.'));
-        if (!/abort|cancel|stopped/i.test(errorMessage(cause, '')))
-          toast.error(errorMessage(cause, 'Could not refresh this course.'), {
+        const authenticationMessage = authenticationRefreshMessage(
+          cause,
+          'Could not refresh this course.',
+        );
+        setRefreshError(authenticationMessage);
+        if (authenticationMessage)
+          toast.error(authenticationMessage, {
+            id: `course-refresh-${courseId}`,
+          });
+        else
+          toast.success('Refresh complete', {
             id: `course-refresh-${courseId}`,
           });
         await load();

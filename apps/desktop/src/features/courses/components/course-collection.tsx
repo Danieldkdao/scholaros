@@ -73,12 +73,15 @@ export const CourseCollection = ({
   );
   const ItemIcon = kind === 'assignments' ? ClipboardList : Megaphone;
   const formatted = formatCourseScanStatus(status);
-  const showStatus = status !== 'partial' && status !== 'blocked';
+  const showStatus =
+    status === 'complete' || status === 'pending' || status === 'needs-sign-in';
   const ordered =
     kind === 'announcements'
       ? sortAnnouncements(visible)
       : sortAssignments(visible);
-  const notice = formatCollectionState(kind, status, items.length);
+  const notice = showStatus
+    ? formatCollectionState(kind, status, items.length)
+    : null;
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-center gap-2">

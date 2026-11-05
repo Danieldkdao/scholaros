@@ -1,3 +1,5 @@
+import { SyncDisclaimer } from '../../../features/courses/components/sync-disclaimer';
+import { authenticationRefreshMessage } from '../../../features/courses/lib/refresh-presentation';
 import { CourseCreateDialog } from '../../../features/courses/components/course-create-dialog';
 import {
   DropdownMenu,
@@ -35,7 +37,6 @@ import { PageHeading } from '../../../features/dashboard/page-heading';
 import { defaultConnectionSearch } from '../../../features/dashboard/lib/connection-filters';
 import { useCourses } from '../../../features/courses/hooks/use-courses';
 import {
-  formatCoursesEmpty,
   formatCourseScanStatus,
   formatCourseSourceState,
 } from '../../../features/courses/lib/formatters';
@@ -158,6 +159,7 @@ const CoursesPage = () => {
         onOpenChange={setCreating}
         kind="courses"
       />
+      <SyncDisclaimer />
       <CourseRefreshActivity activity={snapshot?.activity} />
       {loading && (
         <Loader2
@@ -238,9 +240,10 @@ const CoursesPage = () => {
       {snapshot?.sources
         .filter(
           (source) =>
-            source.outcome !== 'complete' &&
-            source.outcome !== 'partial' &&
-            source.outcome !== 'cancelled',
+            source.outcome === 'needs-sign-in' ||
+            (source.message !== null &&
+              authenticationRefreshMessage(new Error(source.message), '') !==
+                null),
         )
         .map((source) => {
           const connection = marked.find(
@@ -281,7 +284,7 @@ const CoursesPage = () => {
         })}
       {!loading && !courses.length && (
         <p className="text-base text-muted-foreground">
-          {formatCoursesEmpty(snapshot)}
+          No courses saved yet. Refresh your courses or add one manually.
         </p>
       )}
       {courses.length > 0 && (

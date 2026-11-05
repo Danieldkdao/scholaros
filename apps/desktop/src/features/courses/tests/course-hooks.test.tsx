@@ -203,7 +203,7 @@ it('keeps course refreshes running across navigation and reattaches only to that
   expect(detail.refreshing).toBe(false);
 });
 
-it('reports a course refresh failure and reloads saved progress', async () => {
+it('finishes non-authentication refresh presentation and reloads saved progress', async () => {
   await act(async () => root.render(createElement(detailProbe, { id: 'a' })));
   vi.mocked(window.scholar.refreshCourse).mockRejectedValueOnce(
     new Error('Connection lost'),
@@ -212,7 +212,7 @@ it('reports a course refresh failure and reloads saved progress', async () => {
     id: 'a',
   } as CourseDetail);
   await act(async () => detail.refresh());
-  expect(detail.refreshError).toBe('Connection lost');
+  expect(detail.refreshError).toBeNull();
   expect(detail.course?.id).toBe('a');
   expect(detail.refreshing).toBe(false);
 });
@@ -250,3 +250,19 @@ it('reloads snapshots after service resource events and ignores events belonging
   expect(window.scholar.getCourses).toHaveBeenCalledTimes(2);
   expect(window.scholar.getCourse).toHaveBeenCalledTimes(2);
 });
+
+it.each([
+  'Please sign in to ScholarOS.',
+  'Your session has expired. Reconnect to continue.',
+])(
+  'preserves authentication guidance on failed refresh: %s',
+  async (message) => {
+    await act(async () => root.render(createElement(detailProbe, { id: 'a' })));
+    vi.mocked(window.scholar.refreshCourse).mockRejectedValueOnce(
+      new Error(message),
+    );
+    await act(async () => detail.refresh());
+    expect(detail.refreshError).toBe(message);
+    expect(detail.refreshing).toBe(false);
+  },
+);

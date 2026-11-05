@@ -355,7 +355,7 @@ it('shows the verified course section in overview metadata', async () => {
   expect(text()).toContain('A1');
 });
 
-it('gives every collection state its own wording', async () => {
+it('keeps authentication and pending guidance while suppressing per-run missing-data notices', async () => {
   const wording = async (overrides: Partial<CourseDetail>) => {
     detail = course(overrides);
     await open();
@@ -376,9 +376,10 @@ it('gives every collection state its own wording', async () => {
   const blocked = await wording({ announcementsStatus: 'blocked' });
   const signIn = await wording({ announcementsStatus: 'needs-sign-in' });
   const cancelled = await wording({ announcementsStatus: 'cancelled' });
-  expect(
-    new Set([pending, empty, partial, blocked, signIn, cancelled]).size,
-  ).toBe(6);
+  expect(partial).toBe(blocked);
+  expect(cancelled).toBe(partial);
+  expect(pending).not.toBe(partial);
+  expect(signIn).not.toBe(partial);
   expect(empty).toContain('No announcements found');
 });
 
@@ -775,3 +776,10 @@ it.each(['Assignments', 'Announcements'])(
     }
   },
 );
+
+it('always shows the sync limitation disclaimer on a course detail', async () => {
+  await open();
+  expect(text()).toContain(
+    'Sync may not pick up everything. Add additional notes or context to help the AI find missing information.',
+  );
+});
