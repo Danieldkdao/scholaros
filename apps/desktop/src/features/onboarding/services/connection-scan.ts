@@ -5,6 +5,7 @@ import {
 import { openBackgroundPage } from './background-page';
 import { composeAgentNotes } from '../lib/agent-notes';
 import { exploreForCourses } from '../lib/course-exploration';
+import { isEnrolledCourseDestination } from '../lib/academic-discovery';
 import {
   academicPageIdentity,
   isCourseNavigationTarget,
@@ -314,13 +315,35 @@ export const scanConnection = async <TFollowed = never>(
       }
       const targetUrl =
         target === 'parent' ? location.parentUrl : location.destinationUrl;
-      const courseIdentity = academicPageIdentity(courseUrl);
-      const targetIdentity = academicPageIdentity(targetUrl);
+      const currentCourseScope = {
+        courseUrl,
+        observedResourceRelationships: [
+          ...observedResourceRelationships.values(),
+        ],
+      };
+      const savedRelationship = {
+        parentUrl: location.parentUrl,
+        targetUrl: location.destinationUrl,
+      };
+      const savedCourseScope = {
+        courseUrl,
+        observedResourceRelationships: [
+          ...currentCourseScope.observedResourceRelationships,
+          savedRelationship,
+        ],
+      };
       if (
-        !courseIdentity ||
-        !targetIdentity ||
-        (targetIdentity !== courseIdentity &&
-          !targetIdentity.startsWith(`${courseIdentity}/`))
+        !isCourseNavigationTarget(
+          location.parentUrl,
+          currentCourseScope,
+          hosts,
+        ) ||
+        !isCourseNavigationTarget(
+          location.destinationUrl,
+          savedCourseScope,
+          hosts,
+        ) ||
+        !isCourseNavigationTarget(targetUrl, savedCourseScope, hosts)
       )
         throw Object.assign(
           new Error('The saved destination is not inside the active course.'),
@@ -332,6 +355,11 @@ export const scanConnection = async <TFollowed = never>(
           { failureClass: 'unknown' as const },
         );
       assertMissionNavigation(targetUrl, hosts);
+      observedResourceRelationships.set(
+        `${academicPageIdentity(location.parentUrl)}\n${academicPageIdentity(location.destinationUrl)}`,
+        savedRelationship,
+      );
+      navigation.setCourseScope(savedCourseScope);
       await navigatePage(openedPage, targetUrl, continuation);
       const snapshot = await readSnapshot();
       if (
@@ -373,8 +401,10 @@ export const scanConnection = async <TFollowed = never>(
           connection,
           classify: async (snapshot) => {
             releaseProtection?.assertReadable?.();
-            const eligible = snapshot.links.filter((link) =>
-              isReadNavigation(link.url, [connection.host]),
+            const eligible = snapshot.links.filter(
+              (link) =>
+                isReadNavigation(link.url, [connection.host]) &&
+                isEnrolledCourseDestination(connection, link.url),
             );
             truncated ||= !!snapshot.linksTruncated;
             const selectedUrls: string[] = [];

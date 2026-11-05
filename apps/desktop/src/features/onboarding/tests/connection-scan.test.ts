@@ -168,6 +168,47 @@ describe('one protected walk of a connected resource', () => {
     }
   });
 
+  it('does not spend Schoology course classification on non-course live-session resources', async () => {
+    const schoolHost = 'school.schoology.com';
+    const valid = `https://${schoolHost}/course/12345/materials`;
+    const live = `https://${schoolHost}/page/54321`;
+    mocks.page.url.mockResolvedValue(`https://${schoolHost}/courses`);
+    mocks.readPage.mockReset().mockResolvedValue({
+      url: `https://${schoolHost}/courses`,
+      title: 'Courses',
+      text: 'Biology 101 English 9 Live Class',
+      links: [
+        { label: 'Biology 101', url: valid },
+        { label: 'English 9 Live Class', url: live },
+      ],
+    });
+    mocks.accountRequest.mockImplementation(async (_path, body) => ({
+      courseTargetIds: body.targets.map((target: { id: string }) => target.id),
+    }));
+    const result = await scanConnection({
+      connection: {
+        ...connection,
+        host: schoolHost,
+        url: `https://${schoolHost}/courses`,
+        kind: 'resource',
+      },
+      workspace,
+      hosts: [schoolHost],
+      notes: '',
+      navigatePage: async () => undefined,
+      signal: new AbortController().signal,
+      isCurrent: () => true,
+    });
+    expect(
+      result.entries
+        .filter(({ role }) => role === 'course')
+        .map(({ url }) => url),
+    ).toEqual([valid]);
+    expect(mocks.accountRequest.mock.calls[0]?.[1].targets).toEqual([
+      expect.objectContaining({ url: valid }),
+    ]);
+  });
+
   it('explains an inconclusive readable page without pretending an exception occurred', async () => {
     mocks.readPage.mockReset().mockResolvedValue({
       ...listPage,
@@ -559,3 +600,75 @@ it('visits a scoped saved destination even when the current course root no longe
   expect(result.followed).toMatchObject({ url: destinationUrl });
   expect(mocks.navigations).toContain(destinationUrl);
 });
+
+it.each([
+  ['verified', 'same-course', 'current', true],
+  ['stale', 'same-course', 'current', false],
+  ['tentative', 'same-course', 'current', false],
+  ['verified', 'different-course', 'current', false],
+  ['verified', 'same-course', 'unobserved', false],
+] as const)(
+  'reuses only a verified scoped materials-to-updates relationship: %s %s %s',
+  async (status, destinationScope, parentScope, allowed) => {
+    const materialsUrl = `${courseUrl}/materials`;
+    const destinationUrl = `https://${host}/courses/${destinationScope === 'same-course' ? '1' : '2'}/updates`;
+    const parentUrl =
+      parentScope === 'current' ? materialsUrl : `${courseUrl}/unobserved`;
+    const location = {
+      id: 'saved-course-updates',
+      userId: 'student-1',
+      connectionId: connection.id,
+      courseId: 'course-1',
+      purpose: 'announcements' as const,
+      destinationUrl,
+      parentUrl,
+      recipe: null,
+      label: 'Updates',
+      evidence: { sourceUrl: parentUrl, excerpts: ['Updates'], targetIds: [] },
+      status,
+      destinationKind: 'collection' as const,
+      observedAt: '2026-11-01T12:00:00.000Z',
+      verifiedAt: '2026-11-01T12:00:00.000Z',
+      failureCount: 0,
+      lastFailureClass: null,
+    };
+    mocks.readPage
+      .mockReset()
+      .mockResolvedValueOnce({ ...coursePage, url: materialsUrl })
+      .mockResolvedValueOnce({
+        ...coursePage,
+        url: destinationUrl,
+        links: [{ label: 'Read update', url: `${courseUrl}/updates/1` }],
+      });
+    const running = scanConnection({
+      connection,
+      workspace,
+      hosts: [host],
+      notes: '',
+      navigatePage: async (_page, url) => void mocks.navigations.push(url),
+      isCurrent: () => true,
+      signal: new AbortController().signal,
+      courseUrl: materialsUrl,
+      locationScope: { userId: 'student-1', courseId: 'course-1' },
+      withCourseList: async (context) => context.visitKnownLocation!(location),
+    });
+    if (allowed) {
+      expect((await running).followed).toMatchObject({ url: destinationUrl });
+      expect(mocks.navigations).toContain(destinationUrl);
+      expect(
+        mocks.navigation.mock.results[0]!.value.setCourseScope,
+      ).toHaveBeenCalledWith(
+        expect.objectContaining({
+          observedResourceRelationships: expect.arrayContaining([
+            { parentUrl: materialsUrl, targetUrl: destinationUrl },
+          ]),
+        }),
+      );
+    } else {
+      await expect(running).rejects.toMatchObject({
+        failureClass: 'wrong-course',
+      });
+      expect(mocks.navigations).not.toContain(destinationUrl);
+    }
+  },
+);
