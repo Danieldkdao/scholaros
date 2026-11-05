@@ -220,3 +220,78 @@ test('failed encryption is not retried by changing background writes and never p
   expect(values.size).toBe(0);
   expect(await readCookie(plugin)).toBe('');
 });
+
+test('explicit session-only storage keeps authenticated cookies in RAM without crypto or persistent reads and clears on sign-out', async () => {
+  const adapter = {
+    sessionOnly: true,
+    getItem: vi.fn(() => {
+      throw new Error('Persistent read is forbidden');
+    }),
+    setItem: vi.fn(() => {
+      throw new Error('Persistent write is forbidden');
+    }),
+  };
+  const plugin = electronClient({
+    signInURL: 'http://localhost:3000/sign-in',
+    protocol: 'ai.scholaros.desktop',
+    storage: adapter,
+  });
+  const hooks = plugin.fetchPlugins[0].hooks as unknown as {
+    onSuccess: (context: unknown) => Promise<void>;
+  };
+  expect(await readCookie(plugin)).toBe('');
+  await hooks.onSuccess({
+    response: new Response(null, {
+      headers: {
+        'set-cookie': 'better-auth.session_token=ram-session; Path=/; HttpOnly',
+      },
+    }),
+    request: { url: 'http://localhost:3000/api/auth/sign-in/email' },
+    data: {},
+  });
+  expect(await readCookie(plugin)).toContain('ram-session');
+  await hooks.onSuccess({
+    response: new Response(null),
+    request: { url: 'http://localhost:3000/api/auth/sign-out' },
+    data: {},
+  });
+  expect(await readCookie(plugin)).toBe('');
+  expect(adapter.getItem).not.toHaveBeenCalled();
+  expect(adapter.setItem).not.toHaveBeenCalled();
+  expect(secure.available).not.toHaveBeenCalled();
+  expect(secure.encrypt).not.toHaveBeenCalled();
+  expect(secure.decrypt).not.toHaveBeenCalled();
+});
+
+test('a new explicit RAM session never restores the prior process cookie', async () => {
+  const adapter = {
+    sessionOnly: true,
+    getItem: vi.fn(() => null),
+    setItem: vi.fn(),
+  };
+  const first = electronClient({
+    signInURL: 'http://localhost:3000/sign-in',
+    protocol: 'ai.scholaros.desktop',
+    storage: adapter,
+  });
+  const hooks = first.fetchPlugins[0].hooks as unknown as {
+    onSuccess: (context: unknown) => Promise<void>;
+  };
+  await hooks.onSuccess({
+    response: new Response(null, {
+      headers: {
+        'set-cookie': 'better-auth.session_token=old-process; Path=/',
+      },
+    }),
+    request: { url: 'http://localhost:3000/api/auth/sign-in/email' },
+    data: {},
+  });
+  const next = electronClient({
+    signInURL: 'http://localhost:3000/sign-in',
+    protocol: 'ai.scholaros.desktop',
+    storage: adapter,
+  });
+  expect(await readCookie(next)).toBe('');
+  expect(adapter.setItem).not.toHaveBeenCalled();
+  expect(secure.available).not.toHaveBeenCalled();
+});

@@ -1,9 +1,22 @@
+import { app } from 'electron';
 import { electronClient } from '@better-auth/electron/client';
 import { storage } from '@better-auth/electron/storage';
 import { desktopScheme } from '@scholaros/auth/constants';
 import { createAuthClient } from 'better-auth/client';
 import { emailOTPClient } from 'better-auth/client/plugins';
 import { clientEnv } from '../../data/env/client';
+
+// Session-only mode is explicit and never reads or rewrites persistent auth.
+const sessionValues = new Map<string, unknown>();
+const authStorage = app.commandLine.hasSwitch('session-only')
+  ? {
+      sessionOnly: true,
+      getItem: (key: string) => sessionValues.get(key) ?? null,
+      setItem: (key: string, value: unknown) => {
+        sessionValues.set(key, value);
+      },
+    }
+  : storage({ configName: 'auth' });
 
 // This module belongs to the main process; renderer access goes through preload.
 export const authClient = createAuthClient({
@@ -14,7 +27,7 @@ export const authClient = createAuthClient({
     electronClient({
       signInURL: new URL('/sign-in', clientEnv.VITE_API_URL),
       protocol: { scheme: desktopScheme },
-      storage: storage({ configName: 'auth' }),
+      storage: authStorage,
     }),
   ],
 });
