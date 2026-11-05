@@ -2526,3 +2526,110 @@ it('persists uncertain assignments as protected visible work without marking the
     content: { state: 'unknown' },
   });
 });
+
+it('adopts an observed Schoology course root alias without replacing saved identity or local work', () => {
+  const host = 'example.schoology.com';
+  db.update(AcademicConnectionTable)
+    .set({ host, url: `https://${host}/` })
+    .where(eq(AcademicConnectionTable.id, 'connection-a'))
+    .run();
+  const materials = `https://${host}/course/12345/materials`;
+  applyCourseRefresh(
+    student,
+    [
+      sourceScan({
+        courses: [
+          observedCourse({
+            url: materials,
+            term: 'Fall',
+            assignments: {
+              status: 'complete',
+              items: [
+                child('Saved assignment', { url: `${materials}/assignment/1` }),
+              ],
+            },
+          }),
+        ],
+      }),
+    ],
+    { now: first },
+  );
+  const saved = db.select().from(CourseTable).get()!;
+  const childId = db.select().from(CourseAssignmentTable).get()!.id;
+  db.update(CourseTable)
+    .set({ localOverrides: { name: 'My biology name' }, localEditedAt: first })
+    .where(eq(CourseTable.id, saved.id))
+    .run();
+  const rescan = () =>
+    applyCourseRefresh(
+      student,
+      [
+        sourceScan({
+          courses: [
+            observedCourse({
+              url: `https://${host}/course/12345`,
+              term: 'Fall',
+              name: 'Biology roster title',
+            }),
+          ],
+        }),
+      ],
+      { now: second },
+    );
+  rescan();
+  rescan();
+  expect(savedCourses()).toHaveLength(1);
+  const retained = db.select().from(CourseTable).get()!;
+  expect(retained.id).toBe(saved.id);
+  expect(retained.sourceKey).toBe(saved.sourceKey);
+  expect(retained.localOverrides).toEqual({ name: 'My biology name' });
+  expect(onlyCourse().name).toBe('My biology name');
+  expect(db.select().from(CourseAssignmentTable).get()!.id).toBe(childId);
+});
+
+it.each([
+  ['different ID', '/course/67890', 'Fall'],
+  ['different marker', '/section/12345', 'Fall'],
+  ['different term', '/course/12345', 'Spring'],
+  ['different host', 'https://other.schoology.com/course/12345', 'Fall'],
+] as const)(
+  'does not merge Schoology aliases with a %s',
+  (_reason, destination, term) => {
+    const host = 'example.schoology.com';
+    db.update(AcademicConnectionTable)
+      .set({ host, url: `https://${host}/` })
+      .where(eq(AcademicConnectionTable.id, 'connection-a'))
+      .run();
+    applyCourseRefresh(student, [
+      sourceScan({
+        courses: [
+          observedCourse({
+            url: `https://${host}/course/12345/materials`,
+            term: 'Fall',
+          }),
+        ],
+      }),
+    ]);
+    const savedId = onlyCourse().id;
+    applyCourseRefresh(student, [
+      sourceScan({
+        outcome: 'partial',
+        courses: [
+          observedCourse({
+            url: destination.startsWith('https:')
+              ? destination
+              : `https://${host}${destination}`,
+            term,
+          }),
+        ],
+      }),
+    ]);
+    expect(
+      db
+        .select()
+        .from(CourseTable)
+        .all()
+        .find((course) => course.id === savedId)?.url,
+    ).toBe(`https://${host}/course/12345/materials`);
+  },
+);

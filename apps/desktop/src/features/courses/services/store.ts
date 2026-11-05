@@ -39,6 +39,7 @@ import {
   type ResourceIdentityRecord,
   type ResourceIdentityScope,
 } from '@scholaros/services/ai/resources/identity';
+import { isEnrolledCourseDestination } from '../../onboarding/lib/academic-discovery';
 import { courseScanSucceeded } from '../types';
 import type {
   AcademicConnectionSelectData,
@@ -201,6 +202,23 @@ const courseSourceKey = (
   const section = observed.content?.section ?? null;
   const term = observed.content?.term ?? observed.term;
   return section || term ? `${key} ${JSON.stringify([section, term])}` : key;
+};
+
+const schoologyCourseAlias = (
+  connection: AcademicConnectionSelectData,
+  value: string,
+) => {
+  if (
+    !(
+      connection.host === 'schoology.com' ||
+      connection.host.endsWith('.schoology.com')
+    ) ||
+    !isEnrolledCourseDestination(connection, value)
+  )
+    return null;
+  const url = new URL(value);
+  const [, marker, id] = url.pathname.split('/');
+  return `${url.origin}/${marker}/${id}`;
 };
 
 const courseIdentityCompatible = (
@@ -1157,6 +1175,7 @@ const upsertCourse = (
 ) => {
   const externalId = observed.externalId ?? observed.content?.sourceId ?? null;
   const sourceKey = courseSourceKey(connection.id, externalId, url, observed);
+  const courseAlias = schoologyCourseAlias(connection, url);
   const existingCourses = tx
     .select()
     .from(CourseTable)
@@ -1189,7 +1208,10 @@ const upsertCourse = (
   if (!existingCourse) {
     const matchingUrlCourses = existingCourses.filter(
       (course) =>
-        course.url === url && courseIdentityCompatible(course, observed),
+        (course.url === url ||
+          (courseAlias !== null &&
+            schoologyCourseAlias(connection, course.url) === courseAlias)) &&
+        courseIdentityCompatible(course, observed),
     );
     const adoptableCourses = externalId
       ? matchingUrlCourses.filter(
@@ -1220,6 +1242,15 @@ const upsertCourse = (
         assignmentsSyncedAt: existingCourse.assignmentsSyncedAt,
       },
     };
+  const preservesAliasKey =
+    existingCourse &&
+    courseAlias !== null &&
+    existingCourse.sourceKey.startsWith(`${connection.id} `) &&
+    schoologyCourseAlias(
+      connection,
+      existingCourse.sourceKey.slice(connection.id.length + 1).split(' ')[0] ??
+        '',
+    ) === courseAlias;
   const persistedSourceKey = existingCourse
     ? externalId &&
       (existingCourse.externalId ?? existingCourse.content?.sourceId) !==
@@ -1228,7 +1259,9 @@ const upsertCourse = (
       : !externalId &&
           !existingCourse.externalId &&
           (observed.content?.section || observed.content?.term || observed.term)
-        ? sourceKey
+        ? preservesAliasKey
+          ? existingCourse.sourceKey
+          : sourceKey
         : existingCourse.sourceKey
     : sourceKey;
   const coverage = coverageOf(observed, now);
