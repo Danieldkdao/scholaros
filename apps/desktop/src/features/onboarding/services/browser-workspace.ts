@@ -767,7 +767,7 @@ export const openStudyBrowser = async (
   if (!isCurrent()) throw new Error('Your session changed; sign in again.');
   await workspace.browser.context.setDomainPolicy(null);
   if (!isCurrent()) throw new Error('Your session changed; sign in again.');
-  const page = await workspace.browser.context.newPage();
+  const page = await workspace.browser.context.newPage('about:blank');
   if (!isCurrent()) {
     await page.close();
     throw new Error('Your session changed; sign in again.');

@@ -85,6 +85,7 @@ const {
   commitWorkspaceReplacement,
   createWorkspace,
   getWorkspace,
+  openStudyBrowser,
   stageWorkspaceReplacement,
   cancelWorkspaceReplacement,
   withMissionStagehand,
@@ -149,6 +150,20 @@ afterEach(async () => {
 });
 
 describe('browser workspace ownership', () => {
+  it('opens an explicit blank manual tab without exposing the extension placeholder or making a network request', async () => {
+    const browser = browserFor();
+    const page = { close: vi.fn() };
+    browser.context.newPage.mockResolvedValue(page);
+    browserMocks.launch.mockResolvedValueOnce(browser);
+    await createWorkspace(accounts.first, 'chrome-install');
+
+    await openStudyBrowser(accounts.first);
+
+    expect(browser.context.newPage).toHaveBeenCalledWith('about:blank');
+    expect(browser.context.setActivePage).toHaveBeenCalledWith(page);
+    expect(browserMocks.launch).toHaveBeenCalledOnce();
+  });
+
   it('reuses an active workspace only for the same account and installation', async () => {
     await createWorkspace(accounts.first, 'chrome-install');
     await createWorkspace(accounts.first, 'chrome-install');
