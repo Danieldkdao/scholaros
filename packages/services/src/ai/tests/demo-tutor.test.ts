@@ -67,3 +67,26 @@ it('preserves the fixed text-only sample actions', async () => {
   });
   expect(mocks.generateText.mock.calls[0]![0].output).toBeUndefined();
 });
+
+it.each(['explain', 'quiz'] as const)(
+  'requires valid fenced Python and preserves punctuation in %s output',
+  async (action) => {
+    const text =
+      'What does this loop print?\n\n```python\nfor fruit in ["apple", "banana"]:\n    print(fruit)\n```';
+    mocks.generateText.mockResolvedValue({ text });
+    const result = await generateDemoTutor({
+      action,
+      apiKey: 'fixture-key',
+      logging: false,
+      signal: new AbortController().signal,
+    });
+    expect(result.text).toBe(text);
+    const request = mocks.generateText.mock.calls[0]![0];
+    expect(request.instructions).toContain('valid Python 3');
+    expect(request.instructions).toContain('fenced python code block');
+    expect(request.instructions).toContain('trailing colon');
+    expect(request.instructions).toContain('Quote string literals');
+    expect(request.instructions).toContain('four spaces');
+    expect(request.instructions).toContain('Never omit punctuation');
+  },
+);

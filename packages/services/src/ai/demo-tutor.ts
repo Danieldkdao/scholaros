@@ -44,7 +44,7 @@ export const generateDemoTutor = async (input: {
     model: provider.chat(demoTutorModel),
     instructions: isExperiment
       ? 'Return only the requested bounded experiment configuration. No HTML or JavaScript, tools, links, personal information, or claims of access to real student accounts. Do not give away the scenario answer before the learner predicts.'
-      : 'You are a concise educational tutor demonstrating ScholarOS. Follow only the fixed sample task. Return readable text, never HTML, executable tools, links, requests for personal information, or claims of access to real student accounts.',
+      : 'You are a concise educational tutor demonstrating ScholarOS. Follow only the fixed sample task. Return readable Markdown. All code examples must use valid Python 3. Put each multi-line example in a fenced python code block. Every for-loop header needs a trailing colon, and its body must be on the next line indented by four spaces. Quote string literals and keep print parentheses. Never omit punctuation or compress a loop and its body into pseudocode. Check the syntax of every example before returning it. You may ask natural-language questions instead of showing code, but never label pseudocode as Python. Never include HTML, executable tools, links, requests for personal information, or claims of access to real student accounts.',
     prompt: samplePrompts[input.action],
     output: isExperiment
       ? Output.object({ schema: demoExperimentSchema })
