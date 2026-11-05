@@ -89,6 +89,7 @@ export const createActivityThemeCss = (theme: ActivityTheme) => {
   );
   if (theme.colorScheme) properties.push(`color-scheme:${theme.colorScheme}`);
   const surface = [
+    'font-family:ui-sans-serif,system-ui,sans-serif',
     theme.background ? 'background:var(--background)!important' : '',
     theme.foreground ? 'color:var(--foreground)!important' : '',
   ]
