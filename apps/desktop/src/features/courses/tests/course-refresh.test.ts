@@ -1930,3 +1930,36 @@ it.each([
     expect(activity?.events.join(' ')).not.toContain('student-one');
   },
 );
+
+it('reports sanitized per-course navigation errors instead of swallowing them into partial status', async () => {
+  insertConnection('lms', host);
+  const fixture = listFixture();
+  fixture.errors = {
+    [biologyUrl]: new Error('Meta API HTTP 429 private-student-token'),
+  };
+  fixtures.set('lms', fixture);
+  await startConnectionRefresh(student, 'lms');
+  const activity = academicTasks
+    .getActivity(student)
+    .find((run) => run.key === 'connection:lms');
+  expect(activity?.events).toContain(
+    'Assignments: The AI provider usage limit was reached. Retry after the limit resets.',
+  );
+  expect(activity?.events.join(' ')).not.toContain('private-student-token');
+});
+it('reports why a readable collection remained partial without an exception', async () => {
+  insertConnection('lms', host);
+  fixtures.set('lms', listFixture());
+  mocks.agent.mockImplementation(async (_path, body) =>
+    body.kind === 'choose'
+      ? { operation: 'DONE', target: null }
+      : { [body.kind]: [], coverage: 'partial' },
+  );
+  await startConnectionRefresh(student, 'lms');
+  const activity = academicTasks
+    .getActivity(student)
+    .find((run) => run.key === 'connection:lms');
+  expect(
+    activity?.events.some((event) => event.includes('Refresh detail:')),
+  ).toBe(true);
+});

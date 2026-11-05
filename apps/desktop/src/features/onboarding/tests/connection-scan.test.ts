@@ -136,6 +136,21 @@ beforeEach(() => {
 });
 
 describe('one protected walk of a connected resource', () => {
+  it('explains an inconclusive readable page without pretending an exception occurred', async () => {
+    mocks.readPage
+      .mockReset()
+      .mockResolvedValue({
+        ...listPage,
+        text: 'private student data',
+        links: [],
+      });
+    mocks.accountRequest.mockResolvedValue({ courseTargetIds: [] });
+    const result = await scan();
+    expect(result.outcome).toBe('inconclusive');
+    expect(result.message).toContain('exposed no readable course links');
+    expect(result.message).not.toContain('private student data');
+  });
+
   it('paces an observed PDF request through the shared host queue', async () => {
     const pdfUrl = `https://${host}/files/syllabus.pdf`;
     const events: string[] = [];

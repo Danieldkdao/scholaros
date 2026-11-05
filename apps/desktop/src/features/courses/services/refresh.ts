@@ -1,3 +1,7 @@
+import {
+  collectionScanDiagnostic,
+  safeScanDiagnostic,
+} from '../../onboarding/lib/scan-diagnostics';
 import { accountRequest } from '../../../lib/auth/main';
 import { composeAgentNotes } from '../../onboarding/lib/agent-notes';
 import {
@@ -108,6 +112,8 @@ const refreshReadFailureMessage = (error: unknown) => {
       : error instanceof Error
         ? error.message
         : '';
+  const diagnostic = safeScanDiagnostic(message);
+  if (diagnostic) return diagnostic;
   if (/your school asked us to slow down/i.test(message))
     return 'Your school asked us to slow down. Wait briefly before refreshing again.';
   if (/the browser model request is unsupported/i.test(message))
@@ -471,6 +477,11 @@ const readCourseContent = async ({
             isBrowserCapabilityChangedError(error)
           )
             throw error;
+          academicTasks.report(
+            signal,
+            `Course overview: ${refreshReadFailureMessage(error)}`,
+            true,
+          );
         }
       }
     }
@@ -654,6 +665,8 @@ const readCourseContent = async ({
                 },
               });
               reportMetrics(childScan, true);
+              const diagnostic = collectionScanDiagnostic(childScan);
+              if (diagnostic) academicTasks.report(signal, diagnostic, true);
               course[kind] = childScan;
               persist(course);
             },
@@ -667,6 +680,11 @@ const readCourseContent = async ({
               isBrowserCapabilityChangedError(error)
             )
               throw error;
+            academicTasks.report(
+              signal,
+              `${kind === 'assignments' ? 'Assignments' : 'Announcements'}: ${refreshReadFailureMessage(error)}`,
+              true,
+            );
             const failed = outcomeFromError(error);
             if (kind === 'assignments') materialRefreshStatus = 'partial';
             if (course.overview !== 'complete') course.overview = failed;

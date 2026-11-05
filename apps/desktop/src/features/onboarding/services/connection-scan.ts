@@ -1,3 +1,4 @@
+import { scanDiagnosticMessages } from '../lib/scan-diagnostics';
 import { openBackgroundPage } from './background-page';
 import { composeAgentNotes } from '../lib/agent-notes';
 import { exploreForCourses } from '../lib/course-exploration';
@@ -524,7 +525,18 @@ export const scanConnection = async <TFollowed = never>(
       notesOmitted,
       followed,
       truncated,
-      message: null,
+      message:
+        outcome === 'inconclusive'
+          ? blockedRequiredData
+            ? scanDiagnosticMessages.blockedRequiredData
+            : !observedPages.some((snapshot) =>
+                  snapshot.links.some((link) =>
+                    isReadNavigation(link.url, [connection.host]),
+                  ),
+                )
+              ? scanDiagnosticMessages.noCourseLinks
+              : scanDiagnosticMessages.unrecognizedCourses
+          : null,
     };
   } catch (error) {
     if (following || signal.aborted || !isCurrent()) throw error;
