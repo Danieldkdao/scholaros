@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => ({
       isDestroyed: () => boolean;
       getURL: () => string;
       executeJavaScript: ReturnType<typeof vi.fn>;
+      emit: (name: string, event?: unknown) => boolean;
     };
     isDestroyed: () => boolean;
     close: ReturnType<typeof vi.fn>;
@@ -121,6 +122,7 @@ vi.mock('electron', () => ({
     static getAllWindows() {
       return [];
     }
+    webContentsListeners = new Map<string, ((event?: unknown) => void)[]>();
     webContents = {
       id: mocks.windows + 1,
       mainFrame: { url: 'file:///scholaros/index.html' },
@@ -128,6 +130,17 @@ vi.mock('electron', () => ({
       isDestroyed: () => false,
       getURL: () => 'file:///scholaros/index.html',
       executeJavaScript: vi.fn(async () => 'denied'),
+      on: (name: string, callback: (event?: unknown) => void) => {
+        this.webContentsListeners.set(name, [
+          ...(this.webContentsListeners.get(name) ?? []),
+          callback,
+        ]);
+      },
+      emit: (name: string, event?: unknown) => {
+        const listeners = this.webContentsListeners.get(name) ?? [];
+        for (const callback of listeners) callback(event);
+        return listeners.length > 0;
+      },
     };
     windowListeners = new Map<string, ((event?: unknown) => void)[]>();
     isDestroyed = () => false;
@@ -448,6 +461,7 @@ it('binds one native notification owner and fences persisted events, safe clicks
   );
   await import('../src/main');
   await vi.waitFor(() => expect(mocks.windows).toBe(1));
+  expect(mocks.errorBox).not.toHaveBeenCalled();
   const lifecycle = mocks.register.mock.calls[0][0] as AcademicClientLifecycle;
   expect(lifecycle.onAccountReady).toBeTypeOf('function');
   await Promise.all([
@@ -457,6 +471,11 @@ it('binds one native notification owner and fences persisted events, safe clicks
   expect(mocks.createNotificationHost).toHaveBeenCalledOnce();
   const context = mocks.deliverNotifications.mock.calls[0][0];
   expect(context.userId).toBe('student-a');
+  const initialDeliveries = mocks.deliverNotifications.mock.calls.length;
+  expect(mocks.hostWindows[0].webContents.emit('did-finish-load')).toBe(true);
+  expect(mocks.deliverNotifications).toHaveBeenCalledTimes(
+    initialDeliveries + 1,
+  );
   const deps = mocks.notificationDependencies!;
   const onClick = vi.fn();
   await expect(
