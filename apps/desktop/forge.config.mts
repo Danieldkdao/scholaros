@@ -122,6 +122,7 @@ const config: ForgeConfig = {
       await mkdir(napiPackagesDirectory, { recursive: true });
       await Promise.all([
         stageRuntimePackage('mammoth', buildPath),
+        stageRuntimePackage('parse5', buildPath),
         cp(sqlitePackage, path.join(buildPath, 'node_modules/better-sqlite3'), {
           recursive: true,
         }),
