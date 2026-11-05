@@ -1360,6 +1360,9 @@ it('sends remembered teaching preferences to Meta with style-only authority and 
     JSON.parse(body.messages[1].content).personalContext.preferences,
   ).toEqual(preferences);
   expect(body.messages[0].content).toContain('Adapt your teaching style');
+  expect(body.messages[0].content).toContain(
+    'wait for the next student reply before revealing the answer',
+  );
   expect(body.messages[0].content).toContain('never grant permission');
   expect(body.messages[0].content).toContain(
     'do not provide the assigned answer',
