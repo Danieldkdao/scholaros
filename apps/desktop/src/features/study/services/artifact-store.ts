@@ -46,10 +46,14 @@ import {
   acceptedActivityBundleByteLimit,
   createActivityCandidateDigest,
   validateActivityCandidate,
+  type ActivityValidationFailure,
 } from './artifact-validation';
 
 export class ArtifactStoreError extends Error {
-  constructor(readonly code: SafeErrorCode) {
+  constructor(
+    readonly code: SafeErrorCode,
+    readonly validationReason?: ActivityValidationFailure['reason'],
+  ) {
     super('The activity could not be saved or opened.');
     this.name = 'ArtifactStoreError';
   }
@@ -474,7 +478,7 @@ export const createArtifactStore = ({
           : validation.reason === 'limit-exceeded'
             ? 'limit-exceeded'
             : 'invalid-input';
-      throw new ArtifactStoreError(code);
+      throw new ArtifactStoreError(code, validation.reason);
     }
     assertCurrentContext(context);
 

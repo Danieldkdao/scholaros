@@ -1,3 +1,4 @@
+import { createActivityWithValidationRepair } from '../../features/study/services/activity-creation';
 import type {
   SourcePassage,
   SourceReference,
@@ -835,180 +836,194 @@ export const loadLearningActionModules = async (): Promise<
       return tutorPractice.registerTutorPracticeActions(registrar, {
         sessionStore: activeSessionStore,
         requestLearning,
-        createActivity: async (context, input) => {
-          const assertCurrent = () => {
-            if (context.signal.aborted)
-              throw new LearningClientError('cancelled');
-            if (!context.isCurrent())
-              throw new LearningClientError('session-changed');
-            const revisions = activeSessionStore.readStudySessionRevisions(
-              context,
-              { sessionId: input.sessionId },
-            );
-            if (
-              revisions.contextRevision !== input.contextRevision ||
-              revisions.policyRevision !== input.policyRevision ||
-              revisions.gradeConsentRevision !== input.gradeConsentRevision
-            )
-              throw new LearningClientError('permission-revoked');
-          };
-          assertCurrent();
-          const snapshot = await activeSessionStore.getStudySession(context, {
-            sessionId: input.sessionId,
-          });
-          assertCurrent();
-          if (!snapshot || snapshot.session.courseId !== input.courseId)
-            throw new LearningClientError('scope-denied');
-          const existingCourse = database.db
-            .select()
-            .from(tables.CourseTable)
-            .where(
-              and(
-                eq(tables.CourseTable.userId, context.userId),
-                eq(tables.CourseTable.id, snapshot.session.courseId),
-                eq(tables.CourseTable.active, true),
-                isNull(tables.CourseTable.suppressedAt),
-              ),
-            )
-            .get();
-          if (!existingCourse) throw new LearningClientError('scope-denied');
-          const offered = new Set(
-            input.references.map((reference) => JSON.stringify(reference)),
-          );
-          const libraryReferences = input.references.filter(
-            ({ sourceKind }) => sourceKind !== 'assignment',
-          );
-          const passages: SourcePassage[] =
-            libraryReferences.length === 0
-              ? []
-              : (libraryRetrieval.searchStudySources(context, {
-                  sessionId: input.sessionId,
-                  query: input.objective,
-                  selectedIds: libraryReferences.map(
-                    ({ sourceId }) => sourceId,
-                  ),
-                }) ?? []);
-          if (
-            input.references.some(
-              ({ sourceKind }) => sourceKind === 'assignment',
-            )
-          ) {
-            const targetAssignmentId = snapshot.session.targetAssignmentId;
-            const existingAssignment =
-              targetAssignmentId === null
-                ? undefined
-                : database.db
-                    .select()
-                    .from(tables.CourseAssignmentTable)
-                    .where(
-                      and(
-                        eq(tables.CourseAssignmentTable.userId, context.userId),
-                        eq(
-                          tables.CourseAssignmentTable.courseId,
-                          snapshot.session.courseId,
-                        ),
-                        eq(tables.CourseAssignmentTable.id, targetAssignmentId),
-                        eq(tables.CourseAssignmentTable.active, true),
-                        isNull(tables.CourseAssignmentTable.suppressedAt),
-                      ),
-                    )
-                    .get();
-            if (!existingAssignment?.body)
-              throw new LearningClientError('scope-denied');
-            const reference: SourceReference = {
-              sourceKind: 'assignment',
-              sourceId: existingAssignment.id,
-              versionId: null,
-              courseId: snapshot.session.courseId,
-              locator: null,
-              title: existingAssignment.title,
-              provenance: 'connected-source',
-              observedAt: existingAssignment.lastSeenAt,
-              state: 'current',
-            };
-            if (!offered.has(JSON.stringify(reference)))
-              throw new LearningClientError('scope-denied');
-            passages.unshift({
-              reference,
-              text: existingAssignment.body.slice(0, 2000),
-              score: null,
-            });
-          }
-          const sources = [
-            ...new Map(
-              passages
-                .filter(({ reference }) =>
-                  offered.has(JSON.stringify(reference)),
+        createActivity: async (context, input) =>
+          createActivityWithValidationRepair(
+            input.requestId,
+            async (attemptRequestId) => {
+              const assertCurrent = () => {
+                if (context.signal.aborted)
+                  throw new LearningClientError('cancelled');
+                if (!context.isCurrent())
+                  throw new LearningClientError('session-changed');
+                const revisions = activeSessionStore.readStudySessionRevisions(
+                  context,
+                  { sessionId: input.sessionId },
+                );
+                if (
+                  revisions.contextRevision !== input.contextRevision ||
+                  revisions.policyRevision !== input.policyRevision ||
+                  revisions.gradeConsentRevision !== input.gradeConsentRevision
                 )
-                .flatMap((passage) => {
-                  const text = sourcePreview.filterSourcePreview(context, {
+                  throw new LearningClientError('permission-revoked');
+              };
+              assertCurrent();
+              const snapshot = await activeSessionStore.getStudySession(
+                context,
+                {
+                  sessionId: input.sessionId,
+                },
+              );
+              assertCurrent();
+              if (!snapshot || snapshot.session.courseId !== input.courseId)
+                throw new LearningClientError('scope-denied');
+              const existingCourse = database.db
+                .select()
+                .from(tables.CourseTable)
+                .where(
+                  and(
+                    eq(tables.CourseTable.userId, context.userId),
+                    eq(tables.CourseTable.id, snapshot.session.courseId),
+                    eq(tables.CourseTable.active, true),
+                    isNull(tables.CourseTable.suppressedAt),
+                  ),
+                )
+                .get();
+              if (!existingCourse)
+                throw new LearningClientError('scope-denied');
+              const offered = new Set(
+                input.references.map((reference) => JSON.stringify(reference)),
+              );
+              const libraryReferences = input.references.filter(
+                ({ sourceKind }) => sourceKind !== 'assignment',
+              );
+              const passages: SourcePassage[] =
+                libraryReferences.length === 0
+                  ? []
+                  : (libraryRetrieval.searchStudySources(context, {
+                      sessionId: input.sessionId,
+                      query: input.objective,
+                      selectedIds: libraryReferences.map(
+                        ({ sourceId }) => sourceId,
+                      ),
+                    }) ?? []);
+              if (
+                input.references.some(
+                  ({ sourceKind }) => sourceKind === 'assignment',
+                )
+              ) {
+                const targetAssignmentId = snapshot.session.targetAssignmentId;
+                const existingAssignment =
+                  targetAssignmentId === null
+                    ? undefined
+                    : database.db
+                        .select()
+                        .from(tables.CourseAssignmentTable)
+                        .where(
+                          and(
+                            eq(
+                              tables.CourseAssignmentTable.userId,
+                              context.userId,
+                            ),
+                            eq(
+                              tables.CourseAssignmentTable.courseId,
+                              snapshot.session.courseId,
+                            ),
+                            eq(
+                              tables.CourseAssignmentTable.id,
+                              targetAssignmentId,
+                            ),
+                            eq(tables.CourseAssignmentTable.active, true),
+                            isNull(tables.CourseAssignmentTable.suppressedAt),
+                          ),
+                        )
+                        .get();
+                if (!existingAssignment?.body)
+                  throw new LearningClientError('scope-denied');
+                const reference: SourceReference = {
+                  sourceKind: 'assignment',
+                  sourceId: existingAssignment.id,
+                  versionId: null,
+                  courseId: snapshot.session.courseId,
+                  locator: null,
+                  title: existingAssignment.title,
+                  provenance: 'connected-source',
+                  observedAt: existingAssignment.lastSeenAt,
+                  state: 'current',
+                };
+                if (!offered.has(JSON.stringify(reference)))
+                  throw new LearningClientError('scope-denied');
+                passages.unshift({
+                  reference,
+                  text: existingAssignment.body.slice(0, 2000),
+                  score: null,
+                });
+              }
+              const sources = [
+                ...new Map(
+                  passages
+                    .filter(({ reference }) =>
+                      offered.has(JSON.stringify(reference)),
+                    )
+                    .flatMap((passage) => {
+                      const text = sourcePreview.filterSourcePreview(context, {
+                        sessionId: input.sessionId,
+                        reference: passage.reference,
+                        text: passage.text,
+                      });
+                      return text === null ? [] : [{ ...passage, text }];
+                    })
+                    .map(
+                      (passage) =>
+                        [JSON.stringify(passage.reference), passage] as const,
+                    ),
+                ).values(),
+              ];
+              if (sources.length !== offered.size)
+                throw new LearningClientError('scope-denied');
+              assertCurrent();
+              const response = learningResponseSchema.parse(
+                await requestLearning(
+                  learningRequestSchema.parse({
+                    version: 1,
+                    requestId: attemptRequestId,
+                    kind: 'activity-generate',
                     sessionId: input.sessionId,
-                    reference: passage.reference,
-                    text: passage.text,
-                  });
-                  return text === null ? [] : [{ ...passage, text }];
-                })
-                .map(
-                  (passage) =>
-                    [JSON.stringify(passage.reference), passage] as const,
+                    courseId: input.courseId,
+                    contextRevision: input.contextRevision,
+                    input: { objective: input.objective, sources },
+                  }),
+                  context.signal,
                 ),
-            ).values(),
-          ];
-          if (sources.length !== offered.size)
-            throw new LearningClientError('scope-denied');
-          assertCurrent();
-          const response = learningResponseSchema.parse(
-            await requestLearning(
-              learningRequestSchema.parse({
-                version: 1,
-                requestId: input.requestId,
-                kind: 'activity-generate',
+              );
+              assertCurrent();
+              const [effect] = response.proposedEffects;
+              if (
+                response.requestId !== attemptRequestId ||
+                response.proposedEffects.length !== 1 ||
+                effect?.kind !== 'create-activity' ||
+                effect.candidate.sourceReferences.some(
+                  (reference) => !offered.has(JSON.stringify(reference)),
+                )
+              )
+                throw new LearningClientError('provider-failed');
+              const decision = policy.assessCandidate(context, {
                 sessionId: input.sessionId,
-                courseId: input.courseId,
-                contextRevision: input.contextRevision,
-                input: { objective: input.objective, sources },
-              }),
-              context.signal,
-            ),
-          );
-          assertCurrent();
-          const [effect] = response.proposedEffects;
-          if (
-            response.requestId !== input.requestId ||
-            response.proposedEffects.length !== 1 ||
-            effect?.kind !== 'create-activity' ||
-            effect.candidate.sourceReferences.some(
-              (reference) => !offered.has(JSON.stringify(reference)),
-            )
-          )
-            throw new LearningClientError('provider-failed');
-          const decision = policy.assessCandidate(context, {
-            sessionId: input.sessionId,
-            turnId: input.turnId,
-            candidate: effect.candidate,
-            policy: input.policy,
-            sourceReferences: input.references,
-          });
-          const created = await activeArtifactStore.createArtifactVersion(
-            context,
-            {
-              sessionId: input.sessionId,
-              turnId: input.turnId,
-              requestId: input.requestId,
-              candidate: effect.candidate,
-              policyDecision: {
-                allowed: decision.allowed,
-                reasonCode: decision.reasonCode,
-                revision: decision.revision,
-              },
+                turnId: input.turnId,
+                candidate: effect.candidate,
+                policy: input.policy,
+                sourceReferences: input.references,
+              });
+              const created = await activeArtifactStore.createArtifactVersion(
+                context,
+                {
+                  sessionId: input.sessionId,
+                  turnId: input.turnId,
+                  requestId: attemptRequestId,
+                  candidate: effect.candidate,
+                  policyDecision: {
+                    allowed: decision.allowed,
+                    reasonCode: decision.reasonCode,
+                    revision: decision.revision,
+                  },
+                },
+              );
+              return {
+                artifactId: created.version.artifactId,
+                versionId: created.version.versionId,
+                attemptId: created.attemptId,
+              };
             },
-          );
-          return {
-            artifactId: created.version.artifactId,
-            versionId: created.version.versionId,
-            attemptId: created.attemptId,
-          };
-        },
+          ),
       });
     },
     memoryActions.registerMemoryActions,

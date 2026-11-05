@@ -202,7 +202,10 @@ it('preserves the previous accepted version when regeneration is rejected', asyn
       artifactId: firstArtifact.version.artifactId,
       candidate: invalidCandidate,
     }),
-  ).rejects.toMatchObject({ code: 'invalid-input' });
+  ).rejects.toMatchObject({
+    code: 'invalid-input',
+    validationReason: 'unsafe-content',
+  });
   await expect(
     createVersion({
       artifactId: firstArtifact.version.artifactId,
