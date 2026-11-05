@@ -637,6 +637,9 @@ importers:
       shiki:
         specifier: ^4.5.0
         version: 4.5.0
+      streamdown:
+        specifier: 2.7.1
+        version: 2.7.1(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       tw-animate-css:
         specifier: ^1.4.0
         version: 1.4.0
