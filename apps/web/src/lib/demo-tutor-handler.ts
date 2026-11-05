@@ -1,11 +1,14 @@
-import type { DemoTutorAction } from '@scholaros/services/ai/demo-tutor';
+import type {
+  DemoTutorAction,
+  DemoTutorResult,
+} from '@scholaros/services/ai/demo-tutor';
 
 type DemoTutorDependencies = {
   enabled: () => boolean;
   generate: (
     action: DemoTutorAction,
     signal: AbortSignal,
-  ) => Promise<{ text: string; model: string }>;
+  ) => Promise<DemoTutorResult>;
   now?: () => number;
 };
 const headers = {
@@ -80,12 +83,12 @@ export const createDemoTutorHandler = (dependencies: DemoTutorDependencies) => {
         typeof parsed !== 'object' ||
         Array.isArray(parsed) ||
         Object.keys(parsed).length !== 1 ||
-        !['explain', 'quiz'].includes(parsed.action)
+        !['explain', 'quiz', 'experiment'].includes(parsed.action)
       )
         return fail(
           400,
           'invalid-input',
-          'Choose Explain or Quiz. Custom prompts and files are not accepted by the public demo.',
+          'Choose Explain, Quiz, or Experiment. Custom prompts and files are not accepted by the public demo.',
         );
       action = parsed.action;
     } catch {

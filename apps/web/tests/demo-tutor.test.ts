@@ -142,3 +142,35 @@ it('applies a thirty-second provider deadline and returns only a safe timeout er
     timeout.mockRestore();
   }
 });
+
+it('admits only the fixed experiment action under the same public request budget', async () => {
+  const experiment = {
+    kind: 'osmosis' as const,
+    title: 'A cell in a new solution',
+    introduction: 'Make a prediction.',
+    insideConcentration: 3,
+    outsideConcentration: 7,
+    predictionQuestion: 'Which way will water move?',
+  };
+  const generated = {
+    text: experiment.introduction,
+    model: 'muse-spark-1.3',
+    experiment,
+  };
+  const generate = vi.fn(async () => generated);
+  const handler = createDemoTutorHandler({ enabled: () => true, generate });
+  const response = await handler(request({ action: 'experiment' }));
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual(generated);
+  expect(generate).toHaveBeenCalledWith('experiment', expect.any(AbortSignal));
+  expect(
+    (
+      await handler(
+        request({ action: 'experiment', prompt: 'Custom question' }),
+      )
+    ).status,
+  ).toBe(400);
+  for (let index = 1; index < 5; index++)
+    expect((await handler(request({ action: 'experiment' }))).status).toBe(200);
+  expect((await handler(request({ action: 'experiment' }))).status).toBe(429);
+});
