@@ -270,6 +270,42 @@ describe('Stagehand browser model bridge', () => {
     );
   });
 
+  it('accepts exact ScholarOS course IDs alongside Stagehand DOM references', async () => {
+    const input = request(z.toJSONSchema(courseDiscoverySchema));
+    input.messages[0]!.content = [
+      {
+        type: 'text',
+        text: 'Offered links (IDs are ScholarOS target IDs, not Stagehand DOM IDs):\n- 1 | Biology\n- 2 | English\n\n[0-912] link Biology',
+      },
+    ];
+    mocks.generateText.mockResolvedValueOnce({
+      output: { courseTargetIds: ['1', '2'] },
+    });
+
+    await expect(
+      generateBrowserModel(input, new AbortController().signal),
+    ).resolves.toMatchObject({
+      structuredContent: { courseTargetIds: ['1', '2'] },
+    });
+  });
+
+  it('still rejects numeric course IDs absent from the offered list', async () => {
+    const input = request(z.toJSONSchema(courseDiscoverySchema));
+    input.messages[0]!.content = [
+      {
+        type: 'text',
+        text: 'Offered links (IDs are ScholarOS target IDs, not Stagehand DOM IDs):\n- 1 | Biology\n\n[0-2] link Unrelated',
+      },
+    ];
+    mocks.generateText.mockResolvedValueOnce({
+      output: { courseTargetIds: ['2'] },
+    });
+
+    await expect(
+      generateBrowserModel(input, new AbortController().signal),
+    ).rejects.toThrow(/unoffered target/i);
+  });
+
   it('rejects an observation that selects a link not offered in Stagehand context', async () => {
     mocks.generateText.mockResolvedValueOnce({
       output: {

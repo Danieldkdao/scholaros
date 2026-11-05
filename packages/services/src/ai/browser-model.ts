@@ -720,8 +720,10 @@ const schemasMatchProfile = (
 
 const getOfferedTargetIds = (messageText: string) => {
   const ids = new Set<string>();
+  // ScholarOS lists use numeric IDs; Stagehand accessibility trees use frame-node IDs.
+  // Preserve exact membership rather than mistaking one namespace for the other.
   for (const match of messageText.matchAll(
-    /\[(\d+-\d+)\]|^\s*-\s*(\d+-\d+)\s*\|/gm,
+    /\[(\d+-\d+)\]|^\s*-\s*(\d+(?:-\d+)?)\s*\|/gm,
   )) {
     const id = match[1] ?? match[2];
     if (id) ids.add(id);
