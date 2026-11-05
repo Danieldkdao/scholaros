@@ -46,7 +46,12 @@ export const scanFailureReason = (error: unknown) => {
   )
     return 'destination-unavailable';
   if (/sign in|password/i.test(message)) return 'sign-in-required';
-  if (/rate.?limit|quota|429|slow down/i.test(message)) return 'rate-limited';
+  if (
+    /rate.?limit|quota|\bHTTP\s+429\b|\bstatus(?:code)?\s*[=:]?\s*429\b|your school asked us to slow down|request limit reached/i.test(
+      message,
+    )
+  )
+    return 'rate-limited';
   if (/timeout|timed out/i.test(message)) return 'timed-out';
   return 'unknown';
 };

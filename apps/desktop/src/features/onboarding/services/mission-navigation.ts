@@ -1,6 +1,12 @@
 import { missionTraffic } from './mission-traffic';
+import { readPage, readPageUrl } from './page-content';
+import { waitForMissionPage } from './page-readiness';
 import type { Page } from '@browserbasehq/stagehand';
-import { isAcademicUrl, isReadNavigation } from '../lib/browser-policy';
+import {
+  academicPageIdentity,
+  isAcademicUrl,
+  isReadNavigation,
+} from '../lib/browser-policy';
 import type { AccountContinuation } from './account-continuation';
 
 type PolicyContext = {
@@ -106,12 +112,63 @@ export const createMissionNavigator = (
         blockedDomains: [],
       });
     const goTo = async (reload = false) => {
-      const destination = reload ? await page.url() : url;
+      const destination = reload ? await readPageUrl(page) : url;
       await missionTraffic.waitForTurn(destination, signal, options.onWait);
       assertActive();
-      const response = reload
-        ? await page.reload({ timeout: 12_000 })
-        : await page.goto(url, { timeout: 12_000 });
+      let response: Awaited<ReturnType<Page['goto']>> | undefined;
+      try {
+        response = reload
+          ? await page.reload({ timeout: 12_000 })
+          : await page.goto(url, { timeout: 12_000 });
+      } catch (error) {
+        if (
+          !(error instanceof Error) ||
+          !/\bwaitForMainLoadState\(domcontentloaded\) timed out after \d+ms\b/.test(
+            error.message,
+          )
+        )
+          throw error;
+        const expected = academicPageIdentity(destination);
+        const matchesDestination = (actual: string) => {
+          const identity = academicPageIdentity(actual);
+          if (!expected || !identity || !isReadNavigation(actual, hosts))
+            return false;
+          if (identity === expected) return true;
+          // Schoology's observed enrollment root resolves to its materials tab.
+          const target = new URL(destination);
+          const live = new URL(actual);
+          return (
+            (target.hostname === 'schoology.com' ||
+              target.hostname.endsWith('.schoology.com')) &&
+            target.origin === live.origin &&
+            /^\/course\/\d+\/?$/.test(target.pathname) &&
+            live.pathname ===
+              `${target.pathname.replace(/\/$/, '')}/materials` &&
+            target.search === live.search &&
+            target.hash === live.hash
+          );
+        };
+        assertActive();
+        let liveUrl = await readPageUrl(page);
+        if (continuation?.isAuthenticationUrl(liveUrl)) {
+          await continuation.resume(page, signal, isCurrent);
+          liveUrl = await readPageUrl(page);
+        }
+        if (!matchesDestination(liveUrl)) throw error;
+        await waitForMissionPage(page, 'resource', signal, { timeoutMs: 1500 });
+        assertActive();
+        const snapshot = await readPage(page, true);
+        const after = await readPageUrl(page);
+        if (
+          snapshot.password ||
+          snapshot.error ||
+          !snapshot.text?.trim() ||
+          !matchesDestination(after) ||
+          snapshot.url !== academicPageIdentity(after)
+        )
+          throw error;
+        assertActive();
+      }
       if (response) {
         const retryAfter = Object.entries(response.headers()).find(
           ([name]) => name.toLowerCase() === 'retry-after',
@@ -122,13 +179,13 @@ export const createMissionNavigator = (
         )
           throw missionTraffic.recordRateLimit(destination, retryAfter);
       }
-      options.onPageOpened?.(await page.url());
+      options.onPageOpened?.(await readPageUrl(page));
     };
     options.onNavigate?.(url);
     await goTo();
     for (let attempt = 0; attempt < (continuation ? 4 : 2); attempt += 1) {
       assertActive();
-      const currentUrl = await page.url();
+      const currentUrl = await readPageUrl(page);
       if (
         !isReadNavigation(currentUrl, hosts) &&
         !continuation?.isAuthenticationUrl(currentUrl)

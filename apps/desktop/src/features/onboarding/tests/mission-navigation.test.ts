@@ -1,5 +1,14 @@
+import { scanFailureReason } from '../lib/scan-diagnostics';
 import { missionTraffic } from '../services/mission-traffic';
 import { expect, it, vi } from 'vitest';
+const fallback = vi.hoisted(() => ({ read: vi.fn(), ready: vi.fn() }));
+vi.mock('../services/page-content', () => ({
+  readPage: fallback.read,
+  readPageUrl: (page: { url: () => Promise<string> }) => page.url(),
+}));
+vi.mock('../services/page-readiness', () => ({
+  waitForMissionPage: fallback.ready,
+}));
 import { createMissionNavigator } from '../services/mission-navigation';
 import { createAccountContinuation } from '../services/account-continuation';
 
@@ -358,4 +367,60 @@ it('relearns rendering dependencies after the browser restarts while preserving 
   const restartedContext = { setDomainPolicy: vi.fn(async () => undefined) };
   await run(restartedContext);
   expect(page.reload).toHaveBeenCalledOnce();
+});
+
+it.each(['ready', 'foreign', 'blank', 'error', 'persistent-loading'])(
+  'accepts only verified live content after a named SDK load-state timeout: %s',
+  async (state) => {
+    const target = 'https://school.schoology.com/course/12345';
+    const live =
+      state === 'foreign'
+        ? 'https://other.example/course/12345'
+        : `${target}/materials`;
+    const failure = new Error(
+      'waitForMainLoadState(domcontentloaded) timed out after 11989ms',
+    );
+    fallback.ready.mockReset().mockImplementation(async () => {
+      if (state === 'persistent-loading') throw failure;
+    });
+    fallback.read
+      .mockReset()
+      .mockResolvedValue({
+        url: live,
+        text:
+          state === 'blank'
+            ? ''
+            : 'Biology course materials and current assignments',
+        links: [],
+        error: state === 'error',
+        password: false,
+      });
+    const page = {
+      goto: vi.fn(async () => {
+        throw failure;
+      }),
+      reload: vi.fn(),
+      url: vi.fn(async () => live),
+      evaluate: vi.fn(async () => []),
+    };
+    const action = createMissionNavigator(
+      { setDomainPolicy: vi.fn() },
+      ['school.schoology.com'],
+      new AbortController().signal,
+    )(page as never, target);
+    if (state === 'ready') await expect(action).resolves.toBeUndefined();
+    else await expect(action).rejects.toThrow();
+    expect(page.goto).toHaveBeenCalledOnce();
+  },
+);
+
+it('does not misclassify a lifecycle timeout duration as an HTTP429 response', () => {
+  expect(
+    scanFailureReason(
+      new Error(
+        'waitForMainLoadState(domcontentloaded) timed out after 12429ms',
+      ),
+    ),
+  ).toBe('timed-out');
+  expect(scanFailureReason(new Error('HTTP 429'))).toBe('rate-limited');
 });
