@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     "./server": "./src/server.ts",
+    "./server-config": "./src/server-config.ts",
     "./client": "./src/client.ts",
     "./desktop": "./src/desktop.ts",
     "./browser-navigation": "./src/browser-navigation.ts"

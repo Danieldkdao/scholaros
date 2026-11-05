@@ -1,10 +1,9 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 const validation = vi.hoisted(() => vi.fn());
-vi.mock('../src/data/env/server', () => {
-  validation();
-  return {};
-});
+vi.mock('@scholaros/env/server-config', () => ({
+  createServerEnvironment: validation,
+}));
 beforeEach(() => {
   vi.resetModules();
   validation.mockReset();
