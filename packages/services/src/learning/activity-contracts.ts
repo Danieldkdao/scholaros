@@ -7,6 +7,17 @@ import {
 } from './product-contracts';
 import { sourceReferenceSchema } from './context-contracts';
 
+export const activityRepairReasonValues = [
+  'invalid-input',
+  'unsafe-content',
+  'non-interactive',
+] as const;
+export type ActivityRepairReason = (typeof activityRepairReasonValues)[number];
+export const activityRepairReasonSchema = z.enum(activityRepairReasonValues);
+export type ActivityRepairReasonSchema = z.infer<
+  typeof activityRepairReasonSchema
+>;
+
 export const activityPresentationValues = ['inline', 'expanded'] as const;
 export type ActivityPresentation = (typeof activityPresentationValues)[number];
 export const activityCandidateSchema = z

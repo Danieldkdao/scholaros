@@ -162,7 +162,7 @@ it('reserves a bounded visible activity answer by using explicit Meta low reason
     'Never use innerHTML, outerHTML, document.write',
   );
   expect(request.instructions).toContain('including SVG namespace URLs');
-  expect(request.maxOutputTokens).toBe(6000);
+  expect(request.maxOutputTokens).toBe(12000);
   expect(request.providerOptions).toEqual({
     openai: {
       forceReasoning: true,
@@ -171,4 +171,56 @@ it('reserves a bounded visible activity answer by using explicit Meta low reason
     },
   });
   expect(request.maxRetries).toBe(0);
+});
+
+it('uses bounded validation feedback for regeneration without changing the learning objective', async () => {
+  const candidate = await generateActivityCandidate(
+    {
+      objective: 'Explore osmosis with adjustable concentrations.',
+      sourceReferences: [],
+      repairReason: 'non-interactive',
+    },
+    new AbortController().signal,
+  );
+  const request = mocks.generateText.mock.calls[0]?.[0];
+  expect(candidate.objective).toBe(
+    'Explore osmosis with adjustable concentrations.',
+  );
+  expect(request.instructions).toContain(
+    'previous candidate failed the non-interactive check',
+  );
+  expect(request.instructions).toContain('Update the visualization');
+});
+
+it('reports only the generation stage and bounded token metadata when output is truncated', async () => {
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const failure = Object.assign(
+    new Error('PRIVATE prompt and generated content'),
+    {
+      finishReason: 'length',
+      usage: {
+        outputTokens: 6000,
+        outputTokenDetails: { reasoningTokens: 2799 },
+      },
+      text: 'PRIVATE generated markup',
+    },
+  );
+  mocks.generateText.mockRejectedValueOnce(failure);
+  try {
+    await expect(
+      generateActivityCandidate(
+        { objective: 'Explore osmosis.', sourceReferences: [] },
+        new AbortController().signal,
+      ),
+    ).rejects.toBe(failure);
+    expect(warn).toHaveBeenCalledWith('[Activity generation]', {
+      phase: 'generation-failed',
+      reason: 'output-limit',
+      outputTokens: 6000,
+      reasoningTokens: 2799,
+    });
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('PRIVATE');
+  } finally {
+    warn.mockRestore();
+  }
 });

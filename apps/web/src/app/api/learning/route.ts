@@ -334,6 +334,7 @@ const dispatcher = createLearningDispatcher({
         {
           objective: request.input.objective,
           sourceReferences: offeredSources,
+          repairReason: request.input.repairReason,
           context: request.input.sources
             .map((source) => source.text)
             .join('\n\n')

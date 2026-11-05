@@ -48,14 +48,27 @@ it.each([
   expect(create).toHaveBeenCalledOnce();
 });
 it('bounds repeated validation failure to two attempts', async () => {
-  const create = vi
-    .fn()
-    .mockRejectedValue({
-      code: 'invalid-input',
-      validationReason: 'unsafe-content',
-    });
+  const create = vi.fn().mockRejectedValue({
+    code: 'invalid-input',
+    validationReason: 'unsafe-content',
+  });
   await expect(
     createActivityWithValidationRepair(requestId, create),
   ).rejects.toMatchObject({ validationReason: 'unsafe-content' });
   expect(create).toHaveBeenCalledTimes(2);
+});
+
+it('passes only the bounded validation reason to its one repair attempt', async () => {
+  const create = vi
+    .fn()
+    .mockRejectedValueOnce({
+      code: 'invalid-input',
+      validationReason: 'non-interactive',
+      message: 'PRIVATE generated HTML and source text',
+    })
+    .mockResolvedValueOnce(saved);
+  await createActivityWithValidationRepair(requestId, create);
+  expect(create.mock.calls[0]).toEqual([requestId]);
+  expect(create.mock.calls[1]).toEqual([expect.any(String), 'non-interactive']);
+  expect(JSON.stringify(create.mock.calls)).not.toContain('PRIVATE');
 });

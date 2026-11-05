@@ -1,7 +1,10 @@
 import { issuePracticeProof, verifyPracticeProof } from './practice-provenance';
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { activityCandidateSchema } from '../learning/activity-contracts';
+import {
+  activityCandidateSchema,
+  activityRepairReasonSchema,
+} from '../learning/activity-contracts';
 import {
   sourcePassageSchema,
   sourceReferenceSchema,
@@ -91,6 +94,7 @@ export type TutorInputSchema = z.infer<typeof tutorInputSchema>;
 const sourceInputSchema = z.strictObject({
   objective: z.string().min(1).max(1000),
   sources: z.array(sourcePassageSchema).max(20),
+  repairReason: activityRepairReasonSchema.optional(),
 });
 export type SourceInputSchema = z.infer<typeof sourceInputSchema>;
 export const practiceAnswerEvaluationInputSchema = z

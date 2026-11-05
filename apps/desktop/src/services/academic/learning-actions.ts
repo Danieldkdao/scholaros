@@ -839,7 +839,7 @@ export const loadLearningActionModules = async (): Promise<
         createActivity: async (context, input) =>
           createActivityWithValidationRepair(
             input.requestId,
-            async (attemptRequestId) => {
+            async (attemptRequestId, repairReason) => {
               const assertCurrent = () => {
                 if (context.signal.aborted)
                   throw new LearningClientError('cancelled');
@@ -980,7 +980,11 @@ export const loadLearningActionModules = async (): Promise<
                     sessionId: input.sessionId,
                     courseId: input.courseId,
                     contextRevision: input.contextRevision,
-                    input: { objective: input.objective, sources },
+                    input: {
+                      objective: input.objective,
+                      sources,
+                      ...(repairReason ? { repairReason } : {}),
+                    },
                   }),
                   context.signal,
                 ),
