@@ -141,6 +141,19 @@ open apps/desktop/out/scholaros-darwin-arm64/scholaros.app
 
 Keep the web service running. Local macOS packages are ad hoc signed for development and are not notarized distribution releases; open the packaged app from Finder when granting microphone or other macOS permissions. To use your own hosted backend, deploy `apps/web`, configure its server variables and production OAuth callbacks, then set the desktop API URL to that HTTPS origin **before rebuilding**.
 
+
+### Temporary sign-in without Keychain
+
+For a temporary desktop session that avoids Keychain access, quit the running desktop and launch the **newly built package** explicitly:
+
+```sh
+open -n apps/desktop/out/scholaros-darwin-arm64/scholaros.app --args --session-only
+```
+
+Normal browser sign-in and server authorization still apply. Desktop credentials and pending sign-in state stay in RAM and disappear when the app quits; existing encrypted credentials are neither read nor replaced. This mode requires the online backend and does not use saved offline sign-in grants. Course data still uses the normal local workspace.
+
+For UI development, `pnpm exec dotenv -e apps/desktop/.env -- pnpm dev:desktop:session` enables the same temporary mode. On macOS, complete browser sign-in in the packaged app: generic development `Electron.app` instances can share a URL-scheme identity with old worktrees, sending the callback to the wrong process. A callback must return to the same instance that started sign-in.
+
 ## Judge demo and API-call recording
 
 Choose **Try demo** on the desktop sign-in screen, or open `/demo` on the web server. The guided walkthrough uses clearly labeled sample courses, editable temporary notes, a working Python exercise, and a quiz. No account, database URL, OAuth setup, or sign-in is required for the public walkthrough. Its sample content is separate from the optional live AI result.
