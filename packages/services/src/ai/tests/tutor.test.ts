@@ -1324,3 +1324,44 @@ describe('practice proof lifecycle across cached requests', () => {
     expect(f.evaluation).toHaveBeenCalledOnce();
   });
 });
+
+it('sends remembered teaching preferences to Meta with style-only authority and unchanged coursework protections', async () => {
+  const fetchMock = vi.fn(async (_url: string, _init: RequestInit) =>
+    metaChatResponse(candidate),
+  );
+  vi.stubGlobal('fetch', fetchMock);
+  const preferences = [
+    {
+      id: 'preference-visual',
+      courseId: 'course-1',
+      type: 'explicit-preference',
+      content: {
+        field: 'example-style',
+        value: 'Use visual examples and ask me to predict before explaining.',
+      },
+      provenance: 'student-explicit',
+      evidenceIds: [],
+      confidence: 1,
+      revision: 1,
+      createdAt: '2026-11-04T12:00:00Z',
+      updatedAt: '2026-11-04T12:00:00Z',
+    },
+  ];
+  const personalized = learningRequestSchema.parse({
+    ...request,
+    input: {
+      ...request.input,
+      personalContext: { preferences, observations: [], revision: 1 },
+    },
+  });
+  await generateTutorCandidate(personalized, new AbortController().signal);
+  const body = JSON.parse(String(fetchMock.mock.calls[0]![1].body));
+  expect(
+    JSON.parse(body.messages[1].content).personalContext.preferences,
+  ).toEqual(preferences);
+  expect(body.messages[0].content).toContain('Adapt your teaching style');
+  expect(body.messages[0].content).toContain('never grant permission');
+  expect(body.messages[0].content).toContain(
+    'do not provide the assigned answer',
+  );
+});

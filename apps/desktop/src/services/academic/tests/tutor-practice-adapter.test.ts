@@ -1166,3 +1166,154 @@ describe('real tutor and practice academic registration', () => {
     expect(db.select().from(AssistanceLedgerTable).all()).toHaveLength(1);
   });
 });
+
+it('carries selected Biology learning notes and remembered preferences into tutoring and a resumed session', async () => {
+  const { upsertExplicitPreference, deleteMemory } =
+    await import('../../../features/memory/services/memory-store');
+  const vocabulary = upsertExplicitPreference(context, {
+    requestId: randomUUID(),
+    preference: {
+      field: 'vocabulary',
+      value: 'Explain technical terms in plain English.',
+    },
+  });
+  const examples = upsertExplicitPreference(context, {
+    requestId: randomUUID(),
+    courseId,
+    preference: {
+      field: 'example-style',
+      value: 'Use visual examples and ask me to predict before explaining.',
+    },
+  });
+  const learningNote = await createContextNote(context, {
+    requestId: randomUUID(),
+    kind: 'note',
+    courseId,
+    title: 'My Biology learning context',
+    text: 'I learn visually, explain technical terms in plain English, ask me to predict before answering. I mix up diffusion and osmosis.',
+  });
+  const handout = await createContextNote(context, {
+    requestId: randomUUID(),
+    kind: 'note',
+    courseId,
+    title: 'Synthetic Biology handout',
+    text: 'Osmosis is the movement of water across a selectively permeable membrane. Diffusion is the net movement of particles from higher to lower concentration.',
+  });
+  let generatedResponses = 0;
+  const requestLearning = vi.fn<TutorPracticeDependencies['requestLearning']>(
+    async (request, signal) => {
+      generatedResponses += 1;
+      return {
+        ...(await tutorResponse(request, signal)),
+        parts: [
+          {
+            kind: 'text',
+            text:
+              generatedResponses > 1
+                ? 'Imagine a membrane as a doorway that lets water through; predict what changes when one side has more dissolved particles.'
+                : 'A cell membrane separates the cell from its surroundings.',
+          },
+        ],
+      };
+    },
+  );
+  const register = () =>
+    registerTutorPracticeActions(registrar, {
+      sessionStore,
+      requestLearning,
+      createActivity,
+    });
+  try {
+    cleanup = register();
+    const session = await sessionStore.createStudySession(context, {
+      requestId: randomUUID(),
+      courseId,
+      activity: 'understand-topic',
+      targetAssignmentId: null,
+      topic: 'Membrane transport',
+      contextItemIds: [learningNote.id, handout.id],
+      durationMinutes: null,
+      title: 'Biology context demo',
+    });
+    const admitted = await call('sendStudyTurn', {
+      sessionId: session.id,
+      requestId: randomUUID(),
+      expectedDraftRevision: 0,
+      text: 'Help me understand how water moves.',
+      attachmentIds: [],
+    });
+    await vi.waitFor(() =>
+      expect(
+        db
+          .select()
+          .from(StudyTurnTable)
+          .where(eq(StudyTurnTable.id, admitted.turnId))
+          .get()?.status,
+      ).toBe('complete'),
+    );
+    const firstRequest = requestLearning.mock.calls[0]![0];
+    if (firstRequest.kind !== 'tutor-turn')
+      throw new Error('Expected tutor turn');
+    expect(
+      firstRequest.input.personalContext.preferences.map(
+        ({ content }) => content,
+      ),
+    ).toEqual(expect.arrayContaining([vocabulary.content, examples.content]));
+    expect(
+      firstRequest.input.sources.map(({ reference }) => reference.sourceId),
+    ).toEqual(expect.arrayContaining([learningNote.id, handout.id]));
+    expect(
+      firstRequest.input.sources.some(({ text }) =>
+        text.includes('I mix up diffusion and osmosis'),
+      ),
+    ).toBe(true);
+    const savedMessageIds = (await snapshot(session.id))!.messages.map(
+      ({ id }) => id,
+    );
+    await cleanup();
+    sessionStore = createTutorPracticeSessionStore();
+    cleanup = register();
+    expect((await snapshot(session.id))!.messages.map(({ id }) => id)).toEqual(
+      savedMessageIds,
+    );
+    const draftRevision = (await snapshot(session.id))!.session.draft.revision;
+    const followUp = await call('sendStudyTurn', {
+      sessionId: session.id,
+      requestId: randomUUID(),
+      expectedDraftRevision: draftRevision,
+      text: 'Could you explain it another way?',
+      attachmentIds: [],
+    });
+    await vi.waitFor(() =>
+      expect(
+        db
+          .select()
+          .from(StudyTurnTable)
+          .where(eq(StudyTurnTable.id, followUp.turnId))
+          .get(),
+      ).toMatchObject({ status: 'complete', errorCode: null }),
+    );
+    const resumedRequest = requestLearning.mock.calls[1]![0];
+    if (resumedRequest.kind !== 'tutor-turn')
+      throw new Error('Expected tutor turn');
+    expect(
+      resumedRequest.input.sources.some(
+        ({ reference }) => reference.sourceId === learningNote.id,
+      ),
+    ).toBe(true);
+    expect(
+      resumedRequest.input.personalContext.preferences.map(({ id }) => id),
+    ).toEqual(expect.arrayContaining([vocabulary.id, examples.id]));
+    expect(resumedRequest.input.history.length).toBeGreaterThanOrEqual(2);
+    expect((await snapshot(session.id))!.messages).toHaveLength(4);
+  } finally {
+    deleteMemory(context, {
+      memoryId: vocabulary.id,
+      expectedRevision: vocabulary.revision,
+    });
+    deleteMemory(context, {
+      memoryId: examples.id,
+      expectedRevision: examples.revision,
+    });
+  }
+});

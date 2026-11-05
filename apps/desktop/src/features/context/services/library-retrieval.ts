@@ -159,8 +159,10 @@ const searchContextCandidates = (input: {
   ftsQuery: string;
   limit: number;
   selectedIds: Set<string> | null;
+  includeSelectedNotes?: boolean;
 }): ContextCandidate[] => {
   if (input.selectedIds?.size === 0) return [];
+  if (input.includeSelectedNotes && !input.selectedIds?.size) return [];
   const selectedClause =
     input.selectedIds === null
       ? ''
@@ -178,7 +180,7 @@ const searchContextCandidates = (input: {
          items.provenance AS provenance,
          versions.created_at AS createdAt,
          links.course_id AS linkCourseId,
-         bm25(context_chunks_fts, 0, 0, 0, 0, 0, 1.0) AS score
+         ${input.includeSelectedNotes ? '0' : 'bm25(context_chunks_fts, 0, 0, 0, 0, 0, 1.0)'} AS score
        FROM context_chunks_fts
        JOIN context_chunks AS chunks
          ON chunks.rowid = context_chunks_fts.rowid
@@ -190,7 +192,7 @@ const searchContextCandidates = (input: {
          AND versions.user_id = chunks.user_id
        JOIN context_links AS links
          ON links.user_id = items.user_id AND links.item_id = items.id
-       WHERE context_chunks_fts MATCH ?
+       WHERE ${input.includeSelectedNotes ? "items.kind = 'note'" : 'context_chunks_fts MATCH ?'}
          AND context_chunks_fts.user_id = ?
          AND items.user_id = ?
          AND items.removed_at IS NULL
@@ -225,7 +227,7 @@ const searchContextCandidates = (input: {
        LIMIT ?`,
     )
     .all(
-      input.ftsQuery,
+      ...(input.includeSelectedNotes ? [] : [input.ftsQuery]),
       input.userId,
       input.userId,
       input.courseId,
@@ -397,7 +399,7 @@ export const searchStudySources = (
   )
     return null;
   const ftsQuery = normalizeContextSearchQuery(parsed.data.query);
-  if (!ftsQuery) return [];
+  if (!ftsQuery && parsed.data.selectedIds.length === 0) return [];
   try {
     const session = db
       .select({ courseId: StudySessionTable.courseId })
@@ -441,16 +443,44 @@ export const searchStudySources = (
           ),
         )
       : null;
-    const contextCandidates = searchContextCandidates({
+    const searchInput = {
       userId: context.userId,
       sessionId: parsed.data.sessionId,
       courseId: course.id,
       ftsQuery,
       limit,
       selectedIds: selectedContextIds,
-    }).slice(0, limit);
+    };
+    const matchingCandidates = ftsQuery
+      ? searchContextCandidates(searchInput)
+      : [];
+    const matchedIds = new Set(
+      matchingCandidates.map(({ reference }) => reference.sourceId),
+    );
+    const missingSelectedIds = selectedContextIds
+      ? new Set([...selectedContextIds].filter((id) => !matchedIds.has(id)))
+      : new Set<string>();
+    const fallbackIds = new Set<string>();
+    // Explicitly selected notes carry context even when follow-up wording has
+    // no keyword overlap; the same ownership/version/course fences still apply.
+    const selectedNotes = missingSelectedIds.size
+      ? searchContextCandidates({
+          ...searchInput,
+          selectedIds: missingSelectedIds,
+          includeSelectedNotes: true,
+        }).filter(({ reference }) => {
+          if (fallbackIds.has(reference.sourceId)) return false;
+          fallbackIds.add(reference.sourceId);
+          return true;
+        })
+      : [];
+    const contextCandidates = [...selectedNotes, ...matchingCandidates].slice(
+      0,
+      limit,
+    );
     let materialCandidates: MaterialCandidate[] = [];
     const shouldSearchMaterials =
+      Boolean(ftsQuery) &&
       course.connectionId !== null &&
       (!parsed.data.selectedIds.length || selected.materialIds?.size);
     if (shouldSearchMaterials && course.connectionId) {

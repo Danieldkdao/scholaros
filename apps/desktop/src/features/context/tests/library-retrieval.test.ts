@@ -534,3 +534,59 @@ describe('scoped Context source retrieval', () => {
     expect(passages?.every(({ text }) => text.length <= 2_000)).toBe(true);
   });
 });
+
+it('keeps explicitly selected learning notes available when the current question has no matching words', async () => {
+  const preferenceNote = await createContextNote(context, {
+    requestId: randomUUID(),
+    title: 'How I learn',
+    kind: 'note',
+    courseId,
+    text: 'I learn visually, explain technical terms in plain English, ask me to predict before answering.',
+  });
+  const difficultyNote = await createContextNote(context, {
+    requestId: randomUUID(),
+    title: 'What I mix up',
+    kind: 'note',
+    courseId,
+    text: 'I mix up diffusion and osmosis.',
+  });
+  const unselected = await createContextNote(context, {
+    requestId: randomUUID(),
+    title: 'Unselected note',
+    kind: 'note',
+    courseId,
+    text: 'This unrelated private note was not selected for the session.',
+  });
+  const passages = searchStudySources(context, {
+    sessionId,
+    query: 'Teach me membrane transport',
+    selectedIds: [preferenceNote.id, difficultyNote.id],
+  });
+  expect(passages?.map(({ reference }) => reference.sourceId)).toEqual(
+    expect.arrayContaining([preferenceNote.id, difficultyNote.id]),
+  );
+  expect(
+    passages?.some(({ reference }) => reference.sourceId === unselected.id),
+  ).toBe(false);
+  expect(passages?.some(({ text }) => text.includes('plain English'))).toBe(
+    true,
+  );
+});
+
+it('keeps selected note context when a short follow-up has no searchable terms', async () => {
+  const note = await createContextNote(context, {
+    requestId: randomUUID(),
+    title: 'Learning preference',
+    kind: 'note',
+    courseId,
+    text: 'Use pictures and everyday words before technical vocabulary.',
+  });
+  const passages = searchStudySources(context, {
+    sessionId,
+    query: '?',
+    selectedIds: [note.id],
+  });
+  expect(
+    passages?.some(({ reference }) => reference.sourceId === note.id),
+  ).toBe(true);
+});
