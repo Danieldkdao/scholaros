@@ -94,7 +94,10 @@ export const createActivityThemeCss = (theme: ActivityTheme) => {
   ]
     .filter(Boolean)
     .join(';');
-  return `:root{${properties.join(';')}}html,body,#activity-root{${surface}}`;
+  const mutedText = theme.mutedForeground
+    ? '.muted{color:var(--muted-foreground)!important}'
+    : '';
+  return `:root{${properties.join(';')}}html,body,#activity-root{${surface}}${mutedText}`;
 };
 
 export type ActivityMountInput = {

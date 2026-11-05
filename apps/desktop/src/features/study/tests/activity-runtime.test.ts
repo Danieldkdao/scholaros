@@ -363,6 +363,8 @@ it('seeds activity backgrounds and semantic tokens from the trusted host palette
     background: 'rgb(20, 21, 22)',
     foreground: 'rgb(240, 241, 242)',
     primary: 'oklch(0.7 0.1 120)',
+    muted: 'rgb(30, 31, 32)',
+    mutedForeground: 'rgb(170, 171, 172)',
     border: 'red; background:url(https://invalid.test)',
     colorScheme: 'dark',
   });
@@ -372,6 +374,9 @@ it('seeds activity backgrounds and semantic tokens from the trusted host palette
   expect(css).toContain('background:var(--background)!important');
   expect(css).toContain('color:var(--foreground)!important');
   expect(css).toContain('color-scheme:dark');
+  expect(css).toContain('--muted-foreground:rgb(170, 171, 172)');
+  expect(css).toContain('.muted{color:var(--muted-foreground)!important}');
+  expect(createActivityThemeCss({})).not.toContain('.muted');
   expect(css).not.toContain('invalid.test');
   expect(theme.border).toBeUndefined();
 });
