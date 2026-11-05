@@ -26,6 +26,7 @@ import {
   AttachmentMedia,
   AttachmentTitle,
 } from '@scholaros/ui/components/attachment';
+import { Spinner } from '@scholaros/ui/components/spinner';
 import { Button } from '@scholaros/ui/components/button';
 import { Card, CardContent } from '@scholaros/ui/components/card';
 import {
@@ -45,6 +46,7 @@ type AttachmentPresentation = {
 export type StudyMessageProps = {
   message: StudyMessageDTO;
   streaming?: boolean;
+  suppressProgress?: boolean;
   gradeContentVisible: boolean;
   gradeEvidenceVisible: boolean;
   loadAttachment?: (
@@ -319,6 +321,7 @@ const StatusPart = ({ code }: { code: string }) => {
 export const StudyMessage = ({
   message,
   streaming = false,
+  suppressProgress = false,
   gradeContentVisible,
   gradeEvidenceVisible,
   loadAttachment,
@@ -399,6 +402,11 @@ export const StudyMessage = ({
               </Card>
             );
           case 'status':
+            if (
+              suppressProgress &&
+              ['preparing', 'generating', 'checking'].includes(part.code)
+            )
+              return null;
             return <StatusPart key={key} code={part.code} />;
         }
       })}
@@ -457,3 +465,30 @@ export const StudyMessage = ({
     </MessageGroup>
   );
 };
+
+export const StudyThinkingReply = () => (
+  <MessageGroup data-slot="study-thinking">
+    <Message
+      align="start"
+      role="article"
+      aria-label="Tutor response"
+      aria-busy="true"
+    >
+      <MessageContent>
+        <p
+          role="status"
+          aria-live="polite"
+          className="flex items-center gap-2 text-base text-muted-foreground"
+        >
+          <Spinner
+            aria-hidden="true"
+            role="presentation"
+            aria-label={undefined}
+            className="animate-none motion-safe:animate-spin"
+          />
+          <span>Thinking…</span>
+        </p>
+      </MessageContent>
+    </Message>
+  </MessageGroup>
+);

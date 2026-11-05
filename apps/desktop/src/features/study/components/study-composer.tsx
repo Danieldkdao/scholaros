@@ -363,7 +363,6 @@ export const StudyComposer = ({
   const activeTurnStatus = activeTurn
     ? formatTurnStatus(activeTurn.status)
     : null;
-  const ActiveTurnStatusIcon = activeTurnStatus?.Icon;
   const hasProcessingAttachment = attachments.some((attachment) =>
     isStudyAttachmentProcessing(attachment.status, attachment.sourceRemoved),
   );
@@ -384,15 +383,16 @@ export const StudyComposer = ({
       ? 'Your study time ended. Extend the session or continue without a timer.'
       : offline || offlineFromService
         ? 'Connect to send; your text stays here.'
-        : activeTurnStatus?.isWorking
-          ? 'A response is already being prepared.'
-          : hasProcessingAttachment
-            ? 'Wait for selected files to finish processing.'
-            : hasUnavailableAttachment
-              ? 'Remove or replace unreadable files before sending.'
-              : null;
+        : hasProcessingAttachment
+          ? 'Wait for selected files to finish processing.'
+          : hasUnavailableAttachment
+            ? 'Remove or replace unreadable files before sending.'
+            : null;
   const sendDisabled =
-    submitting || !hasPayload || Boolean(sendingDisabledReason);
+    submitting ||
+    activeTurnStatus?.isWorking ||
+    !hasPayload ||
+    Boolean(sendingDisabledReason);
 
   const submit = async () => {
     if (readOnlyRef.current || submittingRef.current || sendDisabled) return;
@@ -788,17 +788,6 @@ export const StudyComposer = ({
           className="text-base text-destructive"
         >
           {error}
-        </p>
-      )}
-      {activeTurnStatus?.isWorking && (
-        <p className="sr-only" aria-live="polite">
-          {ActiveTurnStatusIcon && (
-            <ActiveTurnStatusIcon
-              aria-hidden="true"
-              className="motion-safe:animate-spin"
-            />
-          )}
-          {activeTurnStatus.label}
         </p>
       )}
     </form>

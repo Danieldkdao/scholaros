@@ -2130,3 +2130,107 @@ it.each(['extend', 'untimed'] as const)(
     expect(currentBridge.sendStudyTurn).not.toHaveBeenCalled();
   },
 );
+
+it.each(['preparing', 'generating', 'checking'] as const)(
+  'shows one assistant thinking reply for a real %s turn and clears it when settled',
+  async (status) => {
+    let currentSnapshot = snapshot({
+      activeTurn: {
+        id: 'turn-thinking',
+        sessionId: 'session-1',
+        status,
+        attemptNumber: 1,
+        errorCode: null,
+        startedAt: '2026-11-03T12:00:00.000Z',
+        settledAt: null,
+      },
+      messages: [
+        message('question', 1, 'student', [
+          { kind: 'text', text: 'Explain cells' },
+        ]),
+        message(
+          'progress',
+          2,
+          'tutor',
+          [{ kind: 'status', code: status, label: '' }],
+          { turnId: 'turn-thinking' },
+        ),
+      ],
+    });
+    const currentBridge = bridge(vi.fn(async () => currentSnapshot));
+    let finishStop!: () => void;
+    vi.mocked(currentBridge.cancelStudyTurn).mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finishStop = resolve;
+        }),
+    );
+    const { container } = await mountDocument({}, currentBridge);
+    const conversation = container.querySelector(
+      '[aria-label="Study conversation"]',
+    )!;
+    expect(
+      conversation.querySelectorAll('[data-slot="study-thinking"]'),
+    ).toHaveLength(1);
+    await click(
+      container.querySelector<HTMLButtonElement>(
+        'button[aria-label="Stop response"]',
+      )!,
+    );
+    expect(
+      conversation.querySelector('[data-slot="study-thinking"]'),
+    ).not.toBeNull();
+    await act(async () => finishStop());
+    expect(conversation.textContent).toContain('Thinking…');
+    expect(container.textContent).not.toContain(
+      'A response is already being prepared.',
+    );
+    expect(
+      conversation.querySelectorAll('.motion-safe\\:animate-spin'),
+    ).toHaveLength(1);
+    for (const code of [
+      'complete',
+      'cancelled',
+      'failed',
+      'provider-failed',
+    ] as const) {
+      currentSnapshot = snapshot({
+        messages: [
+          message(
+            'settled',
+            2,
+            'tutor',
+            code === 'complete'
+              ? [
+                  {
+                    kind: 'text' as const,
+                    text: 'Cells are the basic units of life.',
+                  },
+                ]
+              : [{ kind: 'status' as const, code, label: '' }],
+          ),
+        ],
+        revision: currentSnapshot.revision + 1,
+      });
+      await act(async () =>
+        eventListener?.({
+          version: 1,
+          accountId: 'student-a',
+          resource: 'study',
+          targetId: 'session-1',
+          revision: currentSnapshot.revision,
+        }),
+      );
+      await vi.waitFor(() =>
+        expect(
+          container.querySelector('[data-slot="study-thinking"]'),
+        ).toBeNull(),
+      );
+      if (code === 'complete')
+        expect(conversation.textContent).toContain(
+          'Cells are the basic units of life.',
+        );
+      else expect(conversation.querySelector('[role="status"]')).not.toBeNull();
+    }
+  },
+);

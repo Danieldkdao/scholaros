@@ -60,7 +60,7 @@ import { TooltipWrapper } from '@scholaros/ui/components/tooltip-wrapper';
 import { ActivityPanel } from './activity-panel';
 import type { StudyDictationControlProps } from './study-composer';
 import { StudyComposer } from './study-composer';
-import { StudyMessage } from './study-message';
+import { StudyMessage, StudyThinkingReply } from './study-message';
 import type { StudySourcePreview } from './study-source-panel';
 import { StudySourcePanel } from './study-source-panel';
 import { StudyTimer, StudyTimerResolution } from './study-timer';
@@ -481,6 +481,9 @@ export const StudyDocument = ({
                   <StudyMessage
                     message={message}
                     streaming={message.id === study.streamingMessageId}
+                    suppressProgress={
+                      message.turnId === snapshot.activeTurn?.id
+                    }
                     gradeContentVisible={
                       !message.gradeDerived ||
                       Boolean(
@@ -500,6 +503,17 @@ export const StudyDocument = ({
                 </MessageScrollerItem>
               ))
             )}
+            {snapshot.activeTurn &&
+              ['preparing', 'generating', 'checking'].includes(
+                snapshot.activeTurn.status,
+              ) && (
+                <MessageScrollerItem
+                  messageId={`thinking:${snapshot.activeTurn.id}`}
+                  className="mx-auto w-full max-w-4xl"
+                >
+                  <StudyThinkingReply />
+                </MessageScrollerItem>
+              )}
           </MessageScrollerContent>
         </MessageScrollerViewport>
         <MessageScrollerButton aria-label="Scroll to latest message" />
