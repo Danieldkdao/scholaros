@@ -159,6 +159,105 @@ describe('deep course content scanning', () => {
     }
   });
 
+  it.each(['observed', 'sibling', 'unobserved'] as const)(
+    're-reads changed navigation only within the observed course graph, destination=%s',
+    async (destinationKind) => {
+      const workUrl = `${root}/materials/week-one`;
+      const destination =
+        destinationKind === 'sibling'
+          ? 'https://school.edu/courses/2/materials'
+          : destinationKind === 'unobserved'
+            ? `${root}/not-observed`
+            : workUrl;
+      const current = page(destination, [], 'Verified work');
+      const navigation = {
+        discoverCourses: vi.fn(),
+        extract: vi.fn(async (body: AgentRequestSchema) =>
+          body.pages[0].url === workUrl
+            ? {
+                assignments: [card('Verified work', workUrl)],
+                coverage: 'complete',
+              }
+            : { assignments: [], coverage: 'partial' },
+        ),
+        choose: vi.fn(async () => {
+          throw new Error('The current page changed during course navigation.');
+        }),
+      } as unknown as BrowserNavigationAdapter;
+      const readCurrent = vi.fn(async () => current);
+      const { result } = run(
+        vi.fn(),
+        new Map([
+          [
+            root,
+            page(root, [{ label: 'Weekly work', url: workUrl }], 'Weekly work'),
+          ],
+        ]),
+        new AbortController(),
+        { navigation, readCurrent },
+      );
+      const scanned = await result;
+      if (destinationKind !== 'observed') {
+        expect(scanned).toMatchObject({ status: 'blocked', items: [] });
+        expect(navigation.extract).toHaveBeenCalledOnce();
+      } else {
+        expect(scanned.items).toEqual([
+          expect.objectContaining({ title: 'Verified work' }),
+        ]);
+        expect(navigation.extract).toHaveBeenCalledTimes(2);
+      }
+      expect(readCurrent).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('bounds repeated document-change recovery without accepting stale model output', async () => {
+    const navigation = {
+      discoverCourses: vi.fn(),
+      extract: vi.fn(async () => {
+        throw new Error('The page changed before inout extraction.');
+      }),
+      choose: vi.fn(),
+    } as unknown as BrowserNavigationAdapter;
+    const readCurrent = vi.fn(async () => page(root, [], 'Verified work'));
+    const { result } = run(
+      vi.fn(),
+      new Map([[root, page(root)]]),
+      new AbortController(),
+      { navigation, readCurrent },
+    );
+    expect(await result).toMatchObject({ status: 'blocked', items: [] });
+    expect(readCurrent).toHaveBeenCalledTimes(2);
+    expect(navigation.extract).toHaveBeenCalledTimes(3);
+  });
+
+  it('re-extracts a fresh same-course snapshot after a document change', async () => {
+    const navigation = {
+      discoverCourses: vi.fn(),
+      choose: vi.fn(),
+      extract: vi
+        .fn()
+        .mockRejectedValueOnce(
+          new Error('The page changed before inout extraction.'),
+        )
+        .mockResolvedValueOnce({
+          assignments: [card('Verified work', root)],
+          coverage: 'complete',
+        }),
+    } as unknown as BrowserNavigationAdapter;
+    const readCurrent = vi.fn(async () => page(root, [], 'Verified work'));
+    const { result } = run(
+      vi.fn(),
+      new Map([[root, page(root)]]),
+      new AbortController(),
+      { navigation, readCurrent },
+    );
+    expect(await result).toMatchObject({
+      status: 'complete',
+      items: [expect.objectContaining({ title: 'Verified work' })],
+    });
+    expect(readCurrent).toHaveBeenCalledOnce();
+  });
+
   it('reports an extraction failure while preserving a blocked scan result', async () => {
     const onError = vi.fn();
     const { result } = run(

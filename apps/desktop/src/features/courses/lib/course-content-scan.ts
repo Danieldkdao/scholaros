@@ -11,6 +11,7 @@ import type { ResourceExtractionRequest } from '../../onboarding/services/browse
 import {
   academicPageIdentity,
   isReadNavigation,
+  isCourseNavigationTarget,
 } from '../../onboarding/lib/browser-policy';
 import {
   childPageTarget,
@@ -414,6 +415,11 @@ export const scanCourseCollection = async ({
   let extractedCandidateCount = 0;
   let pendingNavigation: string | null = null;
   let currentIdentity = rootIdentity;
+  let documentRecoveries = 0;
+  const observedRelationships = new Map<
+    string,
+    { parentUrl: string; targetUrl: string }
+  >();
   let calls = 0;
   const pagination = new Set<string>();
   const reserveCall = () => {
@@ -633,6 +639,43 @@ export const scanCourseCollection = async ({
         : {}),
     };
   };
+  const recoverChangedDocument = async (
+    error: unknown,
+  ): Promise<ObservedPage | null> => {
+    if (
+      !(error instanceof Error) ||
+      !/^(?:The current page changed (?:before browser inference|during course navigation)\.|The page changed (?:before inout extraction|outside the verified course scope)\.|The read action reached an unexpected page\.)$/.test(
+        error.message,
+      ) ||
+      !context.readCurrent ||
+      documentRecoveries >= 2
+    )
+      return null;
+    assertActive();
+    documentRecoveries += 1;
+    const fresh = await context.readCurrent();
+    assertActive();
+    const identity = academicPageIdentity(fresh.url);
+    const relationships = [...observedRelationships.values()];
+    if (
+      !identity ||
+      !(
+        identity === currentIdentity ||
+        visitedPages.has(identity) ||
+        relationships.some(
+          ({ targetUrl }) => academicPageIdentity(targetUrl) === identity,
+        )
+      ) ||
+      !isCourseNavigationTarget(
+        fresh.url,
+        { courseUrl: from.url, observedResourceRelationships: relationships },
+        allowedHosts,
+      )
+    )
+      throw error;
+    return fresh;
+  };
+
   const assignmentAliases = (record: {
     sourceId: string | null;
     url: string | null;
@@ -667,7 +710,7 @@ export const scanCourseCollection = async ({
   };
   try {
     let current = from;
-    while (true) {
+    scanPages: while (true) {
       assertActive();
       currentIdentity = academicPageIdentity(current.url) ?? current.url;
       seen.add(currentIdentity);
@@ -680,6 +723,11 @@ export const scanCourseCollection = async ({
         truncatedCoverage = true;
       } else navigationGaps.delete(currentIdentity);
       for (const link of current.links) {
+        if (isReadNavigation(link.url, allowedHosts))
+          observedRelationships.set(`${current.url}\n${link.url}`, {
+            parentUrl: current.url,
+            targetUrl: link.url,
+          });
         if (pageHasMorePages({ ...current, links: [link] })) {
           const paginationIdentity = academicPageIdentity(link.url) ?? link.url;
           pagination.add(paginationIdentity);
@@ -739,6 +787,11 @@ export const scanCourseCollection = async ({
           if (modelClaimedComplete && result.coverage === 'partial')
             invalidRecordCoverage = true;
         } catch (error) {
+          const fresh = await recoverChangedDocument(error);
+          if (fresh) {
+            current = fresh;
+            continue scanPages;
+          }
           extractionFailures.add(currentIdentity);
           throw error;
         }
@@ -1169,19 +1222,28 @@ export const scanCourseCollection = async ({
         let choiceResult: unknown;
         if (context.navigation) {
           onModelCall?.();
-          choiceResult = await context.navigation.choose({
-            memory,
-            goal: navigationGoal,
-            notes,
-            pages: [
-              {
-                url: current.url,
-                title: current.title.slice(0, 500),
-                text: text.slice(0, 12000),
-              },
-            ],
-            targets,
-          });
+          try {
+            choiceResult = await context.navigation.choose({
+              memory,
+              goal: navigationGoal,
+              notes,
+              pages: [
+                {
+                  url: current.url,
+                  title: current.title.slice(0, 500),
+                  text: text.slice(0, 12000),
+                },
+              ],
+              targets,
+            });
+          } catch (error) {
+            const fresh = await recoverChangedDocument(error);
+            if (fresh) {
+              current = fresh;
+              continue scanPages;
+            }
+            throw error;
+          }
         } else {
           choiceResult = await request({
             memory,
