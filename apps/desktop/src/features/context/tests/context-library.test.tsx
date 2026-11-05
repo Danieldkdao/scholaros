@@ -1074,3 +1074,24 @@ it('cancels a pending removal confirmation when entering read-only mode', async 
   expect(document.querySelector('[role="alertdialog"]')).toBeNull();
   expect(libraryApi.removeContextItem).not.toHaveBeenCalled();
 });
+
+it('renders learning preferences as a native link without button semantics warnings', async () => {
+  const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    await mount(api());
+    const link = [...document.querySelectorAll('a')].find((element) =>
+      element.textContent?.includes('View learning preferences'),
+    );
+    expect(link?.getAttribute('href')).toBe(
+      '#/dashboard/settings?section=personal-context',
+    );
+    expect(link?.getAttribute('role')).toBeNull();
+    expect(
+      errors.mock.calls.some(([message]) =>
+        String(message).includes('nativeButton'),
+      ),
+    ).toBe(false);
+  } finally {
+    errors.mockRestore();
+  }
+});

@@ -478,7 +478,7 @@ describe('dashboard shell', () => {
     [
       '/dashboard/context',
       'Context',
-      'Your Context is empty',
+      'No notes or files yet',
       'listContextItems',
     ],
   ] as const)(

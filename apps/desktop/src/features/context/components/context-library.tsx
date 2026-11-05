@@ -29,6 +29,8 @@ import {
   AttachmentTitle,
 } from '@scholaros/ui/components/attachment';
 import { Button } from '@scholaros/ui/components/button';
+import { buttonVariants } from '@scholaros/ui/lib/button-variants';
+import { cn } from '@scholaros/ui/lib/utils';
 import { FilterPopover } from '@scholaros/ui/components/filter-popover';
 import {
   Card,
@@ -917,13 +919,12 @@ export const ContextLibrary = ({
             source details.
           </p>
           {accountId && (
-            <Button
-              variant="link"
-              className="w-fit p-0"
-              render={<a href={learningPreferencesHref} />}
+            <a
+              href={learningPreferencesHref}
+              className={cn(buttonVariants({ variant: 'link' }), 'w-fit p-0')}
             >
               View learning preferences
-            </Button>
+            </a>
           )}
           {readOnly && (
             <p role="status" className="text-base text-muted-foreground">
