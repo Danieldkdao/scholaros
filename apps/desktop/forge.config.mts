@@ -92,7 +92,8 @@ const config: ForgeConfig = {
       identityValidation: false,
       preAutoEntitlements: false,
       preEmbedProvisioningProfile: false,
-      optionsForFile: () => ({ timestamp: 'none' }),
+      // Ad-hoc local builds have no shared Developer ID for library validation.
+      optionsForFile: () => ({ timestamp: 'none', hardenedRuntime: false }),
     },
   },
   rebuildConfig: {},
