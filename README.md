@@ -143,11 +143,19 @@ Keep the web service running. Local macOS packages are ad hoc signed for develop
 
 ## Judge demo and API-call recording
 
-Choose **Try demo** on the desktop sign-in screen, or open `/demo` on the web server. The guided walkthrough uses clearly labeled sample courses, editable temporary notes, a working Python exercise, and a quiz. It requires no account and makes no AI calls; leaving the walkthrough clears its temporary state.
+Choose **Try demo** on the desktop sign-in screen, or open `/demo` on the web server. The guided walkthrough uses clearly labeled sample courses, editable temporary notes, a working Python exercise, and a quiz. No account, database URL, OAuth setup, or sign-in is required for the public walkthrough. Its sample content is separate from the optional live AI result.
 
-To record genuine Meta requests, set `META_DEMO_LOGGING=1` in the web server environment and restart it. The terminal prints `[Meta API]` records with the actual endpoint, model, request ID, HTTP status, duration, and reported token counts. Prompts, responses, headers, credentials, and student content are excluded. A missing token count is reported as `null`.
+To enable real sample tutoring in the demo, the web server needs only these server-side values:
 
-For an optional real demo-account sign-in button, configure `DEMO_AUTH_ENABLED=1`, `DEMO_ACCOUNT_EMAIL`, and `DEMO_ACCOUNT_PASSWORD` on the server. Provision that separate account through the existing authentication system first. The button uses normal authentication and preserves desktop sign-in handoff; it never exposes the account password to the browser. Account onboarding follows the account's saved onboarding flag. These variables never belong in desktop or public client environment files.
+```dotenv
+META_API_KEY=your-meta-model-api-key
+DEMO_API_ENABLED=1
+META_DEMO_LOGGING=1
+```
+
+Start the web server with `pnpm dev:web` and visit `http://localhost:3000/demo`. The demo endpoint accepts only fixed sample lesson actions and has bounded requests, output, concurrency, and timeouts; it cannot read accounts, uploaded files, grades, or connected courses. Real account routes and personal AI features continue to require normal authentication. Leave `DEMO_API_ENABLED=0` when public sample inference is not wanted.
+
+With `META_DEMO_LOGGING=1`, the terminal prints `[Meta API]` records containing the actual endpoint, model, request ID, HTTP status, duration, and reported token counts. Prompts, responses, headers, credentials, and student content are excluded. A missing token count is reported as `null`. Restart the web server after changing these values; never put the API key in desktop or public client environment files.
 
 ## Checks and troubleshooting
 
