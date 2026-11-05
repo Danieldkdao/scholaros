@@ -1,0 +1,79 @@
+diff --git a/dist/client.mjs b/dist/client.mjs
+index 889b07197f1df1c036bd0de7f14fc990f20711a1..32775c3a0061e29d00e22796ff8bac9d7050acdc 100644
+--- a/dist/client.mjs
++++ b/dist/client.mjs
+@@ -538,29 +538,63 @@ function hasBetterAuthCookies(setCookieHeader, cookiePrefix) {
+ //#region src/client.ts
+ const { app, safeStorage, webContents } = electron;
+ const storageAdapter = (storage, sessionKeys) => {
+-	const memory = /* @__PURE__ */ new Map();
++	const memory = new Map();
++	const ciphertexts = new Map();
++	const failedReads = new Map();
++	const failedWrites = new Map();
++	const invalidate = (name) => {
++		memory.delete(name);
++		ciphertexts.delete(name);
++	};
+ 	return {
+ 		...storage,
+ 		getDecrypted: (name) => {
+-			if (sessionKeys.has(name) && memory.has(name)) return memory.get(name) ?? null;
+-			if (!safeStorage.isEncryptionAvailable()) return null;
+ 			const item = storage.getItem(name);
+-			if (!item || typeof item !== "string") return null;
++			if (!item || typeof item !== "string") {
++				invalidate(name);
++				failedReads.delete(name);
++				return null;
++			}
++			if (sessionKeys.has(name) && ciphertexts.get(name) === item && memory.has(name)) return memory.get(name);
++			if (failedReads.get(name) === item) return null;
+ 			try {
+-				return safeStorage.decryptString(Buffer.from(base64.decode(item)));
++				if (!safeStorage.isEncryptionAvailable()) {
++					failedReads.set(name, item);
++					invalidate(name);
++					return null;
++				}
++				const value = safeStorage.decryptString(Buffer.from(base64.decode(item)));
++				if (sessionKeys.has(name)) {
++					memory.set(name, value);
++					ciphertexts.set(name, item);
++				}
++				failedReads.delete(name);
++				return value;
+ 			} catch {
++				failedReads.set(name, item);
++				invalidate(name);
+ 				return null;
+ 			}
+ 		},
+ 		setEncrypted: (name, value) => {
+-			if (!safeStorage.isEncryptionAvailable()) {
+-				if (sessionKeys.has(name)) memory.set(name, value);
+-				return;
+-			}
++			const item = storage.getItem(name);
++			if (sessionKeys.has(name) && memory.get(name) === value && ciphertexts.get(name) === item) return;
++			if (failedReads.has(name) && failedReads.get(name) === item) return;
++			if (failedWrites.has(name) && failedWrites.get(name) === item) return;
+ 			try {
+-				storage.setItem(name, base64.encode(safeStorage.encryptString(value)));
++				if (!safeStorage.isEncryptionAvailable()) throw new Error("Secure storage unavailable");
++				const encrypted = base64.encode(safeStorage.encryptString(value));
++				storage.setItem(name, encrypted);
++				if (sessionKeys.has(name)) {
++					memory.set(name, value);
++					ciphertexts.set(name, encrypted);
++				}
++				failedReads.delete(name);
++				failedWrites.delete(name);
+ 			} catch {
+-				return;
++				failedWrites.set(name, item);
++				if (typeof item === "string") failedReads.set(name, item);
++				invalidate(name);
+ 			}
+ 		}
+ 	};
