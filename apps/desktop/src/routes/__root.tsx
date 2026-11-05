@@ -5,19 +5,23 @@ import {
   Outlet,
   redirect,
   useRouter,
+  useLocation,
 } from '@tanstack/react-router';
 import { CircleAlert, Loader2, LogOut, RefreshCw } from 'lucide-react';
 import { Button } from '@scholaros/ui/components/button';
 import { LoadingSwap } from '@scholaros/ui/components/loading-swap';
-import { authorizeRoute, routeGroupForPath } from '../lib/auth/access';
+import { authorizePath, isPublicDemoPath } from '../lib/auth/access';
 import { errorMessage } from '../lib/error-message';
 import { exitAndSignOut } from '../lib/session-actions';
 
 const RootLayout = () => {
   const router = useRouter();
+  const pathname = useLocation({ select: (location) => location.pathname });
   const identity = useRef<string | null>(null);
   useEffect(() => {
+    if (isPublicDemoPath(pathname)) return;
     const reevaluate = async () => {
+      if (isPublicDemoPath(router.state.location.pathname)) return;
       try {
         const user = await window.scholar.getCurrentUser();
         const next = user
@@ -42,7 +46,7 @@ const RootLayout = () => {
       unsubscribeUserUpdated();
       unsubscribeReconnect();
     };
-  }, [router]);
+  }, [pathname, router]);
   return (
     <div className="min-h-screen bg-background text-foreground">
       <Outlet />
@@ -56,6 +60,9 @@ const RootPending = () => (
     <p role="status" className="text-muted-foreground">
       Checking your ScholarOS account…
     </p>
+    <Button variant="outline" render={<Link to="/demo" />} nativeButton={false}>
+      Try demo
+    </Button>
   </main>
 );
 
@@ -108,6 +115,13 @@ const RootErrorComponent = ({ error: reason }: { error: unknown }) => {
         </p>
       )}
       <div className="flex flex-wrap items-center justify-center gap-3">
+        <Button
+          variant="outline"
+          render={<Link to="/demo" />}
+          nativeButton={false}
+        >
+          Try demo
+        </Button>
         <Button className="text-base" onClick={() => void retry()}>
           <RefreshCw className="size-5" />
           Try again
@@ -148,7 +162,7 @@ const NotFound = () => (
 export const Route = createRootRoute({
   component: RootLayout,
   beforeLoad: async ({ location }) => {
-    const access = await authorizeRoute(routeGroupForPath(location.pathname));
+    const access = await authorizePath(location.pathname);
     if (!access.authorized) throw redirect({ to: access.route });
   },
   pendingComponent: RootPending,

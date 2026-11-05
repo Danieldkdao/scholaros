@@ -1,3 +1,4 @@
+import { Link } from '@tanstack/react-router';
 import {
   Alert,
   AlertDescription,
@@ -92,6 +93,16 @@ export const AuthScreen = () => {
               </span>
             </LoadingSwap>
           </Button>
+          <Button
+            variant="outline"
+            render={<Link to="/demo" />}
+            nativeButton={false}
+          >
+            Try demo
+          </Button>
+          <p className="text-center text-sm text-muted-foreground">
+            Explore with sample data. No account or permissions needed.
+          </p>
         </div>
       </div>
     </main>

@@ -1,5 +1,11 @@
 // @vitest-environment jsdom
-import { createMemoryHistory, createRouter } from '@tanstack/react-router';
+import {
+  createMemoryHistory,
+  createRouter,
+  RouterProvider,
+} from '@tanstack/react-router';
+import { act, createElement } from 'react';
+import { createRoot } from 'react-dom/client';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getCurrentUser } from '../src/lib/auth/helpers';
 import { routeTree } from '../src/route-tree.gen';
@@ -163,4 +169,61 @@ describe('nested dashboard pages', () => {
     const nested = await loadRoute('/dashboard/courses', finishedUser);
     expect(matchedRouteIds(nested)).not.toContain('/dashboard/');
   });
+});
+
+it('loads the exact public demo route without querying the current user', async () => {
+  const router = await loadRoute('/demo', null);
+  expect(router.state.location.pathname).toBe('/demo');
+  expect(allMatchesSucceeded(router)).toBe(true);
+  expect(matchedRouteIds(router)).toEqual(['__root__', '/demo']);
+  expect(getCurrentUser).not.toHaveBeenCalled();
+});
+
+it('renders the guest workspace without subscribing to authenticated IPC events', async () => {
+  (
+    globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+  ).IS_REACT_ACT_ENVIRONMENT = true;
+  const keys = ['scholar', 'onAuthenticated', 'onUserUpdated'] as const;
+  const previous = keys.map((key) =>
+    Object.getOwnPropertyDescriptor(window, key),
+  );
+  const scroll = vi
+    .spyOn(window, 'scrollTo')
+    .mockImplementation(() => undefined);
+  const readUser = vi.fn();
+  const subscribe = vi.fn(() => () => undefined);
+  Object.defineProperty(window, 'scholar', {
+    configurable: true,
+    value: { getCurrentUser: readUser, onAcademicReconnect: subscribe },
+  });
+  Object.defineProperty(window, 'onAuthenticated', {
+    configurable: true,
+    value: subscribe,
+  });
+  Object.defineProperty(window, 'onUserUpdated', {
+    configurable: true,
+    value: subscribe,
+  });
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    const router = await loadRoute('/demo', null);
+    await act(async () =>
+      root.render(createElement(RouterProvider, { router })),
+    );
+    expect(container.textContent).toContain('Interactive demo');
+    expect(readUser).not.toHaveBeenCalled();
+    expect(subscribe).not.toHaveBeenCalled();
+    expect(getCurrentUser).not.toHaveBeenCalled();
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+    scroll.mockRestore();
+    keys.forEach((key, index) => {
+      const descriptor = previous[index];
+      if (descriptor) Object.defineProperty(window, key, descriptor);
+      else Reflect.deleteProperty(window, key);
+    });
+  }
 });

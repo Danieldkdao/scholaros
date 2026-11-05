@@ -31,3 +31,10 @@ export const authorizeRoute = async (
     ? { authorized: true as const }
     : { authorized: false as const, route: '/dashboard' };
 };
+
+export const isPublicDemoPath = (pathname: string) => pathname === '/demo';
+
+export const authorizePath = async (pathname: string): Promise<RouteAccess> =>
+  isPublicDemoPath(pathname)
+    ? { authorized: true }
+    : authorizeRoute(routeGroupForPath(pathname));

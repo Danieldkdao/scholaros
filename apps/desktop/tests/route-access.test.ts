@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { authorizeRoute, routeGroupForPath } from '../src/lib/auth/access';
+import {
+  authorizeRoute,
+  authorizePath,
+  routeGroupForPath,
+} from '../src/lib/auth/access';
 import { getCurrentUser } from '../src/lib/auth/helpers';
 
 vi.mock('../src/lib/auth/helpers', () => ({ getCurrentUser: vi.fn() }));
@@ -79,5 +83,28 @@ describe('central route access', () => {
   it('does not treat account-service failure as a signed-out session', async () => {
     vi.mocked(getCurrentUser).mockRejectedValue(new Error('Unavailable'));
     await expect(authorizeRoute('dashboard')).rejects.toThrow('Unavailable');
+  });
+});
+
+describe('public guest demo boundary', () => {
+  it('opens the exact guest demo without reading credentials', async () => {
+    vi.mocked(getCurrentUser).mockRejectedValue(
+      new Error('Secure storage unavailable'),
+    );
+    expect(await authorizePath('/demo')).toEqual({ authorized: true });
+    expect(getCurrentUser).not.toHaveBeenCalled();
+  });
+  it.each([
+    '/demo/private',
+    '/demonstration',
+    '/dashboard',
+    '/study/session-1',
+  ])('keeps %s protected', async (pathname) => {
+    vi.mocked(getCurrentUser).mockResolvedValue(null);
+    expect(await authorizePath(pathname)).toEqual({
+      authorized: false,
+      route: '/auth',
+    });
+    expect(getCurrentUser).toHaveBeenCalledOnce();
   });
 });
