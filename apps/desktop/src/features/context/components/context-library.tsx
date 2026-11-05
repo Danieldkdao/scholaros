@@ -911,7 +911,7 @@ export const ContextLibrary = ({
     >
       <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="flex flex-col gap-2">
-          <h1 id="context-library-title" className="text-2xl font-semibold">
+          <h1 id="context-library-title" className="text-3xl font-semibold">
             Context
           </h1>
           <p className="text-base text-muted-foreground">

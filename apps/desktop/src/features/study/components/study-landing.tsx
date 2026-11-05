@@ -30,9 +30,9 @@ export const StudyLanding = ({
 
   return (
     <div className="flex flex-col gap-6 text-base">
-      <header className="flex items-start justify-between gap-4">
+      <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="flex min-w-0 flex-col gap-2">
-          <h1 className="text-2xl font-semibold">Study</h1>
+          <h1 className="text-3xl font-semibold">Study</h1>
           <p className="text-base text-muted-foreground">
             Start with one course and return to a saved session whenever you are
             ready.

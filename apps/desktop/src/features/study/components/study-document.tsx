@@ -467,8 +467,7 @@ export const StudyDocument = ({
                 <EmptyHeader>
                   <EmptyTitle>Your study session is ready</EmptyTitle>
                   <EmptyDescription className="text-base">
-                    Start with a question or attach course material; no tutor
-                    response is shown until one is actually saved.
+                    Ask a question or add course material to begin.
                   </EmptyDescription>
                 </EmptyHeader>
               </Empty>
