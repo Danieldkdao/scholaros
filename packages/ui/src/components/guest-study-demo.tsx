@@ -1,6 +1,6 @@
 'use client';
 
-import { useId, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import {
   ArrowLeft,
   ArrowRight,
@@ -31,6 +31,7 @@ export type GuestStudyDemoProps = {
   onExit?: () => void;
   onSignIn?: () => void;
   signInHref?: string;
+  apiBaseURL?: string;
 };
 const steps = ['Today', 'Courses', 'Context', 'Study'] as const;
 
@@ -39,6 +40,7 @@ export const GuestStudyDemo = ({
   onExit,
   onSignIn,
   signInHref = '/sign-in',
+  apiBaseURL,
 }: GuestStudyDemoProps) => {
   const [step, setStep] = useState<string>('Today');
   const [note, setNote] = useState(
@@ -46,6 +48,85 @@ export const GuestStudyDemo = ({
   );
   const [repetitions, setRepetitions] = useState(3);
   const [answer, setAnswer] = useState<string | null>(null);
+  const [liveResult, setLiveResult] = useState<{
+    text: string;
+    model: string;
+  } | null>(null);
+  const [liveError, setLiveError] = useState<string | null>(null);
+  const [livePending, setLivePending] = useState(false);
+  const liveRequest = useRef<AbortController | null>(null);
+  useEffect(
+    () => () => {
+      liveRequest.current?.abort();
+      liveRequest.current = null;
+    },
+    [],
+  );
+  const requestLiveSample = async (action: 'explain' | 'quiz') => {
+    if (liveRequest.current) return;
+    const controller = new AbortController();
+    liveRequest.current = controller;
+    setLivePending(true);
+    setLiveError(null);
+    try {
+      const endpoint = apiBaseURL
+        ? new URL('/api/demo/tutor', apiBaseURL).href
+        : '/api/demo/tutor';
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        credentials: 'omit',
+        redirect: 'error',
+        cache: 'no-store',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action }),
+        signal: AbortSignal.any([
+          controller.signal,
+          AbortSignal.timeout(35_000),
+        ]),
+      });
+      if (!response.ok)
+        throw new Error(
+          response.status === 503
+            ? 'Live AI is not enabled on this demo server. The sample activities still work.'
+            : response.status === 429
+              ? 'The live demo is busy. Try again shortly, or explore the sample activity.'
+              : 'The live model could not respond. Please try again.',
+        );
+      const result: unknown = await response.json();
+      if (
+        !result ||
+        typeof result !== 'object' ||
+        !('text' in result) ||
+        typeof result.text !== 'string' ||
+        !result.text.trim() ||
+        result.text.length > 32_000 ||
+        !('model' in result) ||
+        typeof result.model !== 'string' ||
+        result.model.length > 100
+      )
+        throw new Error(
+          'The live response could not be read. Please try again.',
+        );
+      if (liveRequest.current === controller)
+        setLiveResult({ text: result.text, model: result.model });
+    } catch (error) {
+      if (liveRequest.current === controller && !controller.signal.aborted)
+        setLiveError(
+          error instanceof Error &&
+            error.message.startsWith('Live AI is not enabled')
+            ? error.message
+            : error instanceof Error &&
+                error.message.startsWith('The live demo is busy')
+              ? error.message
+              : 'The live model could not respond. Please try again. The sample activity is still available.',
+        );
+    } finally {
+      if (liveRequest.current === controller) {
+        liveRequest.current = null;
+        setLivePending(false);
+      }
+    }
+  };
   const noteId = useId();
   const sliderId = useId();
   const stepIndex = steps.findIndex((item) => item === step);
@@ -264,6 +345,55 @@ export const GuestStudyDemo = ({
                 interactive activity alongside it.
               </p>
             </div>
+            <Card>
+              <CardHeader>
+                <CardTitle>Try a live Meta response</CardTitle>
+                <CardDescription>
+                  These fixed sample questions make a real model call without an
+                  account. Your notes and personal data are not sent.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="flex flex-wrap gap-3">
+                  <Button
+                    disabled={livePending}
+                    onClick={() => void requestLiveSample('explain')}
+                  >
+                    Ask Meta to explain loops
+                  </Button>
+                  <Button
+                    variant="outline"
+                    disabled={livePending}
+                    onClick={() => void requestLiveSample('quiz')}
+                  >
+                    Ask Meta for a practice question
+                  </Button>
+                </div>
+                {livePending && (
+                  <p role="status" className="text-sm text-muted-foreground">
+                    Meta is preparing a live response…
+                  </p>
+                )}
+                {liveError && (
+                  <p
+                    role="alert"
+                    className="text-pretty text-sm text-destructive"
+                  >
+                    {liveError}
+                  </p>
+                )}
+                {liveResult && (
+                  <section aria-label="Live AI response" className="space-y-3">
+                    <Badge variant="secondary">
+                      Live response · {liveResult.model}
+                    </Badge>
+                    <p className="whitespace-pre-wrap break-words text-pretty">
+                      {liveResult.text}
+                    </p>
+                  </section>
+                )}
+              </CardContent>
+            </Card>
             <div className="grid gap-6 lg:grid-cols-2">
               <section
                 className="space-y-5"
@@ -372,8 +502,8 @@ export const GuestStudyDemo = ({
         <footer className="flex flex-wrap items-center justify-between gap-4 border-t border-border pt-6">
           <p className="flex max-w-xl items-center gap-2 text-pretty text-sm text-muted-foreground">
             <CheckCircle2 className="size-4 shrink-0" aria-hidden="true" />
-            Live AI and connected courses require sign-in. This demo does not
-            access your files, microphone, or school.
+            Your full AI workspace and connected courses require sign-in. This
+            demo does not access your files, microphone, or school.
           </p>
           <div className="flex items-center gap-3">
             <span className="text-sm text-muted-foreground tabular-nums">

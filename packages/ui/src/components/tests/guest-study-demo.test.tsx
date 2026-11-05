@@ -62,7 +62,7 @@ it('offers a meaningful synthetic walkthrough without services or authentication
   await click('0, 1, 2');
   expect(container.textContent).toContain('Exactly.');
   expect(container.textContent).toContain(
-    'Live AI and connected courses require sign-in',
+    'Your full AI workspace and connected courses require sign-in',
   );
   expect(fetch).not.toHaveBeenCalled();
 });
@@ -79,4 +79,53 @@ it('honors explicit exit and sign-in actions', async () => {
   await click('Sign in');
   expect(onExit).toHaveBeenCalledOnce();
   expect(onSignIn).toHaveBeenCalledOnce();
+});
+
+it('calls only the fixed anonymous sample action and keeps live output separate', async () => {
+  const fetch = vi.fn(async (_url: string, _options: RequestInit) =>
+    Response.json({
+      text: 'A live explanation of a loop.',
+      model: 'muse-spark-1.3',
+    }),
+  );
+  vi.stubGlobal('fetch', fetch);
+  const container = document.createElement('div');
+  document.body.append(container);
+  root = createRoot(container);
+  await act(async () =>
+    root!.render(
+      createElement(GuestStudyDemo, { apiBaseURL: 'http://localhost:3000' }),
+    ),
+  );
+  await click('Study');
+  await click('Ask Meta to explain loops');
+  expect(fetch).toHaveBeenCalledOnce();
+  expect(fetch.mock.calls[0]![0]).toBe('http://localhost:3000/api/demo/tutor');
+  const options = fetch.mock.calls[0]![1] as RequestInit;
+  expect(options.credentials).toBe('omit');
+  expect(options.body).toBe('{"action":"explain"}');
+  expect(container.textContent).toContain('A live explanation of a loop.');
+  expect(container.textContent).toContain('Live response · muse-spark-1.3');
+});
+
+it('keeps the sample usable when the live demo is unavailable', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () =>
+      Response.json({ error: 'private server detail' }, { status: 503 }),
+    ),
+  );
+  const container = document.createElement('div');
+  document.body.append(container);
+  root = createRoot(container);
+  await act(async () => root!.render(createElement(GuestStudyDemo)));
+  await click('Study');
+  await click('Ask Meta for a practice question');
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+    'not enabled',
+  );
+  expect(container.textContent).not.toContain('private server detail');
+  expect(
+    container.querySelector('[data-testid="loop-output"]')?.textContent,
+  ).toBe('0\n1\n2');
 });
