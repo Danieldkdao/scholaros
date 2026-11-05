@@ -118,3 +118,41 @@ it('rejects the Linux plaintext safeStorage fallback', async () => {
     false,
   );
 });
+
+it('does not touch Keychain for a missing offline grant', async () => {
+  const previous = mocks.available.mock.calls.length;
+  await expect(
+    offlineAccount.readOfflineAccountGrant('session-cookie-a'),
+  ).resolves.toBeNull();
+  expect(mocks.available.mock.calls.length).toBe(previous);
+});
+
+it('stops automatic retries after secure storage fails and preserves the encrypted grant', async () => {
+  const user = {
+    id: 'student-a',
+    name: 'Student A',
+    email: 'student@example.test',
+    image: null,
+    hasCompletedOnboarding: true,
+  };
+  await offlineAccount.saveOfflineAccountGrant(user, 'session-cookie-a');
+  const file = path.join(directory, 'offline-account', 'grant.bin');
+  const original = await readFile(file);
+  const reads = mocks.decrypt.mock.calls.length;
+  mocks.decrypt.mockRejectedValue(new Error('Keychain access denied'));
+  await Promise.all([
+    offlineAccount.readOfflineAccountGrant('session-cookie-a'),
+    offlineAccount.readOfflineAccountGrant('session-cookie-a'),
+  ]);
+  await offlineAccount.clearOfflineAccountGrant('session-cookie-a');
+  expect(mocks.decrypt.mock.calls.length - reads).toBe(1);
+  expect(await readFile(file)).toEqual(original);
+});
+
+it('does not repeat unavailable secure storage checks during polling', async () => {
+  mocks.available.mockResolvedValue(false);
+  const previous = mocks.available.mock.calls.length;
+  await offlineAccount.isOfflineStorageAvailable();
+  await offlineAccount.isOfflineStorageAvailable();
+  expect(mocks.available.mock.calls.length - previous).toBe(1);
+});

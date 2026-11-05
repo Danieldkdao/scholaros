@@ -32,18 +32,51 @@ const grantPath = () => path.join(directory(), 'grant.bin');
 const fingerprint = (cookie: string) =>
   createHash('sha256').update(cookie, 'utf8').digest('hex');
 
+// A denied Keychain request must not be retried by background polling.
+// Restarting the app gives the owner an explicit opportunity to try again.
+let secureStorageFailed = false;
+let pendingAvailability: Promise<boolean> | null = null;
+let secureOperation: Promise<unknown> = Promise.resolve();
+
+const runSecureOperation = <T>(operation: () => Promise<T>): Promise<T> => {
+  const result = secureOperation
+    .catch(() => undefined)
+    .then(async () => {
+      if (secureStorageFailed)
+        throw new Error('Secure offline storage is unavailable.');
+      try {
+        return await operation();
+      } catch (error) {
+        secureStorageFailed = true;
+        throw error;
+      }
+    });
+  secureOperation = result;
+  return result;
+};
+
 export const isOfflineStorageAvailable = async (
   platform: NodeJS.Platform = process.platform,
 ) => {
-  try {
-    if (!(await safeStorage.isAsyncEncryptionAvailable())) return false;
-    return (
-      platform !== 'linux' ||
-      safeStorage.getSelectedStorageBackend() !== 'basic_text'
-    );
-  } catch {
-    return false;
-  }
+  if (secureStorageFailed) return false;
+  if (pendingAvailability) return pendingAvailability;
+  pendingAvailability = (async () => {
+    try {
+      const available = await safeStorage.isAsyncEncryptionAvailable();
+      const encrypted =
+        available &&
+        (platform !== 'linux' ||
+          safeStorage.getSelectedStorageBackend() !== 'basic_text');
+      if (!encrypted) secureStorageFailed = true;
+      return encrypted;
+    } catch {
+      secureStorageFailed = true;
+      return false;
+    } finally {
+      pendingAvailability = null;
+    }
+  })();
+  return pendingAvailability;
 };
 
 const writeGrant = async (grant: OfflineGrant, plaintext?: string) => {
@@ -52,9 +85,15 @@ const writeGrant = async (grant: OfflineGrant, plaintext?: string) => {
   const temporaryPath = `${filePath}.${randomUUID()}.tmp`;
   await mkdir(directoryPath, { recursive: true, mode: 0o700 });
   await chmod(directoryPath, 0o700);
-  const encrypted = await safeStorage.encryptStringAsync(
-    plaintext ?? JSON.stringify(grant),
-  );
+  let encrypted: Buffer;
+  try {
+    encrypted = await runSecureOperation(() =>
+      safeStorage.encryptStringAsync(plaintext ?? JSON.stringify(grant)),
+    );
+  } catch (error) {
+    secureStorageFailed = true;
+    throw error;
+  }
   try {
     await writeFile(temporaryPath, encrypted, { flag: 'wx', mode: 0o600 });
     await chmod(temporaryPath, 0o600);
@@ -88,7 +127,7 @@ export const saveOfflineAccountGrant = async (
 export const readOfflineAccountGrant = async (
   cookie: string,
 ): Promise<CurrentUser | null> => {
-  if (!cookie.trim() || !(await isOfflineStorageAvailable())) return null;
+  if (!cookie.trim()) return null;
   let encrypted: Buffer;
   try {
     encrypted = await readFile(grantPath());
@@ -96,10 +135,14 @@ export const readOfflineAccountGrant = async (
     return null;
   }
 
+  if (!(await isOfflineStorageAvailable())) return null;
   let decrypted: Awaited<ReturnType<typeof safeStorage.decryptStringAsync>>;
   try {
-    decrypted = await safeStorage.decryptStringAsync(encrypted);
+    decrypted = await runSecureOperation(() =>
+      safeStorage.decryptStringAsync(encrypted),
+    );
   } catch {
+    secureStorageFailed = true;
     return null;
   }
   let parsed: OfflineGrant;
@@ -138,17 +181,30 @@ export const clearOfflineAccountGrant = async (cookie?: string) => {
     await rm(grantPath(), { force: true }).catch(() => undefined);
     return;
   }
-  if (!(await isOfflineStorageAvailable())) return;
+  let encrypted: Buffer;
   try {
-    const encrypted = await readFile(grantPath());
-    const decrypted = await safeStorage.decryptStringAsync(encrypted);
-    const parsed = offlineGrantSchema.safeParse(JSON.parse(decrypted.result));
+    encrypted = await readFile(grantPath());
+  } catch {
+    return;
+  }
+  if (!(await isOfflineStorageAvailable())) return;
+  let plaintext: string;
+  try {
+    plaintext = (
+      await runSecureOperation(() => safeStorage.decryptStringAsync(encrypted))
+    ).result;
+  } catch {
+    secureStorageFailed = true;
+    return;
+  }
+  try {
+    const parsed = offlineGrantSchema.safeParse(JSON.parse(plaintext));
     if (
       !parsed.success ||
       parsed.data.sessionFingerprint === fingerprint(cookie)
     )
       await rm(grantPath(), { force: true });
   } catch {
-    await rm(grantPath(), { force: true }).catch(() => undefined);
+    // Keep the encrypted grant if its ownership cannot be established.
   }
 };
