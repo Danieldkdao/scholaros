@@ -76,7 +76,7 @@ it('honors explicit exit and sign-in actions', async () => {
     root!.render(createElement(GuestStudyDemo, { onExit, onSignIn })),
   );
   await click('Exit demo');
-  await click('Sign in');
+  await click('Open the full experience');
   expect(onExit).toHaveBeenCalledOnce();
   expect(onSignIn).toHaveBeenCalledOnce();
 });
@@ -154,4 +154,148 @@ it('always offers a full-experience sign-in banner with the host sign-in destina
   expect(container.querySelector('[data-slot="alert"]')?.textContent).toContain(
     'To access the full experience, sign in.',
   );
+});
+
+it('ties pending samples to their question, clears stale responses, and lets the visitor cancel', async () => {
+  let rejectPending: ((error: unknown) => void) | undefined;
+  const fetch = vi
+    .fn()
+    .mockResolvedValueOnce(
+      Response.json({
+        text: 'The first explanation.',
+        model: 'muse-spark-1.3',
+      }),
+    )
+    .mockImplementationOnce(
+      (_url: string, options: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          rejectPending = reject;
+          options.signal?.addEventListener('abort', () =>
+            reject(new Error('cancelled')),
+          );
+        }),
+    );
+  vi.stubGlobal('fetch', fetch);
+  const container = document.createElement('div');
+  document.body.append(container);
+  root = createRoot(container);
+  await act(async () => root!.render(createElement(GuestStudyDemo)));
+  await click('Study');
+  await click('Ask Meta to explain loops');
+  expect(container.textContent).toContain('The first explanation.');
+  await click('Ask Meta for a practice question');
+  expect(container.textContent).not.toContain('The first explanation.');
+  expect(container.querySelector('[role="log"]')?.textContent).toContain(
+    'Give me three beginner practice questions',
+  );
+  expect(container.querySelector('[role="status"]')?.textContent).toContain(
+    'preparing',
+  );
+  await click('Cancel response');
+  expect(container.textContent).toContain('Response canceled.');
+  expect(container.querySelector('[role="alert"]')).toBeNull();
+  expect(
+    [...container.querySelectorAll('button')].find(
+      (button) => button.textContent === 'Ask Meta to explain loops',
+    )?.disabled,
+  ).toBe(false);
+  expect(rejectPending).toBeDefined();
+});
+
+it('renders the live model scenario with prediction-gated local feedback and resets it when inputs change', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () =>
+      Response.json({
+        text: 'Compare dissolved solute on each side of a membrane.',
+        model: 'muse-spark-1.3',
+        experiment: {
+          kind: 'osmosis',
+          title: 'A fictional cell',
+          introduction: 'Compare dissolved solute on each side of a membrane.',
+          insideConcentration: 8,
+          outsideConcentration: 2,
+          predictionQuestion: 'Where will water move?',
+        },
+      }),
+    ),
+  );
+  const container = document.createElement('div');
+  document.body.append(container);
+  root = createRoot(container);
+  await act(async () => root!.render(createElement(GuestStudyDemo)));
+  await click('Study');
+  await click('Try a live osmosis experiment');
+  const experiment = container.querySelector(
+    '[aria-label="Live AI response"]',
+  )!;
+  expect(experiment.textContent).toContain('Live Meta scenario');
+  expect(experiment.textContent).not.toContain('In this model, water');
+  const reveal = [...experiment.querySelectorAll('button')].find(
+    (button) => button.textContent === 'Reveal result',
+  )!;
+  expect(reveal.disabled).toBe(true);
+  await click('Water leaves the cell');
+  await click('Reveal result');
+  expect(experiment.querySelector('[role="status"]')?.textContent).toContain(
+    'water enters the cell',
+  );
+  expect(experiment.querySelector('[role="status"]')?.textContent).toContain(
+    'Compare your prediction',
+  );
+  const sliders = experiment.querySelectorAll<HTMLElement>(
+    'input[type="range"]',
+  );
+  await act(async () => {
+    sliders[0]!.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Home', bubbles: true }),
+    );
+    sliders[1]!.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Home', bubbles: true }),
+    );
+  });
+  expect(experiment.querySelector('[role="status"]')).toBeNull();
+  expect(reveal.disabled).toBe(true);
+  await click('No net water movement');
+  await click('Reveal result');
+  expect(experiment.querySelector('[role="status"]')?.textContent).toContain(
+    'concentrations are equal',
+  );
+  expect(experiment.querySelector('[role="status"]')?.textContent).toContain(
+    'Your prediction matches',
+  );
+});
+
+it('rejects malformed model experiment configuration without executing model content', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () =>
+      Response.json({
+        text: 'An invalid scenario',
+        model: 'muse-spark-1.3',
+        experiment: {
+          kind: 'osmosis',
+          title: 'Bad config',
+          introduction: 'Synthetic scenario.',
+          insideConcentration: 1000000,
+          outsideConcentration: 2,
+          predictionQuestion: 'Where will water move?',
+          javascript: 'forbidden',
+        },
+      }),
+    ),
+  );
+  const container = document.createElement('div');
+  document.body.append(container);
+  root = createRoot(container);
+  await act(async () => root!.render(createElement(GuestStudyDemo)));
+  await click('Study');
+  await click('Try a live osmosis experiment');
+  expect(container.querySelector('[aria-label="Live AI response"]')).toBeNull();
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+    'could not respond',
+  );
+  expect(
+    container.querySelector('[data-testid="loop-output"]')?.textContent,
+  ).toBe('0\n1\n2');
 });

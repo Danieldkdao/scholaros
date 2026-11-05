@@ -15,6 +15,11 @@ import {
 } from 'lucide-react';
 import { Button } from './button';
 import { AiMarkdown } from './ai-markdown';
+import {
+  GuestStudyExperiment,
+  parseDemoExperiment,
+  type DemoExperiment,
+} from './guest-study-experiment';
 import { Alert, AlertDescription, AlertTitle } from './alert';
 import { Badge } from './badge';
 import {
@@ -53,9 +58,14 @@ export const GuestStudyDemo = ({
   const [liveResult, setLiveResult] = useState<{
     text: string;
     model: string;
+    experiment?: DemoExperiment;
   } | null>(null);
   const [liveError, setLiveError] = useState<string | null>(null);
   const [livePending, setLivePending] = useState(false);
+  const [liveAction, setLiveAction] = useState<
+    'explain' | 'quiz' | 'experiment' | null
+  >(null);
+  const [liveCancelled, setLiveCancelled] = useState(false);
   const liveRequest = useRef<AbortController | null>(null);
   useEffect(
     () => () => {
@@ -64,12 +74,17 @@ export const GuestStudyDemo = ({
     },
     [],
   );
-  const requestLiveSample = async (action: 'explain' | 'quiz') => {
+  const requestLiveSample = async (
+    action: 'explain' | 'quiz' | 'experiment',
+  ) => {
     if (liveRequest.current) return;
     const controller = new AbortController();
     liveRequest.current = controller;
     setLivePending(true);
     setLiveError(null);
+    setLiveCancelled(false);
+    setLiveAction(action);
+    setLiveResult(null);
     try {
       const endpoint = apiBaseURL
         ? new URL('/api/demo/tutor', apiBaseURL).href
@@ -109,8 +124,16 @@ export const GuestStudyDemo = ({
         throw new Error(
           'The live response could not be read. Please try again.',
         );
+      const experiment =
+        'experiment' in result ? parseDemoExperiment(result.experiment) : null;
+      if (action === 'experiment' && !experiment)
+        throw new Error('The experiment response could not be read.');
       if (liveRequest.current === controller)
-        setLiveResult({ text: result.text, model: result.model });
+        setLiveResult({
+          text: result.text,
+          model: result.model,
+          ...(experiment ? { experiment } : {}),
+        });
     } catch (error) {
       if (liveRequest.current === controller && !controller.signal.aborted)
         setLiveError(
@@ -129,6 +152,18 @@ export const GuestStudyDemo = ({
       }
     }
   };
+  const cancelLiveSample = () => {
+    liveRequest.current?.abort();
+    liveRequest.current = null;
+    setLivePending(false);
+    setLiveCancelled(true);
+  };
+  const liveQuestion =
+    liveAction === 'explain'
+      ? 'Explain how a Python loop visits the items in [2, 4, 6].'
+      : liveAction === 'quiz'
+        ? 'Give me three beginner practice questions about Python loops.'
+        : 'Help me predict water movement in an osmosis experiment.';
   const noteId = useId();
   const sliderId = useId();
   const stepIndex = steps.findIndex((item) => item === step);
@@ -146,13 +181,6 @@ export const GuestStudyDemo = ({
               <Button variant="ghost" onClick={onExit}>
                 <ArrowLeft aria-hidden="true" />
                 Exit demo
-              </Button>
-            )}
-            {onSignIn ? (
-              <Button onClick={onSignIn}>Sign in</Button>
-            ) : (
-              <Button render={<a href={signInHref} />} nativeButton={false}>
-                Sign in
               </Button>
             )}
           </div>
@@ -369,16 +397,17 @@ export const GuestStudyDemo = ({
                 Understand it. Try it. Make it stick.
               </h2>
               <p className="mt-2 text-pretty text-muted-foreground">
-                A prepared example of a learning conversation with an
-                interactive activity alongside it.
+                Try a live tutor response, then explore the prepared lesson and
+                working experiment below.
               </p>
             </div>
             <Card>
               <CardHeader>
                 <CardTitle>Try a live Meta response</CardTitle>
                 <CardDescription>
-                  These fixed sample questions make a real model call without an
-                  account. Your notes and personal data are not sent.
+                  These sample questions and the osmosis scenario make real
+                  model calls without an account. Your notes and personal data
+                  are not sent.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
@@ -396,28 +425,83 @@ export const GuestStudyDemo = ({
                   >
                     Ask Meta for a practice question
                   </Button>
-                </div>
-                {livePending && (
-                  <p role="status" className="text-sm text-muted-foreground">
-                    Meta is preparing a live response…
-                  </p>
-                )}
-                {liveError && (
-                  <p
-                    role="alert"
-                    className="text-pretty text-sm text-destructive"
+                  <Button
+                    variant="outline"
+                    disabled={livePending}
+                    onClick={() => void requestLiveSample('experiment')}
                   >
-                    {liveError}
-                  </p>
-                )}
-                {liveResult && (
-                  <section aria-label="Live AI response" className="space-y-3">
-                    <Badge variant="secondary">
-                      Live response · {liveResult.model}
-                    </Badge>
-                    <AiMarkdown text={liveResult.text} />
-                  </section>
-                )}
+                    Try a live osmosis experiment
+                  </Button>
+                </div>
+                <div
+                  role="log"
+                  aria-label="Live sample conversation"
+                  aria-live="polite"
+                  aria-relevant="additions text"
+                  className="min-h-40 space-y-5 border-t border-border pt-5"
+                >
+                  {!liveAction && (
+                    <p className="text-pretty text-muted-foreground">
+                      Choose a sample question to try the tutor. No account is
+                      needed.
+                    </p>
+                  )}
+                  {liveAction && (
+                    <p className="ml-auto w-fit max-w-prose rounded-xl bg-muted px-4 py-3 text-pretty">
+                      {liveQuestion}
+                    </p>
+                  )}
+                  {livePending && (
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <p
+                        role="status"
+                        className="text-sm text-muted-foreground"
+                      >
+                        Meta is preparing a live response…
+                      </p>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={cancelLiveSample}
+                      >
+                        Cancel response
+                      </Button>
+                    </div>
+                  )}
+                  {liveCancelled && (
+                    <p
+                      role="status"
+                      className="text-pretty text-sm text-muted-foreground"
+                    >
+                      Response canceled. Choose a sample question to try again.
+                    </p>
+                  )}
+                  {liveError && (
+                    <p
+                      role="alert"
+                      className="text-pretty text-sm text-destructive"
+                    >
+                      {liveError}
+                    </p>
+                  )}
+                  {liveResult && (
+                    <section
+                      aria-label="Live AI response"
+                      className="space-y-3"
+                    >
+                      <p className="text-sm text-muted-foreground">
+                        Live response · {liveResult.model}
+                      </p>
+                      {liveResult.experiment ? (
+                        <GuestStudyExperiment
+                          experiment={liveResult.experiment}
+                        />
+                      ) : (
+                        <AiMarkdown text={liveResult.text} />
+                      )}
+                    </section>
+                  )}
+                </div>
               </CardContent>
             </Card>
             <div className="grid gap-6 lg:grid-cols-2">
