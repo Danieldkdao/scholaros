@@ -55,6 +55,7 @@ vi.mock('../../onboarding/services/mission-navigation', () => ({
 
 vi.mock('../../onboarding/services/page-content', () => ({
   readPage: mocks.readPage,
+  readPageUrl: (page: { url: () => Promise<string> }) => page.url(),
   revealCourseNavigation: vi.fn(async () => 'not-found'),
 }));
 

@@ -40,6 +40,7 @@ vi.mock('../services/background-page', () => ({
 }));
 vi.mock('../services/page-content', () => ({
   readPage: mocks.read,
+  readPageUrl: () => mocks.page.url(),
   revealCourseNavigation: async () => 'not-found',
 }));
 vi.mock('../services/page-readiness', () => ({
