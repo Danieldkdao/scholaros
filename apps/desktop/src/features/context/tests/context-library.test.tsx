@@ -13,6 +13,7 @@ import type {
   Page,
 } from '@scholaros/services/learning/product-contracts';
 import { ContextLibrary } from '../components/context-library';
+import { toast } from '@scholaros/ui/components/toast';
 import { useContextLibrary } from '../hooks/use-context-library';
 import type {
   ContextCourse,
@@ -155,8 +156,13 @@ it('distinguishes loading from a real empty library', async () => {
   await mount(libraryApi);
   expect(document.body.textContent).toContain('Loading your Context');
   await act(async () => finish(page([])));
-  expect(document.body.textContent).toContain('Your Context is empty');
+  expect(document.body.textContent).toContain('No notes or files yet');
   expect(document.body.textContent).not.toContain('Could not load');
+  expect(
+    [...document.querySelectorAll('a')]
+      .find((link) => link.textContent?.includes('View learning preferences'))
+      ?.getAttribute('href'),
+  ).toBe('#/dashboard/settings?section=personal-context');
 });
 
 it('shows partial and unreadable outcomes without presenting them as complete', async () => {
@@ -197,10 +203,11 @@ it('shows an offline read as a reconnect state, not an empty library', async () 
   expect(document.body.textContent).toContain(
     'You’re offline. Reconnect to view saved Context.',
   );
-  expect(document.body.textContent).not.toContain('Your Context is empty');
+  expect(document.body.textContent).not.toContain('No notes or files yet');
 });
 
-it('saves a typed personal preference through the memory action', async () => {
+it('saves a typed personal preference and directs the student to its remembered settings', async () => {
+  const savedToast = vi.spyOn(toast, 'success');
   const libraryApi = api();
   await mount(libraryApi);
   await click(document.querySelector('button[aria-label="Add to Context"]'));
@@ -227,6 +234,25 @@ it('saves a typed personal preference through the memory action', async () => {
     }),
   );
   expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+  expect(savedToast).toHaveBeenCalledWith(
+    'Preference saved',
+    expect.objectContaining({
+      actionProps: expect.objectContaining({
+        children: 'View preferences',
+        onClick: expect.any(Function),
+      }),
+    }),
+  );
+  const action = savedToast.mock.calls.at(-1)?.[1]?.actionProps?.onClick;
+  const originalHash = window.location.hash;
+  await act(async () => {
+    action?.({} as never);
+  });
+  expect(window.location.hash).toBe(
+    '#/dashboard/settings?section=personal-context',
+  );
+  window.location.hash = originalHash;
+  savedToast.mockRestore();
 });
 
 it('keeps the note draft open when creation fails', async () => {

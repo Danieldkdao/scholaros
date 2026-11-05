@@ -118,6 +118,11 @@ type ContextLibraryProps = {
   subscribeToEvents: ContextEventSubscription;
 };
 
+const learningPreferencesHref = '#/dashboard/settings?section=personal-context';
+const viewLearningPreferences = () => {
+  window.location.hash = learningPreferencesHref;
+};
+
 type ContextDialogMode = 'create-note' | 'edit-note' | 'preference';
 type ImportOutcome = {
   itemId: string;
@@ -574,7 +579,14 @@ export const ContextLibrary = ({
       ...(input.courseId ? { courseId: input.courseId } : {}),
     });
     if (scope !== operationScope.current) return;
-    toast.success('Preference saved');
+    toast.success('Preference saved', {
+      description:
+        'Use Personal context in Settings to review your learning preferences.',
+      actionProps: {
+        children: 'View preferences',
+        onClick: viewLearningPreferences,
+      },
+    });
     closeDialog();
   };
 
@@ -904,6 +916,15 @@ export const ContextLibrary = ({
             Keep notes and learning materials together, with their course and
             source details.
           </p>
+          {accountId && (
+            <Button
+              variant="link"
+              className="w-fit p-0"
+              render={<a href={learningPreferencesHref} />}
+            >
+              View learning preferences
+            </Button>
+          )}
           {readOnly && (
             <p role="status" className="text-base text-muted-foreground">
               Reconnect online to make Context changes.
@@ -1031,11 +1052,11 @@ export const ContextLibrary = ({
               )}
             </EmptyMedia>
             <EmptyTitle>
-              {emptyLibrary ? 'Your Context is empty' : 'No matching items'}
+              {emptyLibrary ? 'No notes or files yet' : 'No matching items'}
             </EmptyTitle>
             <EmptyDescription className="text-base">
               {emptyLibrary
-                ? 'Add a note, preference, document, or image when it will help you learn.'
+                ? 'Add a note, document, or image when it will help you learn. Learning preferences are managed separately in Settings.'
                 : 'Try another search or filter to find your saved context.'}
             </EmptyDescription>
           </EmptyHeader>
