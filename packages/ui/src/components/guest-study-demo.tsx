@@ -14,6 +14,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { Button } from './button';
+import { Alert, AlertDescription, AlertTitle } from './alert';
 import { Badge } from './badge';
 import {
   Card,
@@ -155,6 +156,31 @@ export const GuestStudyDemo = ({
             )}
           </div>
         </header>
+        <Alert role="region" aria-label="Sign in for the full experience">
+          <AlertTitle>To access the full experience, sign in.</AlertTitle>
+          <AlertDescription className="flex flex-wrap items-center justify-between gap-3">
+            <p className="text-pretty">
+              Connect your courses, save your materials, and make this workspace
+              your own.
+            </p>
+            {onSignIn ? (
+              <Button variant="outline" size="sm" onClick={onSignIn}>
+                Open the full experience
+                <ArrowRight aria-hidden="true" />
+              </Button>
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                render={<a href={signInHref} />}
+                nativeButton={false}
+              >
+                Open the full experience
+                <ArrowRight aria-hidden="true" />
+              </Button>
+            )}
+          </AlertDescription>
+        </Alert>
         <section className="flex flex-col gap-3" aria-label="About this demo">
           <div className="flex flex-wrap gap-2">
             <Badge variant="outline">Sample data</Badge>
@@ -165,8 +191,9 @@ export const GuestStudyDemo = ({
           </h1>
           <p className="max-w-2xl text-pretty text-base text-muted-foreground">
             Explore a fictional student’s day, add a note, and try a small
-            Python activity. Everything here is a prepared sample; no school
-            accounts or AI services are connected.
+            Python activity. The workspace uses prepared sample data. In Study,
+            you can also try a clearly labeled live Meta response; no school
+            account is connected.
           </p>
         </section>
         <Tabs

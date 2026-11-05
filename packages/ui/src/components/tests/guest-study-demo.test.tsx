@@ -129,3 +129,25 @@ it('keeps the sample usable when the live demo is unavailable', async () => {
     container.querySelector('[data-testid="loop-output"]')?.textContent,
   ).toBe('0\n1\n2');
 });
+
+it('always offers a full-experience sign-in banner with the host sign-in destination', async () => {
+  const container = document.createElement('div');
+  document.body.append(container);
+  root = createRoot(container);
+  await act(async () =>
+    root!.render(
+      createElement(GuestStudyDemo, { signInHref: '/sign-in?from=demo' }),
+    ),
+  );
+  const banner = container.querySelector('[data-slot="alert"]');
+  expect(banner?.textContent).toContain(
+    'To access the full experience, sign in.',
+  );
+  expect(banner?.querySelector('a')?.getAttribute('href')).toBe(
+    '/sign-in?from=demo',
+  );
+  await click('Study');
+  expect(container.querySelector('[data-slot="alert"]')?.textContent).toContain(
+    'To access the full experience, sign in.',
+  );
+});
