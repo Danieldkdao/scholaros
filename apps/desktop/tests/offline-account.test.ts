@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   directory: '',
+  sessionOnly: false,
   available: vi.fn(async () => true),
   backend: vi.fn(() => 'gnome-libsecret'),
   encrypt: vi.fn(async (value: string) =>
@@ -24,7 +25,12 @@ const mocks = vi.hoisted(() => ({
   }),
 }));
 vi.mock('electron', () => ({
-  app: { getPath: () => mocks.directory },
+  app: {
+    getPath: () => mocks.directory,
+    commandLine: {
+      hasSwitch: (name: string) => name === 'session-only' && mocks.sessionOnly,
+    },
+  },
   safeStorage: {
     isAsyncEncryptionAvailable: mocks.available,
     getSelectedStorageBackend: mocks.backend,
@@ -39,6 +45,7 @@ let offlineAccount: typeof import('../src/lib/offline-account');
 beforeEach(async () => {
   directory = await mkdtemp(path.join(tmpdir(), 'scholaros-offline-account-'));
   mocks.directory = directory;
+  mocks.sessionOnly = false;
   mocks.available.mockResolvedValue(true);
   mocks.backend.mockReturnValue('gnome-libsecret');
   mocks.encrypt.mockImplementation(async (value) =>
@@ -155,4 +162,37 @@ it('does not repeat unavailable secure storage checks during polling', async () 
   await offlineAccount.isOfflineStorageAvailable();
   await offlineAccount.isOfflineStorageAvailable();
   expect(mocks.available.mock.calls.length - previous).toBe(1);
+});
+
+it('temporary sign-in never reads Keychain or alters a saved offline grant', async () => {
+  const user = {
+    id: 'student-a',
+    name: 'Student A',
+    email: 'student@example.test',
+    image: null,
+    hasCompletedOnboarding: true,
+  };
+  await offlineAccount.saveOfflineAccountGrant(user, 'session-cookie-a');
+  const file = path.join(directory, 'offline-account', 'grant.bin');
+  const original = await readFile(file);
+  const before = [
+    mocks.available.mock.calls.length,
+    mocks.encrypt.mock.calls.length,
+    mocks.decrypt.mock.calls.length,
+  ];
+  mocks.sessionOnly = true;
+  expect(await offlineAccount.isOfflineStorageAvailable()).toBe(false);
+  expect(
+    await offlineAccount.readOfflineAccountGrant('session-cookie-a'),
+  ).toBeNull();
+  expect(
+    await offlineAccount.saveOfflineAccountGrant(user, 'session-cookie-a'),
+  ).toBe(false);
+  await offlineAccount.clearOfflineAccountGrant();
+  expect(await readFile(file)).toEqual(original);
+  expect([
+    mocks.available.mock.calls.length,
+    mocks.encrypt.mock.calls.length,
+    mocks.decrypt.mock.calls.length,
+  ]).toEqual(before);
 });

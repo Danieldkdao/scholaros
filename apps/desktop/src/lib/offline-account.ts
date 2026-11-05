@@ -26,6 +26,7 @@ const offlineGrantSchema = z.strictObject({
 export type OfflineGrantSchema = z.infer<typeof offlineGrantSchema>;
 
 type OfflineGrant = z.infer<typeof offlineGrantSchema>;
+const sessionOnly = () => app.commandLine?.hasSwitch('session-only') === true;
 const maxAgeMs = 7 * 24 * 60 * 60 * 1000;
 const directory = () => path.join(app.getPath('userData'), 'offline-account');
 const grantPath = () => path.join(directory(), 'grant.bin');
@@ -58,7 +59,7 @@ const runSecureOperation = <T>(operation: () => Promise<T>): Promise<T> => {
 export const isOfflineStorageAvailable = async (
   platform: NodeJS.Platform = process.platform,
 ) => {
-  if (secureStorageFailed) return false;
+  if (sessionOnly() || secureStorageFailed) return false;
   if (pendingAvailability) return pendingAvailability;
   pendingAvailability = (async () => {
     try {
@@ -127,7 +128,7 @@ export const saveOfflineAccountGrant = async (
 export const readOfflineAccountGrant = async (
   cookie: string,
 ): Promise<CurrentUser | null> => {
-  if (!cookie.trim()) return null;
+  if (sessionOnly() || !cookie.trim()) return null;
   let encrypted: Buffer;
   try {
     encrypted = await readFile(grantPath());
@@ -177,6 +178,7 @@ export const readOfflineAccountGrant = async (
 };
 
 export const clearOfflineAccountGrant = async (cookie?: string) => {
+  if (sessionOnly()) return;
   if (!cookie) {
     await rm(grantPath(), { force: true }).catch(() => undefined);
     return;
