@@ -35,13 +35,105 @@ export const createBrowserModel =
       responseFormat: params.responseFormat,
     };
     const parsedRequest = browserModelRequestSchema.safeParse(request);
-    if (!parsedRequest.success)
+    if (!parsedRequest.success) {
+      const fields = new Set([
+        'kind',
+        'browserNavigationMode',
+        'configurationRevision',
+        'messages',
+        'role',
+        'content',
+        'type',
+        'text',
+        'annotations',
+        'audience',
+        'priority',
+        'lastModified',
+        'systemPrompt',
+        'temperature',
+        'stopSequences',
+        'responseFormat',
+        'name',
+        'description',
+        'schema',
+      ]);
+      const issues = parsedRequest.error.issues.slice(0, 8).map((issue) => ({
+        path:
+          issue.path
+            .slice(0, 8)
+            .map((part) =>
+              typeof part === 'number'
+                ? Math.min(Math.max(0, part), 1000)
+                : typeof part === 'string' && fields.has(part)
+                  ? part
+                  : 'field',
+            )
+            .join('.')
+            .slice(0, 160) || 'request',
+        code: issue.code,
+      }));
+      const messages = Array.isArray(request.messages) ? request.messages : [];
+      const knownRoles = new Set([
+        'user',
+        'assistant',
+        'system',
+        'developer',
+        'tool',
+      ]);
+      try {
+        console.warn('[Browser model validation]', {
+          phase: 'request-rejected',
+          issueCount: parsedRequest.error.issues.length,
+          issues,
+          systemPromptLength:
+            typeof request.systemPrompt === 'string'
+              ? request.systemPrompt.length
+              : 0,
+          messageCount: messages.length,
+          messageRoles: messages
+            .slice(0, 24)
+            .map((message) =>
+              message &&
+              typeof message === 'object' &&
+              knownRoles.has(message.role)
+                ? message.role
+                : 'unsupported',
+            ),
+          sampledMessageTextLength: messages
+            .slice(0, 24)
+            .reduce((total, message) => {
+              const content: unknown =
+                message && typeof message === 'object' ? message.content : null;
+              if (typeof content === 'string') return total + content.length;
+              const parts = Array.isArray(content)
+                ? content.slice(0, 32)
+                : [content];
+              return (
+                total +
+                parts.reduce(
+                  (sum, part) =>
+                    sum +
+                    (part &&
+                    typeof part === 'object' &&
+                    'text' in part &&
+                    typeof part.text === 'string'
+                      ? part.text.length
+                      : 0),
+                  0,
+                )
+              );
+            }, 0),
+        });
+      } catch {
+        // Diagnostics never change validation or expose the rejected request.
+      }
       throw new Error(
-        `The browser model request is unsupported: ${parsedRequest.error.issues
-          .map((issue) => `${issue.path.join('.')} ${issue.code}`)
+        `The browser model request is unsupported: ${issues
+          .map((issue) => `${issue.path} ${issue.code}`)
           .join(', ')
           .slice(0, 200)}.`,
       );
+    }
     let result: unknown;
     try {
       result = await accountRequest('/api/agent', parsedRequest.data, signal);

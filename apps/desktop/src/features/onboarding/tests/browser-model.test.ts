@@ -120,3 +120,40 @@ describe('desktop Stagehand model transport', () => {
     );
   });
 });
+
+it('logs only bounded validation metadata when a malformed callback contains private payloads', async () => {
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const secret = 'PRIVATE https://secret.invalid cookie=session schema-text';
+  try {
+    const generate = createBrowserModel({
+      signal: new AbortController().signal,
+      isCurrent: mocks.current,
+    });
+    await expect(
+      generate({
+        ...callbackParams,
+        systemPrompt: secret.repeat(300),
+        messages: [{ role: secret, content: [{ type: 'text', text: secret }] }],
+        temperature: 9,
+      } as never),
+    ).rejects.toThrow(/unsupported/);
+    expect(mocks.request).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      '[Browser model validation]',
+      expect.objectContaining({
+        phase: 'request-rejected',
+        issueCount: expect.any(Number),
+        systemPromptLength: secret.length * 300,
+        messageCount: 1,
+      }),
+    );
+    const serialized = JSON.stringify(warn.mock.calls);
+    expect(serialized).not.toContain('PRIVATE');
+    expect(serialized).not.toContain('secret.invalid');
+    expect(serialized).not.toContain('cookie=session');
+    expect(serialized).toContain('systemPrompt');
+    expect(serialized).toContain('too_big');
+  } finally {
+    warn.mockRestore();
+  }
+});
