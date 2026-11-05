@@ -1,4 +1,3 @@
-import { existsSync } from 'node:fs';
 import { expect, it, vi } from 'vitest';
 import { extractPdfContent } from '../src/features/context/services/pdf-content';
 import {
