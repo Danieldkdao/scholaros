@@ -31,6 +31,7 @@ export type AttentionItemSchema = z.infer<typeof attentionItemSchema>;
 export type AttentionItem = z.infer<typeof attentionItemSchema>;
 export const freshnessItemSchema = z.strictObject({
   courseId: idSchema,
+  courseName: z.string().max(300).optional(),
   status: z.enum(freshnessStatuses),
   lastSuccessfulAt: instantSchema.nullable(),
   pendingCount: z.number().int().nonnegative(),

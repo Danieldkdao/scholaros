@@ -323,3 +323,32 @@ it('renders announcement content and its course even outside the recent course l
   expect(container.textContent).toContain('Bring your lab notebook.');
   expect(container.textContent).toContain('Biology');
 });
+
+it('labels freshness for all fifteen courses even when only ten recent courses are supplied', async () => {
+  const courses = Array.from({ length: 15 }, (_, index) => ({
+    id: `course-${index + 1}`,
+    name: `Biology course ${index + 1}`,
+    code: null,
+    term: null,
+    connectionId: 'connection-1',
+    active: true,
+    sourceName: 'Schoology',
+    sourceHost: 'example.schoology.com',
+    lastSeenAt: '2026-11-04T12:00:00Z',
+    assignmentCount: 0,
+    announcementCount: 0,
+  }));
+  mocks.today.snapshot = overview({
+    recentCourses: courses.slice(0, 10),
+    freshness: courses.map((course) => ({
+      courseId: course.id,
+      courseName: course.name,
+      status: 'current' as const,
+      lastSuccessfulAt: '2026-11-04T12:00:00Z',
+      pendingCount: 0,
+    })),
+  });
+  await renderPage();
+  for (const course of courses)
+    expect(container.textContent).toContain(course.name);
+});

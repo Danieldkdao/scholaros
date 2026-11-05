@@ -714,3 +714,36 @@ it('ignores approved tutor delivery frames without refetching the dashboard', as
   );
   expect(todayBridge().getTodayOverview).toHaveBeenCalledTimes(reads);
 });
+
+it('retains all fifteen course names on freshness entries while recent courses remain capped at ten', () => {
+  const courses = Array.from({ length: 15 }, (_, index) => ({
+    id: `course-${index + 1}`,
+    name: `Biology course ${index + 1}`,
+    code: null,
+    term: null,
+    connectionId: 'connection-1',
+    active: true,
+    sourceName: 'Schoology',
+    sourceHost: 'example.schoology.com',
+    lastSeenAt: '2026-11-04T12:00:00Z',
+    assignmentCount: 0,
+    announcementCount: 0,
+  }));
+  const result = projectTodayOverview(
+    emptyProjection({
+      recentCourses: courses,
+      freshness: courses.map((course) => ({
+        courseId: course.id,
+        status: 'current' as const,
+        lastSuccessfulAt: '2026-11-04T12:00:00Z',
+        pendingCount: 0,
+      })),
+    }),
+    10,
+  );
+  expect(result.recentCourses).toHaveLength(10);
+  expect(result.freshness).toHaveLength(15);
+  expect(result.freshness.map((entry) => entry.courseName)).toEqual(
+    courses.map((course) => course.name),
+  );
+});

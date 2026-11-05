@@ -1326,7 +1326,10 @@ export const projectTodayOverview = (
     .slice(0, Math.min(visibleLimit, 10));
   return todayOverviewSchema.parse({
     attention: input.attention.slice(0, 10),
-    freshness: input.freshness.slice(0, maxOverviewLimit),
+    freshness: input.freshness.slice(0, maxOverviewLimit).map((item) => {
+      const courseName = courseNames.get(item.courseId) ?? item.courseName;
+      return courseName ? { ...item, courseName } : item;
+    }),
     upcoming,
     announcements,
     recentCourses: [...input.recentCourses]

@@ -145,8 +145,10 @@ export const TodayAttention = ({
                   </ItemMedia>
                   <ItemContent>
                     <ItemTitle className="text-base">
-                      {courses.find((course) => course.id === item.courseId)
-                        ?.name ?? 'Course'}
+                      {item.courseName ??
+                        courses.find((course) => course.id === item.courseId)
+                          ?.name ??
+                        'Course'}
                       <span className="sr-only">: </span>
                       {label}
                     </ItemTitle>
