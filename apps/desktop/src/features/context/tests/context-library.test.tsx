@@ -1095,3 +1095,53 @@ it('renders learning preferences as a native link without button semantics warni
     errors.mockRestore();
   }
 });
+
+it('shows a ready saved file once while retaining preview access and course assignment', async () => {
+  const libraryApi = api();
+  const ready = item({
+    id: 'ready-file',
+    title: 'Osmosis notes.pdf',
+    kind: 'document',
+    provenance: 'user-uploaded',
+  });
+  vi.mocked(libraryApi.listContextItems).mockResolvedValueOnce(page([ready]));
+  vi.mocked(libraryApi.getContextItem).mockResolvedValueOnce({
+    item: ready,
+    versions: [],
+    preview: {
+      kind: 'text',
+      text: 'Water crosses membranes.',
+      locators: [],
+      partial: false,
+      uncertainty: null,
+    },
+  });
+  await mount(libraryApi);
+  const card = document.querySelector('[data-context-item-id="ready-file"]')!;
+  expect(card.querySelector('[data-slot="attachment"]')).toBeNull();
+  expect((card.textContent?.match(/ready to use/gi) ?? []).length).toBe(1);
+  expect(card.querySelector('[role="combobox"]')).not.toBeNull();
+  await click(
+    card.querySelector('button[aria-label="Preview Osmosis notes.pdf"]'),
+  );
+  expect(libraryApi.getContextItem).toHaveBeenCalledWith({ itemId: ready.id });
+  expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
+    'Water crosses membranes.',
+  );
+});
+
+it.each(['processing', 'failed'] as const)(
+  'retains the existing attachment feedback for a %s file',
+  async (status) => {
+    const libraryApi = api();
+    vi.mocked(libraryApi.listContextItems).mockResolvedValueOnce(
+      page([item({ kind: 'document', status })]),
+    );
+    await mount(libraryApi);
+    expect(
+      document.querySelector(
+        '[data-context-item-id="item-1"] [data-slot="attachment"]',
+      ),
+    ).not.toBeNull();
+  },
+);

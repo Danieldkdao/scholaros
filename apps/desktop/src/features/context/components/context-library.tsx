@@ -1102,6 +1102,9 @@ export const ContextLibrary = ({
             );
             const editableNote =
               item.kind === 'note' && item.provenance === 'user-authored';
+            const readyFile =
+              (item.kind === 'document' || item.kind === 'image') &&
+              item.status === 'complete';
             const canRetry =
               (item.kind === 'document' || item.kind === 'image') &&
               item.status !== 'queued' &&
@@ -1124,9 +1127,11 @@ export const ContextLibrary = ({
                           {item.title}
                         </CardTitle>
                       </ItemTitle>
-                      <ItemDescription className="text-base">
-                        {getStatusMessage(item.status)}
-                      </ItemDescription>
+                      {!readyFile && (
+                        <ItemDescription className="text-base">
+                          {getStatusMessage(item.status)}
+                        </ItemDescription>
+                      )}
                     </ItemContent>
                   </Item>
                   <ItemActions className="shrink-0">
@@ -1195,28 +1200,29 @@ export const ContextLibrary = ({
                   </ItemActions>
                 </CardHeader>
                 <CardContent className="flex min-w-0 flex-col gap-4">
-                  {(item.kind === 'document' || item.kind === 'image') && (
-                    <Attachment
-                      state={status.attachmentState}
-                      className="w-full text-base"
-                    >
-                      <AttachmentMedia>
-                        {item.kind === 'image' ? (
-                          <Image aria-hidden="true" />
-                        ) : (
-                          <FileText aria-hidden="true" />
-                        )}
-                      </AttachmentMedia>
-                      <AttachmentContent>
-                        <AttachmentTitle className="text-base">
-                          {item.title}
-                        </AttachmentTitle>
-                        <AttachmentDescription className="text-base">
-                          {status.label}
-                        </AttachmentDescription>
-                      </AttachmentContent>
-                    </Attachment>
-                  )}
+                  {!readyFile &&
+                    (item.kind === 'document' || item.kind === 'image') && (
+                      <Attachment
+                        state={status.attachmentState}
+                        className="w-full text-base"
+                      >
+                        <AttachmentMedia>
+                          {item.kind === 'image' ? (
+                            <Image aria-hidden="true" />
+                          ) : (
+                            <FileText aria-hidden="true" />
+                          )}
+                        </AttachmentMedia>
+                        <AttachmentContent>
+                          <AttachmentTitle className="text-base">
+                            {item.title}
+                          </AttachmentTitle>
+                          <AttachmentDescription className="text-base">
+                            {status.label}
+                          </AttachmentDescription>
+                        </AttachmentContent>
+                      </Attachment>
+                    )}
                   <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-base text-muted-foreground">
                     <span className="flex items-center gap-2">
                       <kind.Icon aria-hidden="true" className="size-4" />
