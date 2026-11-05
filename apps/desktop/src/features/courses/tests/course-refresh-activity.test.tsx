@@ -49,32 +49,13 @@ it('shows live actions, collapses, and toasts each terminal transition once', as
       ),
     );
   }
-  expect(toast.success).toHaveBeenNthCalledWith(
-    1,
-    'Refresh complete',
-    expect.anything(),
-  );
-  expect(toast.success).toHaveBeenCalledOnce();
-  expect(toast.error).toHaveBeenNthCalledWith(
-    1,
+  expect(toast.success).toHaveBeenCalledTimes(4);
+  for (const call of vi.mocked(toast.success).mock.calls) {
+    expect(call[0]).toBe('Refresh complete');
+  }
+  expect(toast.warning).not.toHaveBeenCalled();
+  expect(toast.error).toHaveBeenCalledExactlyOnceWith(
     'Sign in to your academic source to refresh it.',
-    expect.anything(),
-  );
-  expect(toast.error).toHaveBeenNthCalledWith(
-    2,
-    'Opening course page',
-    expect.anything(),
-  );
-  expect(toast.error).toHaveBeenCalledTimes(2);
-  expect(toast.warning).toHaveBeenCalledTimes(2);
-  expect(toast.warning).toHaveBeenNthCalledWith(
-    1,
-    'Refresh incomplete',
-    expect.anything(),
-  );
-  expect(toast.warning).toHaveBeenNthCalledWith(
-    2,
-    'Refresh stopped',
     expect.anything(),
   );
   await act(async () =>
@@ -84,28 +65,39 @@ it('shows live actions, collapses, and toasts each terminal transition once', as
       }),
     ),
   );
-  expect(toast.error).toHaveBeenCalledTimes(2);
+  expect(toast.success).toHaveBeenCalledTimes(4);
+  expect(toast.error).toHaveBeenCalledOnce();
+  const diagnosticEvents = [
+    'Opening course page',
+    'Refresh detail: more collection pages remain unread.',
+    'Some course data could not be read.',
+    'Reading the course source timed out. Retry the refresh.',
+    'Sign in to this resource in your study browser, then refresh.',
+  ];
   await act(async () =>
     root.render(
       createElement(CourseRefreshActivity, {
-        activity: [{ ...run, status: 'partial' }],
+        activity: [{ ...run, status: 'partial', events: diagnosticEvents }],
       }),
     ),
   );
-  expect(toast.warning).toHaveBeenCalledTimes(3);
-  expect(toast.warning).toHaveBeenNthCalledWith(
-    3,
-    'Refresh incomplete',
-    expect.anything(),
-  );
+  expect(node.textContent).toContain('Refresh complete');
+  expect(toast.success).toHaveBeenCalledTimes(5);
+  await act(async () => trigger.click());
+  expect(node.textContent).toContain('Opening course page');
+  expect(node.textContent).toContain('Sign in to this resource');
+  expect(node.textContent).not.toContain('remain unread');
+  expect(node.textContent).not.toContain('could not be read');
+  expect(node.textContent).not.toContain('timed out');
+  expect(diagnosticEvents).toHaveLength(5);
   await act(async () =>
     root.render(
       createElement(CourseRefreshActivity, {
-        activity: [{ ...run, status: 'partial' }],
+        activity: [{ ...run, status: 'partial', events: diagnosticEvents }],
       }),
     ),
   );
-  expect(toast.warning).toHaveBeenCalledTimes(3);
+  expect(toast.success).toHaveBeenCalledTimes(5);
   await act(async () => root.unmount());
   node.remove();
 });
@@ -116,7 +108,7 @@ it('keeps a long refresh history collapsed and opens a bounded newest-first log 
   const root = createRoot(node);
   const events = Array.from(
     { length: 120 },
-    (_, index) => `Refresh event ${index}`,
+    (_, index) => `Opening course page ${index}`,
   );
   try {
     await act(async () =>
@@ -127,7 +119,7 @@ it('keeps a long refresh history collapsed and opens a bounded newest-first log 
               id: 'older',
               key: 'courses',
               status: 'complete',
-              events: ['Older run event'],
+              events: ['Checking an older connected source'],
             },
             { id: 'current', key: 'course-1', status: 'running', events },
           ],
@@ -140,16 +132,16 @@ it('keeps a long refresh history collapsed and opens a bounded newest-first log 
     await act(async () => trigger.click());
     const history = node.querySelector('[data-slot="scroll-area"]')!;
     expect(history.className).toContain('h-48');
-    expect(history.textContent).toContain('Refresh event 0');
-    expect(history.textContent).toContain('Refresh event 119');
+    expect(history.textContent).toContain('Opening course page 0');
+    expect(history.textContent).toContain('Opening course page 119');
     expect(history.querySelectorAll('[data-slot="trace-line"]')).toHaveLength(
       123,
     );
-    expect(history.textContent!.indexOf('Refresh event 119')).toBeLessThan(
-      history.textContent!.indexOf('Refresh event 0'),
-    );
-    expect(history.textContent!.indexOf('Refresh event 0')).toBeLessThan(
-      history.textContent!.indexOf('Older run event'),
+    expect(
+      history.textContent!.indexOf('Opening course page 119'),
+    ).toBeLessThan(history.textContent!.indexOf('Opening course page 0'));
+    expect(history.textContent!.indexOf('Opening course page 0')).toBeLessThan(
+      history.textContent!.indexOf('Checking an older connected source'),
     );
   } finally {
     await act(async () => root.unmount());

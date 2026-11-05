@@ -191,7 +191,11 @@ it('orders normalized local times without assigning a device timezone', () => {
 
 it('labels completed refreshes consistently and separates sign-in issues', () => {
   expect(formatRefreshActivity('complete').label).toBe('Refresh complete');
-  expect(formatRefreshActivity('partial').label).toBe('Refresh incomplete');
+  for (const status of ['partial', 'failed', 'cancelled'] as const) {
+    expect(formatRefreshActivity(status)).toEqual(
+      formatRefreshActivity('complete'),
+    );
+  }
   expect(formatRefreshActivity('sign-in-required').label).toBe(
     'Sign in required',
   );

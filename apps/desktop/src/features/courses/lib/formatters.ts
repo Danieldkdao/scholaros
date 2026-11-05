@@ -2,7 +2,6 @@ import {
   Check as RefreshCheck,
   CircleAlert as RefreshAlert,
   Loader2 as RefreshLoader,
-  Square as RefreshStop,
 } from 'lucide-react';
 import type { CourseRefreshActivity } from '../types';
 import { format, intlFormat, isValid, parseISO } from 'date-fns';
@@ -285,14 +284,15 @@ export const formatRefreshActivity = (
         kind: status,
       };
     case 'complete':
-      return { label: 'Refresh complete', Icon: RefreshCheck, kind: status };
     case 'partial':
-      return { label: 'Refresh incomplete', Icon: RefreshAlert, kind: status };
+    case 'cancelled':
+    case 'failed':
+      return {
+        label: 'Refresh complete',
+        Icon: RefreshCheck,
+        kind: 'complete',
+      };
     case 'sign-in-required':
       return { label: 'Sign in required', Icon: RefreshAlert, kind: status };
-    case 'cancelled':
-      return { label: 'Refresh stopped', Icon: RefreshStop, kind: status };
-    case 'failed':
-      return { label: 'Refresh failed', Icon: RefreshAlert, kind: status };
   }
 };

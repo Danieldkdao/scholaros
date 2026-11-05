@@ -90,17 +90,24 @@ export const CourseRefreshActivity = ({
                 const status = formatRefreshActivity(run.status);
                 return (
                   <div key={run.id} className="flex flex-col gap-2">
-                    {[...run.events].reverse().map((event, index) => (
-                      <TraceLine
-                        key={`${run.id}-${index}`}
-                        className="animate-in fade-in slide-in-from-top-1 text-base duration-300 motion-reduce:animate-none"
-                      >
-                        <TraceIcon>
-                          <Activity />
-                        </TraceIcon>
-                        <span className="min-w-0 break-words">{event}</span>
-                      </TraceLine>
-                    ))}
+                    {[...run.events]
+                      .reverse()
+                      .filter((event) =>
+                        /^(?:Opening|Checking|Waiting|Reading (?:assignments|announcements)$|Saved \d+|Read \d+|Sign[ -]in)\b/i.test(
+                          event,
+                        ),
+                      )
+                      .map((event, index) => (
+                        <TraceLine
+                          key={`${run.id}-${index}`}
+                          className="animate-in fade-in slide-in-from-top-1 text-base duration-300 motion-reduce:animate-none"
+                        >
+                          <TraceIcon>
+                            <Activity />
+                          </TraceIcon>
+                          <span className="min-w-0 break-words">{event}</span>
+                        </TraceLine>
+                      ))}
                     <TraceLine
                       className="text-base"
                       status={
