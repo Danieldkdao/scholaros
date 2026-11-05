@@ -332,6 +332,29 @@ it('keeps source-verified assignments visible while their submission status is u
   expect(text()).not.toContain('Completed');
 });
 
+it('shows the verified course section in overview metadata', async () => {
+  detail = course({
+    content: {
+      name: 'Biology 101',
+      code: 'BIO',
+      section: 'A1',
+      term: null,
+      description: null,
+      instructors: [],
+      sourceId: null,
+      url: 'https://canvas.school.edu/courses/1',
+      evidence: {
+        sourceUrl: 'https://canvas.school.edu/courses',
+        excerpts: ['Biology 101'],
+        targetIds: [],
+      },
+    },
+  });
+  await open();
+  expect(text()).toContain('Section');
+  expect(text()).toContain('A1');
+});
+
 it('gives every collection state its own wording', async () => {
   const wording = async (overrides: Partial<CourseDetail>) => {
     detail = course(overrides);

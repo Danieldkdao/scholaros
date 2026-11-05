@@ -13,6 +13,7 @@ import { useDebouncedValue } from '@tanstack/react-pacer';
 import { createFileRoute, Link } from '@tanstack/react-router';
 import {
   Clock,
+  Layers,
   ClipboardList,
   Megaphone,
   ExternalLink,
@@ -75,6 +76,7 @@ const CoursesPage = () => {
         [
           course.name,
           course.code,
+          course.content?.section,
           course.term,
           course.sourceName,
           course.sourceHost,
@@ -323,6 +325,18 @@ const CoursesPage = () => {
                       )}
                       {(course.code || course.term) && (
                         <Separator orientation="vertical" />
+                      )}
+                      {course.content?.section && (
+                        <span
+                          aria-label={`Section ${course.content.section}`}
+                          className="flex items-center gap-2 text-base"
+                        >
+                          <Layers
+                            aria-hidden="true"
+                            className="size-4 shrink-0"
+                          />
+                          {course.content.section}
+                        </span>
                       )}
                       {course.term && (
                         <span className="text-base truncate">

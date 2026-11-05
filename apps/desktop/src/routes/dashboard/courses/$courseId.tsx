@@ -315,6 +315,7 @@ const CoursePage = () => {
     ? [
         { label: 'Course', value: course.name },
         { label: 'Code', value: course.code },
+        { label: 'Section', value: course.content?.section },
         { label: 'Term', value: course.term },
         { label: 'Instructor', value: course.instructor },
         { label: 'Description', value: course.description },

@@ -170,6 +170,36 @@ const searchCourses = async (value: string) => {
   });
 };
 
+it('distinguishes same-name courses by their verified section without merging them', async () => {
+  const content = (section: string) => ({
+    name: 'Biology 101',
+    code: 'BIO',
+    section,
+    term: null,
+    description: null,
+    instructors: [],
+    sourceId: null,
+    url: 'https://canvas.school.edu/courses/1',
+    evidence: {
+      sourceUrl: 'https://canvas.school.edu/courses',
+      excerpts: ['Biology 101'],
+      targetIds: [],
+    },
+  });
+  snapshot.courses = [
+    course('1', { content: content('A1') }),
+    course('2', { content: content('B2') }),
+  ];
+  await open();
+  const cards = [...document.querySelectorAll('[data-slot="course-card"]')];
+  expect(cards).toHaveLength(2);
+  expect(cards[0]?.textContent).toContain('A1');
+  expect(cards[1]?.textContent).toContain('B2');
+  expect(
+    document.querySelectorAll('a[href^="/dashboard/courses/"]'),
+  ).toHaveLength(2);
+});
+
 it('links to the watcher setting from Courses even when watching is unavailable', async () => {
   connections = [];
   await open();
