@@ -128,6 +128,37 @@ const run = (
 };
 
 describe('deep course content scanning', () => {
+  it('reports only fixed failure categories and counts when source reading is interrupted', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const { result } = run(
+        async () => {
+          throw new Error(
+            'Cannot find context with specified id: PRIVATE_SOURCE_TEXT',
+          );
+        },
+        new Map([[root, page(root)]]),
+      );
+      expect(await result).toMatchObject({ status: 'blocked' });
+      expect(warn).toHaveBeenCalledWith(
+        '[course-refresh] collection interrupted',
+        expect.objectContaining({
+          kind: 'assignments',
+          phase: 'extraction',
+          reason: 'document-context-replaced',
+          pagesVisited: 1,
+          modelCalls: 1,
+        }),
+      );
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(
+        'PRIVATE_SOURCE_TEXT',
+      );
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(root);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('reports an extraction failure while preserving a blocked scan result', async () => {
     const onError = vi.fn();
     const { result } = run(

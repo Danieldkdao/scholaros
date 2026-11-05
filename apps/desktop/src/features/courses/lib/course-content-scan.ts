@@ -136,6 +136,37 @@ const interruptionCategory = (
   }
 };
 
+const collectionFailureReason = (error: unknown) => {
+  const message = error instanceof Error ? error.message : '';
+  if (
+    /Cannot find (?:execution )?context|Execution context (?:was )?destroyed/i.test(
+      message,
+    )
+  )
+    return 'document-context-replaced';
+  if (/page changed|unexpected.*page|changed during navigation/i.test(message))
+    return 'document-changed';
+  if (
+    /schema|unsupported browser response|unreadable course data/i.test(
+      message,
+    ) ||
+    (error instanceof Error && error.name === 'ZodError')
+  )
+    return 'invalid-model-output';
+  if (/scope|approved course|course membership/i.test(message))
+    return 'course-scope-unverified';
+  if (
+    /not found|no longer.*(?:link|visible)|could not.*(?:open|load)/i.test(
+      message,
+    )
+  )
+    return 'destination-unavailable';
+  if (/sign in|password/i.test(message)) return 'sign-in-required';
+  if (/rate.?limit|quota|429|slow down/i.test(message)) return 'rate-limited';
+  if (/timeout|timed out/i.test(message)) return 'timed-out';
+  return 'unknown';
+};
+
 type VerifiedCourseLocation = {
   purpose: CourseChildKind;
   destinationUrl: string;
@@ -438,6 +469,7 @@ export const scanCourseCollection = async ({
   const finish = (
     status: CourseScanStatus,
     interruption: CourseCollectionInterruption | null = null,
+    reportDiagnostic = true,
   ): CourseChildScanWithCoverage => {
     const tracked: TrackedChildItem[] = [
       ...[...items.values()].map((item) => ({ item, inactive: false })),
@@ -594,6 +626,22 @@ export const scanCourseCollection = async ({
       (!completeCoverage || ambiguous || interruption !== null)
         ? 'partial'
         : status;
+    if (reportDiagnostic)
+      console.info('[course-refresh] collection result', {
+        kind,
+        status: finalStatus,
+        pagesVisited: visitedPages.size,
+        modelCalls: calls,
+        candidates: extractedCandidateCount,
+        retainedRecords: usableItemCount,
+        collectionPages: collectionPageUrls.length,
+        unknownAssignments: unknownAssignments.size,
+        gaps: hostCoverage?.gaps ?? null,
+        navigationFailures: navigationFailures.size,
+        extractionFailures: extractionFailures.size,
+        disclosureGaps: disclosureGaps.size,
+        interruption: interruption?.category ?? null,
+      });
     return {
       status: finalStatus,
       interruption,
@@ -950,7 +998,7 @@ export const scanCourseCollection = async ({
           if (!inactiveItems.has(key)) items.set(key, item);
         }
         saving = true;
-        onProgress?.(finish('partial'));
+        onProgress?.(finish('partial', null, false));
         saving = false;
       }
       const cachedLocation = scopedKnownLocations.find(
@@ -1260,6 +1308,20 @@ export const scanCourseCollection = async ({
       onError?.(error.message.split('\n')[0]!.slice(0, 300));
     const category = interruptionCategory(error);
     if (category === 'capability-changed') throw error;
+    console.warn('[course-refresh] collection interrupted', {
+      kind,
+      category,
+      phase: pendingNavigation
+        ? 'navigation'
+        : extractionFailures.has(currentIdentity)
+          ? 'extraction'
+          : 'verification',
+      reason: collectionFailureReason(error),
+      pagesVisited: visitedPages.size,
+      modelCalls: calls,
+      candidates: extractedCandidateCount,
+      retainedRecords: items.size + inactiveItems.size,
+    });
     const status: CourseScanStatus =
       items.size || inactiveItems.size
         ? 'partial'
