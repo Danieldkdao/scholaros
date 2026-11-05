@@ -10,6 +10,7 @@ import type { NotificationHostAdapterDependencies } from '../src/services/academ
 import type { AcademicClientLifecycle } from '../src/services/academic/client';
 const mocks = vi.hoisted(() => ({
   serviceMode: false,
+  sessionOnly: false,
   stopServiceMode: false,
   authCookie: 'test-session-a',
   windows: 0,
@@ -65,6 +66,7 @@ const mocks = vi.hoisted(() => ({
   register: vi.fn(),
   request: vi.fn(),
   stop: vi.fn(),
+  stopExisting: vi.fn(),
   disconnect: vi.fn(),
   quit: vi.fn(),
   exit: vi.fn(),
@@ -97,6 +99,7 @@ vi.mock('electron', () => ({
     commandLine: {
       hasSwitch: (name: string) =>
         (name === 'academic-service' && mocks.serviceMode) ||
+        (name === 'session-only' && mocks.sessionOnly) ||
         (name === 'stop-academic-service' && mocks.stopServiceMode),
       getSwitchValue: () => '',
     },
@@ -232,6 +235,7 @@ vi.mock('../src/services/academic/client', () => ({
   registerAcademicClient: mocks.register,
   requestAcademicService: mocks.request,
   stopAcademicService: mocks.stop,
+  stopExistingAcademicService: mocks.stopExisting,
   disconnectAcademicService: mocks.disconnect,
 }));
 vi.mock('../src/services/academic/runtime', () => ({
@@ -325,11 +329,13 @@ beforeEach(() => {
   mocks.closeActivity.mockResolvedValue(undefined);
   mocks.retryActivity.mockResolvedValue(undefined);
   mocks.serviceMode = false;
+  mocks.sessionOnly = false;
   mocks.stopServiceMode = false;
   mocks.authCookie = 'test-session-a';
   mocks.ready.mockResolvedValue(undefined);
   mocks.register.mockResolvedValue(undefined);
   mocks.stop.mockResolvedValue(undefined);
+  mocks.stopExisting.mockResolvedValue(undefined);
   mocks.runService.mockResolvedValue(undefined);
   mocks.setupAuthMain.mockImplementation(
     ({
@@ -1787,4 +1793,35 @@ it('shows a useful startup failure before exiting when storage ownership cannot 
     'Close the previous ScholarOS instance.',
   );
   logged.mockRestore();
+});
+
+it('starts the temporary authenticated service inline before registering the desktop client', async () => {
+  mocks.sessionOnly = true;
+  await import('../src/main');
+  await vi.waitFor(() => expect(mocks.windows).toBe(1));
+  expect(mocks.stopExisting).toHaveBeenCalledOnce();
+  expect(mocks.runService).toHaveBeenCalledOnce();
+  expect(mocks.stopExisting.mock.invocationCallOrder[0]).toBeLessThan(
+    mocks.runService.mock.invocationCallOrder[0]!,
+  );
+  expect(mocks.runService.mock.invocationCallOrder[0]).toBeLessThan(
+    mocks.register.mock.invocationCallOrder[0]!,
+  );
+  expect(mocks.setupAuthMain).toHaveBeenCalledOnce();
+  expect(mocks.requireTrustedSender).not.toHaveBeenCalled();
+});
+
+it('never leaves temporary authentication running after closing the desktop window', async () => {
+  mocks.sessionOnly = true;
+  mocks.request.mockResolvedValue({
+    settings: { backgroundSync: true },
+    watch: { enabled: true },
+  });
+  await import('../src/main');
+  await vi.waitFor(() => expect(mocks.windows).toBe(1));
+  emit('window-all-closed');
+  await vi.waitFor(() => expect(mocks.quit).toHaveBeenCalledOnce());
+  emit('before-quit', { preventDefault: vi.fn() });
+  await vi.waitFor(() => expect(mocks.stop).toHaveBeenCalledOnce());
+  expect(mocks.disconnect).not.toHaveBeenCalled();
 });

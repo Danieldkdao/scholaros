@@ -15,11 +15,16 @@ const mocks = vi.hoisted(() => ({
   spawn: vi.fn(),
   close: null as (() => void) | null,
   cookie: 'test-cookie-a',
+  sessionOnly: false,
+  cookieReads: vi.fn(),
   sessionChange: null as (() => void) | null,
 }));
 vi.mock('../../../lib/auth/client', () => ({
   authClient: {
-    getCookie: () => mocks.cookie,
+    getCookie: () => {
+      mocks.cookieReads();
+      return mocks.cookie;
+    },
     $store: {
       atoms: {
         session: {
@@ -33,7 +38,13 @@ vi.mock('../../../lib/auth/client', () => ({
   },
 }));
 vi.mock('electron', () => ({
-  app: { getPath: () => '/tmp/academic-client', isPackaged: true },
+  app: {
+    getPath: () => '/tmp/academic-client',
+    isPackaged: true,
+    commandLine: {
+      hasSwitch: (name: string) => name === 'session-only' && mocks.sessionOnly,
+    },
+  },
   BrowserWindow: {
     getAllWindows: () => [
       { isDestroyed: () => false, webContents: { send: mocks.untrustedSend } },
@@ -117,6 +128,7 @@ beforeEach(async () => {
   mocks.cookie = 'test-cookie-a';
   mocks.sessionChange = null;
   const trustedWindows = await import('../../../lib/trusted-windows');
+  mocks.sessionOnly = false;
   appWindow = makeWindow(1, mocks.send);
   unregisterTrustedWindow = trustedWindows.registerTrustedWindow(
     appWindow.window as never,
@@ -595,3 +607,41 @@ it.each(['cookie', 'account'])(
     );
   },
 );
+
+it('stops an existing profile service without reading credentials or disabling the next client', async () => {
+  const client = await import('../client');
+  let stopped = false;
+  mocks.request.mockImplementation(async (_endpoint, method) => {
+    if (method === 'shutdown') {
+      stopped = true;
+      return null;
+    }
+    if (method === 'health') {
+      if (stopped) throw new Error('Service closed');
+      return { ready: true };
+    }
+    return { id: 'student' };
+  });
+  await client.stopExistingAcademicService();
+  expect(mocks.cookieReads).not.toHaveBeenCalled();
+  expect(mocks.request).toHaveBeenCalledWith(
+    expect.anything(),
+    'shutdown',
+    undefined,
+    3_000,
+  );
+  stopped = false;
+  await client.registerAcademicClient();
+  expect(mocks.subscribe).toHaveBeenCalledOnce();
+  expect(mocks.spawn).not.toHaveBeenCalled();
+});
+
+it('refuses detached child fallback when the temporary inline service is unavailable', async () => {
+  mocks.sessionOnly = true;
+  mocks.request.mockRejectedValue(new Error('No inline endpoint'));
+  const client = await import('../client');
+  await expect(client.registerAcademicClient()).rejects.toThrow(
+    'temporary session service',
+  );
+  expect(mocks.spawn).not.toHaveBeenCalled();
+});

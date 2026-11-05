@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "turbo run dev",
     "dev:desktop": "pnpm --filter @scholaros/desktop dev",
+    "dev:desktop:session": "pnpm --filter @scholaros/desktop dev -- --session-only",
     "dev:web": "pnpm --filter @scholaros/web dev",
     "build": "turbo run build",
     "typecheck": "turbo run typecheck",

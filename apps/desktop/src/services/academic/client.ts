@@ -163,6 +163,10 @@ const ensureService = (): Promise<AcademicEndpointSchema> =>
     : (starting ??= (async () => {
         let endpoint = await findService().catch(() => null);
         if (!endpoint) {
+          if (app.commandLine?.hasSwitch('session-only'))
+            throw new Error(
+              'The temporary session service is unavailable. Quit and reopen ScholarOS in session-only mode.',
+            );
           const child = spawn(
             process.execPath,
             [
@@ -341,4 +345,27 @@ export const stopAcademicService = async () => {
   await disconnectAcademicService();
   const endpoint = await findService().catch(() => null);
   if (endpoint) await academicRequest(endpoint, 'shutdown');
+};
+
+/** Stops only the existing service for this profile, without reading auth state. */
+export const stopExistingAcademicService = async () => {
+  const endpoint = await findService().catch(() => null);
+  if (!endpoint) return;
+  await academicRequest(endpoint, 'shutdown', undefined, 3_000);
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const current = await findService().catch(() => null);
+    if (!current) return;
+    if (
+      current.address !== endpoint.address ||
+      current.token !== endpoint.token
+    )
+      throw new Error(
+        'The academic service changed while temporary mode was starting. Quit and try again.',
+      );
+    await delay(50);
+  }
+  throw new Error(
+    'The existing academic service has not stopped yet. Quit ScholarOS and try again.',
+  );
 };

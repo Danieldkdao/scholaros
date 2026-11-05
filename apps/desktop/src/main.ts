@@ -73,6 +73,7 @@ import {
   requestAcademicService,
   stopAcademicService,
   disconnectAcademicService,
+  stopExistingAcademicService,
 } from './services/academic/client';
 import { loadLearningActionModules } from './services/academic/learning-actions';
 import { registerActivitySchemeBeforeReady } from './features/study/services/activity-protocol';
@@ -89,6 +90,7 @@ import {
 import type { ActivityRuntimeChange } from './features/study/hooks/use-activity-host';
 
 const serviceMode = app.commandLine.hasSwitch('academic-service');
+const sessionOnly = app.commandLine.hasSwitch('session-only');
 const stopServiceMode = app.commandLine.hasSwitch('stop-academic-service');
 if (serviceMode) {
   // Separate the Chromium session and singleton lease while preserving existing data paths.
@@ -1432,6 +1434,17 @@ app
       return;
     }
 
+    if (sessionOnly) {
+      // Share the same in-memory auth client with the service. A detached
+      // process cannot share temporary credentials and must not be reused.
+      await stopExistingAcademicService();
+      const { runAcademicService } =
+        await import('./services/academic/runtime');
+      const learningModules = await loadLearningActionModules();
+      await runAcademicService({ learningModules });
+      app.dock?.show();
+    }
+
     if (app.commandLine.hasSwitch('migrate-db')) {
       await registerAcademicClient();
       await stopAcademicService();
@@ -1501,7 +1514,7 @@ app.on('before-quit', (event) => {
   quitting = true;
   void (async () => {
     await disposeNativeOwners();
-    if (keepService) await disconnectAcademicService();
+    if (keepService && !sessionOnly) await disconnectAcademicService();
     else await stopAcademicService();
     app.quit();
   })().catch(() => {
@@ -1520,8 +1533,9 @@ app.on('window-all-closed', () => {
         watch?: { enabled?: boolean };
       };
       keepService =
-        currentState.settings?.backgroundSync === true ||
-        currentState.watch?.enabled === true;
+        !sessionOnly &&
+        (currentState.settings?.backgroundSync === true ||
+          currentState.watch?.enabled === true);
     })
     .catch(() => undefined)
     .finally(() => app.quit());
