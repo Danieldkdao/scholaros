@@ -18,6 +18,7 @@ import type {
 import type {
   MessagePart,
   StudyMessageDTO,
+  TurnDTO,
 } from '@scholaros/services/learning/study-contracts';
 import {
   Attachment,
@@ -27,6 +28,15 @@ import {
   AttachmentTitle,
 } from '@scholaros/ui/components/attachment';
 import { Spinner } from '@scholaros/ui/components/spinner';
+import {
+  Trace,
+  TraceCollapsible,
+  TraceCollapsibleTrigger,
+  TraceCollapsibleContent,
+  TraceLine,
+  TraceIcon,
+  TraceTitle,
+} from '@scholaros/ui/components/trace';
 import { Button } from '@scholaros/ui/components/button';
 import { Card, CardContent } from '@scholaros/ui/components/card';
 import {
@@ -466,28 +476,42 @@ export const StudyMessage = ({
   );
 };
 
-export const StudyThinkingReply = () => (
+export const StudyThinkingReply = ({
+  status,
+}: {
+  status: TurnDTO['status'];
+}) => (
   <MessageGroup data-slot="study-thinking">
-    <Message
-      align="start"
-      role="article"
-      aria-label="Tutor response"
-      aria-busy="true"
-    >
+    <Message align="start" role="article" aria-label="Tutor response">
       <MessageContent>
-        <p
-          role="status"
-          aria-live="polite"
-          className="flex items-center gap-2 text-base text-muted-foreground"
-        >
-          <Spinner
-            aria-hidden="true"
-            role="presentation"
-            aria-label={undefined}
-            className="animate-none motion-safe:animate-spin"
-          />
-          <span>Thinking…</span>
-        </p>
+        <Trace>
+          <TraceCollapsible defaultOpen={false}>
+            <TraceCollapsibleTrigger
+              aria-label="Show response activity"
+              className="text-base"
+            >
+              <TraceLine role="status" aria-live="polite" className="text-base">
+                <TraceIcon>
+                  <Spinner
+                    aria-hidden="true"
+                    role="presentation"
+                    aria-label={undefined}
+                    className="animate-none motion-safe:animate-spin"
+                  />
+                </TraceIcon>
+                <TraceTitle>Thinking…</TraceTitle>
+              </TraceLine>
+            </TraceCollapsibleTrigger>
+            <TraceCollapsibleContent>
+              <div className="flex flex-col gap-2 text-base">
+                <span className="text-muted-foreground">Current activity</span>
+                <TraceLine className="text-base">
+                  <TraceTitle>{formatSafeStatusPart(status)}</TraceTitle>
+                </TraceLine>
+              </div>
+            </TraceCollapsibleContent>
+          </TraceCollapsible>
+        </Trace>
       </MessageContent>
     </Message>
   </MessageGroup>

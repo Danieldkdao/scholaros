@@ -3,7 +3,7 @@ import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { StudyMessageDTO } from '@scholaros/services/learning/study-contracts';
-import { StudyMessage } from '../components/study-message';
+import { StudyMessage, StudyThinkingReply } from '../components/study-message';
 
 let root: Root;
 let container: HTMLDivElement;
@@ -220,4 +220,29 @@ it('uses one accessible spinner and readable filename for a processing uploaded 
   ).toBe('Reading file');
   expect(attachment.textContent).toContain('Uploaded by you');
   expect(attachment.textContent).not.toContain('Reading file');
+});
+
+it('expands Thinking to the actual current processing stage without inventing reasoning', async () => {
+  await act(async () =>
+    root.render(createElement(StudyThinkingReply, { status: 'checking' })),
+  );
+  const trigger = container.querySelector<HTMLButtonElement>(
+    '[data-slot="trace-collapsible-trigger"]',
+  )!;
+  expect(trigger).not.toBeNull();
+  expect(trigger.getAttribute('aria-expanded')).toBe('false');
+  expect(trigger.textContent).toContain('Thinking…');
+  await act(async () => trigger.click());
+  expect(trigger.getAttribute('aria-expanded')).toBe('true');
+  expect(container.textContent).toContain('Current activity');
+  expect(container.textContent).toContain('Checking the response');
+  expect(container.textContent).not.toContain('Preparing your study context');
+  expect(
+    container.querySelectorAll('.motion-safe\\:animate-spin'),
+  ).toHaveLength(1);
+  await act(async () =>
+    root.render(createElement(StudyThinkingReply, { status: 'generating' })),
+  );
+  expect(container.textContent).toContain('Working on a response');
+  expect(container.textContent).not.toContain('Checking the response');
 });

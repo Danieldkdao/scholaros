@@ -511,7 +511,7 @@ export const StudyDocument = ({
                   messageId={`thinking:${snapshot.activeTurn.id}`}
                   className="mx-auto w-full max-w-4xl"
                 >
-                  <StudyThinkingReply />
+                  <StudyThinkingReply status={snapshot.activeTurn.status} />
                 </MessageScrollerItem>
               )}
           </MessageScrollerContent>
