@@ -150,6 +150,8 @@ it('always offers a full-experience sign-in banner with the host sign-in destina
   expect(banner?.querySelector('a')?.getAttribute('href')).toBe(
     '/sign-in?from=demo',
   );
+  expect(banner?.querySelector('[data-slot="alert-description"] a')).toBeNull();
+  expect(banner?.querySelector('a')?.getAttribute('data-disabled')).toBeNull();
   await click('Study');
   expect(container.querySelector('[data-slot="alert"]')?.textContent).toContain(
     'To access the full experience, sign in.',

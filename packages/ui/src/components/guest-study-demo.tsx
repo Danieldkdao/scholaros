@@ -187,11 +187,13 @@ export const GuestStudyDemo = ({
         </header>
         <Alert role="region" aria-label="Sign in for the full experience">
           <AlertTitle>To access the full experience, sign in.</AlertTitle>
-          <AlertDescription className="flex flex-wrap items-center justify-between gap-3">
-            <p className="text-pretty">
-              Connect your courses, save your materials, and make this workspace
-              your own.
-            </p>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <AlertDescription>
+              <p className="text-pretty">
+                Connect your courses, save your materials, and make this
+                workspace your own.
+              </p>
+            </AlertDescription>
             {onSignIn ? (
               <Button variant="outline" size="sm" onClick={onSignIn}>
                 Open the full experience
@@ -208,7 +210,7 @@ export const GuestStudyDemo = ({
                 <ArrowRight aria-hidden="true" />
               </Button>
             )}
-          </AlertDescription>
+          </div>
         </Alert>
         <section className="flex flex-col gap-3" aria-label="About this demo">
           <div className="flex flex-wrap gap-2">
