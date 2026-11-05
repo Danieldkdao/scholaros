@@ -115,6 +115,9 @@ export const createMissionNavigator = (
       const destination = reload ? await readPageUrl(page) : url;
       await missionTraffic.waitForTurn(destination, signal, options.onWait);
       assertActive();
+      const beforeReloadGeneration = reload
+        ? await page.evaluate(() => performance.timeOrigin).catch(() => null)
+        : null;
       let response: Awaited<ReturnType<Page['goto']>> | undefined;
       try {
         response = reload
@@ -126,6 +129,12 @@ export const createMissionNavigator = (
           !/\bwaitForMainLoadState\(domcontentloaded\) timed out after \d+ms\b/.test(
             error.message,
           )
+        )
+          throw error;
+        if (
+          reload &&
+          (typeof beforeReloadGeneration !== 'number' ||
+            !Number.isFinite(beforeReloadGeneration))
         )
           throw error;
         const expected = academicPageIdentity(destination);
@@ -159,6 +168,16 @@ export const createMissionNavigator = (
         assertActive();
         const snapshot = await readPage(page, true);
         const after = await readPageUrl(page);
+        if (reload) {
+          const afterGeneration = await page.evaluate(
+            () => performance.timeOrigin,
+          );
+          if (
+            !Number.isFinite(afterGeneration) ||
+            afterGeneration <= beforeReloadGeneration!
+          )
+            throw error;
+        }
         if (
           snapshot.password ||
           snapshot.error ||

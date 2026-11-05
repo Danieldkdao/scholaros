@@ -383,18 +383,16 @@ it.each(['ready', 'foreign', 'blank', 'error', 'persistent-loading'])(
     fallback.ready.mockReset().mockImplementation(async () => {
       if (state === 'persistent-loading') throw failure;
     });
-    fallback.read
-      .mockReset()
-      .mockResolvedValue({
-        url: live,
-        text:
-          state === 'blank'
-            ? ''
-            : 'Biology course materials and current assignments',
-        links: [],
-        error: state === 'error',
-        password: false,
-      });
+    fallback.read.mockReset().mockResolvedValue({
+      url: live,
+      text:
+        state === 'blank'
+          ? ''
+          : 'Biology course materials and current assignments',
+      links: [],
+      error: state === 'error',
+      password: false,
+    });
     const page = {
       goto: vi.fn(async () => {
         throw failure;
@@ -424,3 +422,45 @@ it('does not misclassify a lifecycle timeout duration as an HTTP429 response', (
   ).toBe('timed-out');
   expect(scanFailureReason(new Error('HTTP 429'))).toBe('rate-limited');
 });
+
+it.each([true, false])(
+  'requires a new document generation before recovering a reload timeout, replaced=%s',
+  async (replaced) => {
+    const url = 'https://school.schoology.com/course/12345/materials';
+    const failure = new Error(
+      'waitForMainLoadState(domcontentloaded) timed out after 11989ms',
+    );
+    fallback.ready.mockReset().mockResolvedValue(undefined);
+    fallback.read
+      .mockReset()
+      .mockResolvedValue({
+        url,
+        text: 'Verified current course materials and assignments',
+        links: [],
+        error: false,
+        password: false,
+      });
+    const page = {
+      goto: vi.fn(async () => undefined),
+      reload: vi.fn(async () => {
+        throw failure;
+      }),
+      url: vi.fn(async () => url),
+      evaluate: vi
+        .fn()
+        .mockResolvedValueOnce(['https://cdn.reload-fixture.example'])
+        .mockResolvedValueOnce(100)
+        .mockResolvedValueOnce(replaced ? 200 : 100)
+        .mockResolvedValueOnce(['https://cdn.reload-fixture.example']),
+    };
+    const result = createMissionNavigator(
+      { setDomainPolicy: vi.fn() },
+      ['school.schoology.com'],
+      new AbortController().signal,
+    )(page as never, url);
+    if (replaced) await expect(result).resolves.toBeUndefined();
+    else await expect(result).rejects.toThrow('waitForMainLoadState');
+    expect(page.reload).toHaveBeenCalledOnce();
+    expect(page.evaluate).toHaveBeenCalledTimes(replaced ? 4 : 3);
+  },
+);
