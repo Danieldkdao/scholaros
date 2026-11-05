@@ -2,6 +2,20 @@ import type { HostCourseCollectionCoverageEvidence } from '../../courses/types';
 
 export const scanFailureReason = (error: unknown) => {
   const message = error instanceof Error ? error.message : '';
+  switch (message) {
+    case 'The current page changed before browser inference.':
+      return 'pre-inference-document-changed';
+    case 'The current page changed during course navigation.':
+      return 'post-navigation-document-changed';
+    case 'The page changed before inout extraction.':
+      return 'pre-extraction-document-changed';
+    case 'The page changed outside the verified course scope.':
+      return 'post-extraction-scope-changed';
+    case 'The read action reached an unexpected page.':
+      return 'read-action-destination-mismatch';
+    case 'The inout action reached an unexpected course page.':
+      return 'readback-destination-mismatch';
+  }
   if (
     /Cannot find (?:execution )?context|Execution context (?:was )?destroyed/i.test(
       message,

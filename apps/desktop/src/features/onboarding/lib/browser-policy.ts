@@ -284,7 +284,7 @@ export const isReadOnlyEmbed = (value: string): boolean => {
 
 // Identity is compared across navigation, snapshots, source validation, and
 // persistence, so query and fragment parts that distinguish pages are kept and
-// only credential-bearing parameters are removed.
+// credential parameters and narrowly verified Schoology navigation aliases are normalized.
 export const academicPageIdentity = (value: string): string | null => {
   const inspected = inspectUrl(value);
   if (!inspected || inspected.unsafe) return null;
@@ -294,6 +294,34 @@ export const academicPageIdentity = (value: string): string | null => {
     url.search = new URLSearchParams(
       [...url.searchParams].filter(([name]) => !hasCredentialName(name)),
     ).toString();
+  if (
+    url.hostname === 'schoology.com' ||
+    url.hostname.endsWith('.schoology.com')
+  ) {
+    if (url.hash.startsWith('#/') && url.hash.includes('?')) {
+      const split = url.hash.indexOf('?');
+      const params = new URLSearchParams(url.hash.slice(split + 1));
+      if (params.has('_k')) {
+        params.delete('_k');
+        url.hash = `${url.hash.slice(0, split)}${params.size ? `?${params}` : ''}`;
+      }
+    }
+    // Schoology's observed materials filter links navigate to these exact SPA aliases.
+    // Keep all other query, folder, page and fragment identity intact.
+    if (/^\/course\/\d+\/materials\/?$/.test(url.pathname)) {
+      const filters = url.searchParams.getAll('list_filter');
+      if (
+        filters.length === 1 &&
+        ['assignments', 'assessments', 'course_assessment'].includes(
+          filters[0]!,
+        ) &&
+        (!url.hash || url.hash === `#!filter_type=${filters[0]}`)
+      ) {
+        url.searchParams.delete('list_filter');
+        url.hash = `!filter_type=${filters[0]}`;
+      }
+    }
+  }
   url.hash = url.hash.slice(0, 512);
   return url.href.slice(0, 2_048);
 };

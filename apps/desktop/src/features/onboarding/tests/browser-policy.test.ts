@@ -175,6 +175,71 @@ describe('read-only protections survive generalization', () => {
   );
 });
 
+describe('Schoology materials identity', () => {
+  it.each(['assignments', 'assessments', 'course_assessment'])(
+    'equates the observed %s query link with its actual SPA filter destination',
+    (filter) => {
+      configureBrowserPolicy([]);
+      const base = `https://${schoology}/course/12345/materials`;
+      expect(academicPageIdentity(`${base}?list_filter=${filter}`)).toBe(
+        academicPageIdentity(`${base}#!filter_type=${filter}`),
+      );
+      expect(
+        academicPageIdentity(`${base}?list_filter=${filter}&f=42&page=2`),
+      ).toBe(
+        academicPageIdentity(`${base}?f=42&page=2#!filter_type=${filter}`),
+      );
+    },
+  );
+  it('preserves different courses, filters, folders, pagination, and other query identity', () => {
+    const canonical = academicPageIdentity(
+      `https://${schoology}/course/12345/materials?list_filter=assignments&f=42&page=2&view=details`,
+    );
+    for (const change of [
+      '/course/99999/materials?f=42&page=2&view=details#!filter_type=assignments',
+      '/course/12345/materials?f=42&page=2&view=details#!filter_type=assessments',
+      '/course/12345/materials?f=43&page=2&view=details#!filter_type=assignments',
+      '/course/12345/materials?f=42&page=3&view=details#!filter_type=assignments',
+      '/course/12345/materials?f=42&page=2&view=summary#!filter_type=assignments',
+    ]) {
+      expect(academicPageIdentity(`https://${schoology}${change}`)).not.toBe(
+        canonical,
+      );
+    }
+    expect(
+      academicPageIdentity(
+        `https://${schoology}/course/12345/materials#!filter_type=assignments&access_token=secret`,
+      ),
+    ).toBeNull();
+    expect(
+      academicPageIdentity(
+        `https://${portal}/course/12345/materials?list_filter=assignments`,
+      ),
+    ).not.toBe(
+      academicPageIdentity(
+        `https://${portal}/course/12345/materials#!filter_type=assignments`,
+      ),
+    );
+  });
+  it('ignores only Schoology transient router keys while keeping meaningful SPA routes', () => {
+    expect(academicPageIdentity(`https://${schoology}/home#/?_k=abc123`)).toBe(
+      academicPageIdentity(`https://${schoology}/home#/?_k=def456`),
+    );
+    expect(
+      academicPageIdentity(
+        `https://${schoology}/home#/courses/1?section=A&_k=abc123`,
+      ),
+    ).not.toBe(
+      academicPageIdentity(
+        `https://${schoology}/home#/courses/1?section=B&_k=def456`,
+      ),
+    );
+    expect(academicPageIdentity(`https://${portal}/home#/?_k=abc123`)).not.toBe(
+      academicPageIdentity(`https://${portal}/home#/?_k=def456`),
+    );
+  });
+});
+
 describe('page identity', () => {
   it('preserves the path, query and fragment that distinguish a page', () => {
     expect(

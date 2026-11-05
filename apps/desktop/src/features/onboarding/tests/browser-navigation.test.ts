@@ -446,6 +446,135 @@ describe('shared browser navigation adapters', () => {
     expect(stagehand.act).not.toHaveBeenCalled();
   });
 
+  it('accepts the actual observed Schoology assignment link after its equivalent SPA redirect', async () => {
+    const base = 'https://school.schoology.com/course/12345/materials';
+    const offered = {
+      id: '1',
+      label: 'Assignments',
+      url: `${base}?list_filter=assignments`,
+    };
+    document.body.innerHTML = `<a id="assignments-link" href="${offered.url}">Assignments</a>`;
+    vi.spyOn(HTMLElement.prototype, 'getClientRects').mockReturnValue([
+      { width: 100, height: 20 },
+    ] as never);
+    const page = createPage();
+    page.url.mockResolvedValue(base);
+    page.evaluate = vi.fn(
+      async (read: (argument: unknown) => unknown, argument: unknown) =>
+        read(argument),
+    ) as never;
+    const stagehand = {
+      observe: vi.fn(async () => ({ data: [action] })),
+      act: vi.fn(async () => {
+        page.url.mockResolvedValue(`${base}#!filter_type=assignments`);
+        return { data: { success: true } };
+      }),
+    };
+    const adapter = createBrowserNavigationAdapter('inout', {
+      page: page as never,
+      stagehand: stagehand as never,
+      hosts: ['school.schoology.com'],
+      signal: new AbortController().signal,
+      isCurrent: () => true,
+      assertReadable: () => undefined,
+      courseScope: {
+        courseUrl: base,
+        observedResourceRelationships: [
+          { parentUrl: base, targetUrl: offered.url },
+        ],
+      },
+    });
+    try {
+      await expect(
+        adapter.choose({
+          goal: 'Read assignments',
+          notes: '',
+          pages: [
+            {
+              url: base,
+              title: 'Materials',
+              text: 'All Materials Assignments',
+            },
+          ],
+          targets: [offered],
+        }),
+      ).resolves.toMatchObject({
+        operation: 'NAVIGATE',
+        target: '1',
+        navigationHandled: true,
+      });
+      expect(stagehand.act).toHaveBeenCalledOnce();
+    } finally {
+      document.body.replaceChildren();
+    }
+  });
+
+  it('never treats two rejected credential-bearing identities as a matching page', async () => {
+    const url =
+      'https://school.schoology.com/course/12345/materials#!filter_type=assignments&access_token=test-secret';
+    const page = createPage();
+    page.url.mockResolvedValue(url);
+    const stagehand = { extract: vi.fn() };
+    const adapter = createBrowserNavigationAdapter('inout', {
+      page: page as never,
+      stagehand: stagehand as never,
+      hosts: ['school.schoology.com'],
+      signal: new AbortController().signal,
+      isCurrent: () => true,
+      assertReadable: () => undefined,
+      courseScope: {
+        courseUrl: 'https://school.schoology.com/course/12345/materials',
+        observedResourceRelationships: [],
+      },
+    });
+    await expect(
+      adapter.extract({
+        kind: 'assignments',
+        goal: 'Read',
+        notes: '',
+        pages: [{ url, title: 'Assignments', text: 'Test' }],
+        targets: [],
+      }),
+    ).rejects.toThrow();
+    expect(stagehand.extract).not.toHaveBeenCalled();
+  });
+
+  it('extracts from the observed Schoology filter after its SPA query-to-fragment navigation', async () => {
+    const base = 'https://school.schoology.com/course/12345/materials';
+    const page = createPage();
+    page.url.mockResolvedValue(`${base}#!filter_type=assignments`);
+    const stagehand = {
+      extract: vi.fn(async () => ({
+        data: { assignments: [], coverage: 'complete' },
+      })),
+    };
+    const adapter = createBrowserNavigationAdapter('inout', {
+      page: page as never,
+      stagehand: stagehand as never,
+      hosts: ['school.schoology.com'],
+      signal: new AbortController().signal,
+      isCurrent: () => true,
+      assertReadable: () => undefined,
+      courseScope: { courseUrl: base, observedResourceRelationships: [] },
+    });
+    await expect(
+      adapter.extract({
+        kind: 'assignments',
+        goal: 'Read assignments',
+        notes: '',
+        pages: [
+          {
+            url: `${base}?list_filter=assignments`,
+            title: 'Assignments',
+            text: 'No assignments',
+          },
+        ],
+        targets: [],
+      }),
+    ).resolves.toMatchObject({ assignments: [] });
+    expect(stagehand.extract).toHaveBeenCalledOnce();
+  });
+
   it('extracts with the explicit page and runs the shared evidence validator', async () => {
     const page = createPage();
     const output = { assignments: [], coverage: 'complete' };
