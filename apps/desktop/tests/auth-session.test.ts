@@ -3,7 +3,13 @@ import { describe, expect, it, vi } from 'vitest';
 const fetchMock = vi.hoisted(() => vi.fn());
 const cookieMock = vi.hoisted(() => vi.fn());
 
-vi.mock('electron', () => ({ net: { fetch: fetchMock } }));
+vi.mock('electron', () => ({
+  net: { fetch: fetchMock },
+  app: {
+    commandLine: { hasSwitch: () => false },
+    getPath: () => '/tmp/scholaros-auth-session-tests',
+  },
+}));
 vi.mock('../src/lib/auth/client', () => ({
   authClient: { getCookie: cookieMock },
 }));
