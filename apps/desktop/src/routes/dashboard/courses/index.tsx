@@ -44,8 +44,16 @@ import { useBridgeAction } from '../../../hooks/use-bridge-action';
 
 const CoursesPage = () => {
   const { state } = useOnboardingState();
-  const { snapshot, loading, loadError, reload, refreshing, refresh, cancel } =
-    useCourses(state?.accountId ?? null);
+  const {
+    snapshot,
+    loading,
+    loadError,
+    reload,
+    refreshing,
+    refresh,
+    refreshError,
+    cancel,
+  } = useCourses(state?.accountId ?? null);
   const [creating, setCreating] = useState(false);
   const [showInactive, setShowInactive] = useState(false);
   const [query, setQuery] = useState('');
@@ -220,9 +228,9 @@ const CoursesPage = () => {
           Refreshing your courses…
         </p>
       )}
-      {error && (
+      {(error || refreshError) && (
         <Alert>
-          <AlertDescription>{error}</AlertDescription>
+          <AlertDescription>{error || refreshError}</AlertDescription>
         </Alert>
       )}
       {snapshot?.sources

@@ -1,3 +1,4 @@
+import { clientEnv } from '../../../data/env/client';
 import {
   courseRecordSchema,
   createCourseRecordSchema,
@@ -805,7 +806,9 @@ export const registerAcademicActions = async (service: {
             (offlineMethod) => offlineMethod === method,
           )
         )
-          throw new Error('Reconnect to use this feature.');
+          throw new Error(
+            `Reconnect to use this feature. ScholarOS is in saved offline mode because its API at ${new URL(clientEnv.VITE_API_URL).origin} could not be reached. Start that web service, then retry this action.`,
+          );
         const epoch = learningLifecycle.epoch;
         const accessRevision = accountAccessRevision;
         const requestController = new AbortController();

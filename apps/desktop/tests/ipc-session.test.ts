@@ -1509,7 +1509,20 @@ describe('academic service session boundaries', () => {
     await invoke('getCurrentUser');
 
     await expect(invoke('getCourses')).resolves.toMatchObject({ courses: [] });
-    await expect(invoke('refreshCourses')).rejects.toThrow('Reconnect');
+    const { clientEnv } = await import('../src/data/env/client');
+    const originalApiUrl = clientEnv.VITE_API_URL;
+    clientEnv.VITE_API_URL =
+      'http://private-user:private-password@localhost:3000/private?token=private-token';
+    try {
+      await expect(invoke('refreshCourses')).rejects.toThrow(
+        'API at http://localhost:3000 could not be reached',
+      );
+      await expect(invoke('refreshCourses')).rejects.not.toThrow(
+        /private-user|private-password|private-token/,
+      );
+    } finally {
+      clientEnv.VITE_API_URL = originalApiUrl;
+    }
     expect(mocks.startCourseRefresh).not.toHaveBeenCalled();
   });
 
