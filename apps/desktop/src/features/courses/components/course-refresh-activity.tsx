@@ -5,10 +5,12 @@ import {
   TraceCollapsible,
   TraceCollapsibleContent,
   TraceCollapsibleTrigger,
+  TraceDescription,
   TraceIcon,
   TraceLine,
   TraceTitle,
 } from '@scholaros/ui/components/trace';
+import { ScrollArea } from '@scholaros/ui/components/scroll-area';
 import { toast } from '@scholaros/ui/components/toast';
 import { cn } from '@scholaros/ui/lib/utils';
 import type { CourseRefreshActivity as CourseRefreshActivityData } from '../types';
@@ -56,55 +58,74 @@ export const CourseRefreshActivity = ({
       observed.current.set(run.id, run.status);
     }
   }, [activity]);
-  if (!activity.length) return null;
+  const latestRun = activity.at(-1);
+  if (!latestRun) return null;
+  const latestStatus = formatRefreshActivity(latestRun.status);
   return (
     <Trace aria-label="Refresh activity">
-      <TraceCollapsible defaultOpen>
+      <TraceCollapsible defaultOpen={false}>
         <TraceCollapsibleTrigger>
           <TraceLine className="text-base">
             <TraceIcon>
-              <Activity />
+              <latestStatus.Icon
+                className={cn(
+                  latestRun.status === 'running' && 'motion-safe:animate-spin',
+                )}
+              />
             </TraceIcon>
             <TraceTitle>Refresh activity</TraceTitle>
+            <TraceDescription className="text-base">
+              {latestStatus.label}
+            </TraceDescription>
           </TraceLine>
         </TraceCollapsibleTrigger>
-        <TraceCollapsibleContent className="flex max-h-64 flex-col gap-3 overflow-y-auto scroll-fade-y">
-          {activity.map((run) => {
-            const status = formatRefreshActivity(run.status);
-            return (
-              <div key={run.id} className="flex flex-col gap-2">
-                {run.events.map((event, index) => (
-                  <TraceLine
-                    key={`${run.id}-${index}`}
-                    className="animate-in fade-in slide-in-from-top-1 text-base duration-300 motion-reduce:animate-none"
-                  >
-                    <TraceIcon>
-                      <Activity />
-                    </TraceIcon>
-                    <span className="min-w-0 break-words">{event}</span>
-                  </TraceLine>
-                ))}
-                <TraceLine
-                  className="text-base"
-                  status={
-                    status.kind === 'running'
-                      ? 'running'
-                      : status.kind === 'failed' ||
-                          status.kind === 'sign-in-required'
-                        ? 'error'
-                        : undefined
-                  }
-                >
-                  <TraceIcon>
-                    <status.Icon
-                      className={cn(run.status === 'running' && 'animate-spin')}
-                    />
-                  </TraceIcon>
-                  <TraceTitle>{status.label}</TraceTitle>
-                </TraceLine>
-              </div>
-            );
-          })}
+        <TraceCollapsibleContent>
+          <ScrollArea
+            className="h-48 w-full"
+            role="region"
+            aria-label="Refresh activity history"
+          >
+            <div className="flex flex-col gap-3 pr-3">
+              {[...activity].reverse().map((run) => {
+                const status = formatRefreshActivity(run.status);
+                return (
+                  <div key={run.id} className="flex flex-col gap-2">
+                    {[...run.events].reverse().map((event, index) => (
+                      <TraceLine
+                        key={`${run.id}-${index}`}
+                        className="animate-in fade-in slide-in-from-top-1 text-base duration-300 motion-reduce:animate-none"
+                      >
+                        <TraceIcon>
+                          <Activity />
+                        </TraceIcon>
+                        <span className="min-w-0 break-words">{event}</span>
+                      </TraceLine>
+                    ))}
+                    <TraceLine
+                      className="text-base"
+                      status={
+                        status.kind === 'running'
+                          ? 'running'
+                          : status.kind === 'failed' ||
+                              status.kind === 'sign-in-required'
+                            ? 'error'
+                            : undefined
+                      }
+                    >
+                      <TraceIcon>
+                        <status.Icon
+                          className={cn(
+                            run.status === 'running' && 'animate-spin',
+                          )}
+                        />
+                      </TraceIcon>
+                      <TraceTitle>{status.label}</TraceTitle>
+                    </TraceLine>
+                  </div>
+                );
+              })}
+            </div>
+          </ScrollArea>
         </TraceCollapsibleContent>
       </TraceCollapsible>
     </Trace>

@@ -26,8 +26,12 @@ it('shows live actions, collapses, and toasts each terminal transition once', as
   await act(async () =>
     root.render(createElement(CourseRefreshActivity, { activity: [run] })),
   );
-  expect(node.textContent).toContain('Opening course page');
   const trigger = node.querySelector('button')!;
+  expect(trigger.getAttribute('aria-expanded')).toBe('false');
+  expect(trigger.textContent).toContain('Refreshing courses…');
+  await act(async () => trigger.click());
+  expect(trigger.getAttribute('aria-expanded')).toBe('true');
+  expect(node.textContent).toContain('Opening course page');
   await act(async () => trigger.click());
   expect(trigger.getAttribute('aria-expanded')).toBe('false');
   for (const status of [
@@ -104,4 +108,51 @@ it('shows live actions, collapses, and toasts each terminal transition once', as
   expect(toast.warning).toHaveBeenCalledTimes(3);
   await act(async () => root.unmount());
   node.remove();
+});
+
+it('keeps a long refresh history collapsed and opens a bounded newest-first log without dropping events', async () => {
+  const node = document.createElement('div');
+  document.body.append(node);
+  const root = createRoot(node);
+  const events = Array.from(
+    { length: 120 },
+    (_, index) => `Refresh event ${index}`,
+  );
+  try {
+    await act(async () =>
+      root.render(
+        createElement(CourseRefreshActivity, {
+          activity: [
+            {
+              id: 'older',
+              key: 'courses',
+              status: 'complete',
+              events: ['Older run event'],
+            },
+            { id: 'current', key: 'course-1', status: 'running', events },
+          ],
+        }),
+      ),
+    );
+    const trigger = node.querySelector('button')!;
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(node.querySelector('[data-slot="scroll-area"]')).toBeNull();
+    await act(async () => trigger.click());
+    const history = node.querySelector('[data-slot="scroll-area"]')!;
+    expect(history.className).toContain('h-48');
+    expect(history.textContent).toContain('Refresh event 0');
+    expect(history.textContent).toContain('Refresh event 119');
+    expect(history.querySelectorAll('[data-slot="trace-line"]')).toHaveLength(
+      123,
+    );
+    expect(history.textContent!.indexOf('Refresh event 119')).toBeLessThan(
+      history.textContent!.indexOf('Refresh event 0'),
+    );
+    expect(history.textContent!.indexOf('Refresh event 0')).toBeLessThan(
+      history.textContent!.indexOf('Older run event'),
+    );
+  } finally {
+    await act(async () => root.unmount());
+    node.remove();
+  }
 });
