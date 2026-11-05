@@ -365,9 +365,9 @@ export const useActivityHost = ({
   useLayoutEffect(() => {
     const element = slotElement;
     if (!element) return;
-    let timer: ReturnType<typeof setTimeout> | null = null;
+    let frame: number | null = null;
     const measure = () => {
-      timer = null;
+      frame = null;
       const clippingAncestors = getActivityClippingAncestors(element);
       const nextBounds = getActivityBounds(
         element.getBoundingClientRect(),
@@ -392,12 +392,12 @@ export const useActivityHost = ({
     };
     const scheduleMeasure = () => {
       if (isActivityOccluded(document)) {
-        if (timer) clearTimeout(timer);
+        if (frame !== null) window.cancelAnimationFrame(frame);
         measure();
         return;
       }
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(measure, 40);
+      // Scroll events must not postpone native positioning until scrolling stops.
+      if (frame === null) frame = window.requestAnimationFrame(measure);
     };
     measure();
     const clippingAncestorElements = getActivityClippingAncestors(element).map(
@@ -438,7 +438,7 @@ export const useActivityHost = ({
     };
     scaleQuery?.addEventListener('change', onScaleChange);
     return () => {
-      if (timer) clearTimeout(timer);
+      if (frame !== null) window.cancelAnimationFrame(frame);
       observer?.disconnect();
       overlayObserver?.disconnect();
       window.removeEventListener('resize', scheduleMeasure);
@@ -531,7 +531,7 @@ export const useActivityHost = ({
     void closeCurrentRun();
   }, [closeCurrentRun, geometry.bounds]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const activeRunId = runId;
     const bounds = geometry.bounds ?? lastBoundsRef.current;
     if (!activeRunId || !bounds) return;
@@ -554,12 +554,7 @@ export const useActivityHost = ({
           setErrorCode('feature-unavailable');
         });
     };
-    if (!visible) {
-      sendBounds();
-      return;
-    }
-    const timer = setTimeout(sendBounds, 40);
-    return () => clearTimeout(timer);
+    sendBounds();
   }, [bridge, geometry, presentation, runId]);
 
   useEffect(

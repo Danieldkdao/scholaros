@@ -41,6 +41,10 @@ describe('activity document policy', () => {
     expect(csp).toContain("frame-src 'self' about:");
     expect(document.body).toContain("frame-src 'none'");
     expect(document.body).toContain('sandbox="allow-scripts"');
+    expect(document.body).toContain('width:100%;height:100%;border:0');
+    expect(document.body).toContain(
+      'html,body{width:100%;height:100%;margin:0;overflow:hidden',
+    );
     expect(csp).toContain("form-action 'none'");
     expect(document.headers['Connection-Allowlist']).toBe(
       '();webrtc=block;redirects=block',

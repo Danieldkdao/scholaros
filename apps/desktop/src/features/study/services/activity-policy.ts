@@ -271,8 +271,8 @@ export const buildActivityDocument = (
     "frame-src 'self' about:",
     "frame-ancestors 'none'",
   ].join('; ');
-  const innerDocument = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${escapeHtmlAttribute(innerPolicy)}"><meta name="viewport" content="width=device-width, initial-scale=1"></head><body><main id="activity-root">${safeMarkup}</main><script>${bootstrapScript}</script></body></html>`;
-  const body = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head><body><iframe id="scholar-activity-frame" title="Learning activity" sandbox="allow-scripts" referrerpolicy="no-referrer" srcdoc="${escapeHtmlAttribute(innerDocument)}"></iframe><script>${relayScript}</script></body></html>`;
+  const innerDocument = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${escapeHtmlAttribute(innerPolicy)}"><meta name="viewport" content="width=device-width, initial-scale=1"><style>html,body{min-height:100%;margin:0}#activity-root{min-height:100%}</style></head><body><main id="activity-root">${safeMarkup}</main><script>${bootstrapScript}</script></body></html>`;
+  const body = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>html,body{width:100%;height:100%;margin:0;overflow:hidden;background:transparent}#scholar-activity-frame{display:block;width:100%;height:100%;border:0}</style></head><body><iframe id="scholar-activity-frame" title="Learning activity" sandbox="allow-scripts" referrerpolicy="no-referrer" srcdoc="${escapeHtmlAttribute(innerDocument)}"></iframe><script>${relayScript}</script></body></html>`;
   if (Buffer.byteLength(body, 'utf8') > maximumDocumentBytes)
     throw new Error('Activity document exceeds the 2 MiB runtime limit.');
 

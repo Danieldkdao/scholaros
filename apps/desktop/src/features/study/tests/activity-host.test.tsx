@@ -176,6 +176,7 @@ afterEach(async () => {
     node.remove();
   }
   document.body.replaceChildren();
+  vi.useRealTimers();
 });
 
 it('keeps one native run and one accepted attempt across repeated expand and collapse', async () => {
@@ -568,4 +569,42 @@ it('does not mount or reset an activity when persisted state cannot be read', as
   const node = await renderActivity(bridge);
   expect(node.textContent).toContain('This activity is unavailable');
   expect(bridge.mountActivity).not.toHaveBeenCalled();
+});
+
+it('moves the native view during continuous scrolling without waiting for a quiet period', async () => {
+  vi.useFakeTimers();
+  const { bridge } = createBridge();
+  const node = await renderActivity(bridge);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(100);
+  });
+  const slot = node.querySelector('[data-activity-runtime-slot]')!;
+  vi.mocked(bridge.updateActivityBounds).mockClear();
+  for (let index = 0; index < 6; index += 1) {
+    setRect(slot, rect(40, 100 + index * 10, 600, 420));
+    await act(async () => {
+      document.dispatchEvent(new Event('scroll'));
+      await vi.advanceTimersByTimeAsync(8);
+    });
+  }
+  expect(
+    vi
+      .mocked(bridge.updateActivityBounds)
+      .mock.calls.some(
+        ([input]) =>
+          input.visible && input.bounds.y >= 120 && input.bounds.y <= 150,
+      ),
+  ).toBe(true);
+  expect(bridge.mountActivity).toHaveBeenCalledOnce();
+});
+
+it('gives inline activities the full available width and a large responsive viewport', async () => {
+  const { bridge } = createBridge();
+  const node = await renderActivity(bridge);
+  expect(node.querySelector('[data-activity-host]')?.className).toContain(
+    'w-full',
+  );
+  const slot = node.querySelector('[data-activity-runtime-slot]')!;
+  expect(slot.className).toContain('h-[65dvh]');
+  expect(slot.className).toContain('min-h-105');
 });

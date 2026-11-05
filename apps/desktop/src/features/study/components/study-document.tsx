@@ -1,3 +1,4 @@
+import { cn } from '@scholaros/ui/lib/utils';
 import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import type { ComponentType, ReactNode } from 'react';
 import { Link } from '@tanstack/react-router';
@@ -429,7 +430,7 @@ export const StudyDocument = ({
           preserveScrollOnPrepend
           className="px-4 py-6 md:px-8"
         >
-          <MessageScrollerContent className="mx-auto w-full max-w-5xl gap-6">
+          <MessageScrollerContent className="mx-auto w-full gap-6">
             {snapshot.hasMoreBefore && (
               <div className="flex flex-col items-center gap-2">
                 <Button
@@ -476,7 +477,12 @@ export const StudyDocument = ({
                 <MessageScrollerItem
                   key={message.id}
                   messageId={message.id}
-                  className="mx-auto w-full max-w-4xl"
+                  className={cn(
+                    'mx-auto w-full',
+                    message.parts.some((part) => part.kind === 'activity')
+                      ? 'max-w-none'
+                      : 'max-w-4xl',
+                  )}
                 >
                   <StudyMessage
                     message={message}

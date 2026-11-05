@@ -197,7 +197,7 @@ const ActivityRuntimeSlot = ({
     ref={slotRef}
     className={cn(
       'min-h-0 w-full overflow-hidden rounded-lg bg-background',
-      expanded ? 'h-full min-h-[20rem]' : 'h-[22rem] min-h-[18rem]',
+      expanded ? 'h-full min-h-[20rem]' : 'h-[65dvh] min-h-105 max-h-170',
     )}
     role="region"
     aria-label={`Interactive activity: ${title}`}
@@ -400,7 +400,7 @@ export const ActivityHost = ({
     <>
       <div ref={inlineCardRef}>
         <Card
-          className={cn('min-w-0', className)}
+          className={cn('w-full min-w-0', className)}
           data-activity-host
           data-expanded={isExpanded}
           data-runtime={host.runId ?? 'closed'}
