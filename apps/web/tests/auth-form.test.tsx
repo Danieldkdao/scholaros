@@ -2,16 +2,23 @@
 import * as React from 'react';
 import { StrictMode } from 'react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react';
 import { AuthForm } from '../src/components/auth/auth-form';
 
 const state = vi.hoisted(() => ({
   query: '',
   replace: vi.fn(),
+  refresh: vi.fn(),
 }));
 vi.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(state.query),
-  useRouter: () => ({ replace: state.replace }),
+  useRouter: () => ({ replace: state.replace, refresh: state.refresh }),
 }));
 vi.mock('@scholaros/auth/client', () => ({
   authClient: {
@@ -60,4 +67,23 @@ test('ordinary web sign-in still redirects an authenticated browser user', () =>
   state.query = '';
   render(<AuthForm />);
   expect(state.replace).toHaveBeenCalledWith('/');
+});
+
+test('explicit demo account sign-in preserves the normal Electron callback without client credentials', async () => {
+  state.query =
+    'client_id=electron&state=aaaaaaaaaaaaaaaa&code_challenge=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+  const fetch = vi.fn(async () => Response.json({ ok: true }));
+  vi.stubGlobal('fetch', fetch);
+  render(<AuthForm demoAccountEnabled />);
+  fireEvent.click(screen.getByRole('button', { name: 'Use demo account' }));
+  await waitFor(() =>
+    expect(state.replace).toHaveBeenCalledWith(
+      expect.stringContaining('/auth/desktop?'),
+    ),
+  );
+  expect(fetch).toHaveBeenCalledWith(`/api/demo/sign-in?${state.query}`, {
+    method: 'POST',
+    credentials: 'same-origin',
+  });
+  expect(state.refresh).toHaveBeenCalledOnce();
 });
