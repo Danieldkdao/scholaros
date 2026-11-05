@@ -84,7 +84,7 @@ it('honors explicit exit and sign-in actions', async () => {
 it('calls only the fixed anonymous sample action and keeps live output separate', async () => {
   const fetch = vi.fn(async (_url: string, _options: RequestInit) =>
     Response.json({
-      text: 'A live explanation of a loop.',
+      text: '**A live explanation** of a loop.',
       model: 'muse-spark-1.3',
     }),
   );
@@ -105,6 +105,10 @@ it('calls only the fixed anonymous sample action and keeps live output separate'
   expect(options.credentials).toBe('omit');
   expect(options.body).toBe('{"action":"explain"}');
   expect(container.textContent).toContain('A live explanation of a loop.');
+  expect(
+    container.querySelector('[aria-label="Live AI response"] strong')
+      ?.textContent,
+  ).toBe('A live explanation');
   expect(container.textContent).toContain('Live response · muse-spark-1.3');
 });
 

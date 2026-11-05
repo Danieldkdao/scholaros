@@ -14,6 +14,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { Button } from './button';
+import { AiMarkdown } from './ai-markdown';
 import { Alert, AlertDescription, AlertTitle } from './alert';
 import { Badge } from './badge';
 import {
@@ -414,9 +415,7 @@ export const GuestStudyDemo = ({
                     <Badge variant="secondary">
                       Live response · {liveResult.model}
                     </Badge>
-                    <p className="whitespace-pre-wrap break-words text-pretty">
-                      {liveResult.text}
-                    </p>
+                    <AiMarkdown text={liveResult.text} />
                   </section>
                 )}
               </CardContent>
