@@ -137,6 +137,69 @@ beforeEach(() => {
 });
 
 describe('one protected walk of a connected resource', () => {
+  it.each([
+    'materials',
+    'other-course',
+    'filtered-materials',
+    'other-tab',
+  ] as const)(
+    'opens only the verified default Schoology course-entry redirect for child scans: %s',
+    async (destination) => {
+      const schoolHost = 'school.schoology.com';
+      const root = `https://${schoolHost}/course/12345`;
+      const materials = `${root}/materials`;
+      const child =
+        destination === 'other-course'
+          ? `https://${schoolHost}/course/99999/materials`
+          : destination === 'filtered-materials'
+            ? `${materials}?f=42`
+            : destination === 'other-tab'
+              ? `${root}/updates`
+              : materials;
+      const initial = { ...coursePage, url: materials, links: [] };
+      mocks.readPage
+        .mockReset()
+        .mockResolvedValueOnce(initial)
+        .mockResolvedValueOnce({ ...initial, url: child });
+      let navigations = 0;
+      const run = vi.fn(async () => undefined);
+      const result = scanConnection({
+        connection: {
+          ...connection,
+          host: schoolHost,
+          url: `https://${schoolHost}/home`,
+          kind: 'resource',
+        },
+        workspace,
+        hosts: [schoolHost],
+        notes: '',
+        courseUrl: root,
+        navigatePage: async () => {
+          mocks.page.url.mockResolvedValue(
+            ++navigations === 1 ? materials : child,
+          );
+        },
+        isCurrent: () => true,
+        signal: new AbortController().signal,
+        withCourseList: async (context) => {
+          await context.withCoursePage(root, run);
+          return true;
+        },
+      });
+      if (destination === 'materials') {
+        await expect(result).resolves.toMatchObject({ followed: true });
+        expect(run).toHaveBeenCalledWith(
+          expect.objectContaining({
+            observed: expect.objectContaining({ url: materials }),
+          }),
+        );
+      } else {
+        await expect(result).rejects.toThrow();
+        expect(run).not.toHaveBeenCalled();
+      }
+    },
+  );
+
   it('reports a safe initial read phase before collection callbacks begin', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     mocks.readPage

@@ -481,9 +481,31 @@ export const scanConnection = async <TFollowed = never>(
           await continuation.resume(openedPage, signal, isCurrent);
           await navigatePage(openedPage, url, continuation);
           const courseRoot = await readSnapshot();
+          const requestedIdentity = academicPageIdentity(url);
+          const actualIdentity = academicPageIdentity(courseRoot.url);
+          let defaultMaterialsRedirect = false;
           if (
-            (academicPageIdentity(courseRoot.url) ?? courseRoot.url) !==
-            (academicPageIdentity(url) ?? url)
+            requestedIdentity &&
+            actualIdentity &&
+            (connection.host === 'schoology.com' ||
+              connection.host.endsWith('.schoology.com'))
+          ) {
+            const requested = new URL(requestedIdentity);
+            const actual = new URL(actualIdentity);
+            // Schoology enrollment roots open their default materials tab.
+            // Other sections, tabs, folders, filters and origins remain distinct.
+            defaultMaterialsRedirect =
+              requested.origin === actual.origin &&
+              /^\/course\/\d+\/?$/.test(requested.pathname) &&
+              actual.pathname ===
+                `${requested.pathname.replace(/\/$/, '')}/materials` &&
+              requested.search === actual.search &&
+              requested.hash === actual.hash;
+          }
+          if (
+            !requestedIdentity ||
+            !actualIdentity ||
+            (actualIdentity !== requestedIdentity && !defaultMaterialsRedirect)
           )
             throw new Error('The selected course changed during refresh.');
           await run({
