@@ -983,6 +983,9 @@ export const loadLearningActionModules = async (): Promise<
                     input: {
                       objective: input.objective,
                       sources,
+                      ...(input.predictionFirst
+                        ? { predictionFirst: true }
+                        : {}),
                       ...(repairReason ? { repairReason } : {}),
                     },
                   }),

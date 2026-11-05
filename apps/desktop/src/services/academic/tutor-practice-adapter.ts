@@ -631,7 +631,33 @@ export const registerTutorPracticeActions = (
         courseId: input.courseId,
         preference: input.preference,
       }),
-    createActivity: dependencies.createActivity,
+    createActivity: async (context, input) => {
+      await requireSession(context, input.sessionId, input.courseId);
+      const personalContext = preparePersonalContext(context, {
+        courseId: input.courseId,
+      });
+      const predictionFirst =
+        personalContext?.preferences.some((preference) => {
+          if (
+            preference.type !== 'explicit-preference' ||
+            !('field' in preference.content) ||
+            preference.content.field !== 'example-style'
+          )
+            return false;
+          const value = preference.content.value;
+          return (
+            /\b(?:predict(?:ion)?|guess)\b/iu.test(value) &&
+            /\b(?:before|first)\b/iu.test(value) &&
+            !/\b(?:don['’]?t|do not|never|avoid|stop)\b(?:\s+\w+){0,3}\s+predict/iu.test(
+              value,
+            )
+          );
+        }) ?? false;
+      return dependencies.createActivity(context, {
+        ...input,
+        ...(predictionFirst ? { predictionFirst: true } : {}),
+      });
+    },
     offerPractice: async (context, input) => {
       const { candidate, snapshot } = await generateFreshPractice(
         context,

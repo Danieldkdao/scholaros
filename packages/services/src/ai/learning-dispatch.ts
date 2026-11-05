@@ -95,6 +95,7 @@ const sourceInputSchema = z.strictObject({
   objective: z.string().min(1).max(1000),
   sources: z.array(sourcePassageSchema).max(20),
   repairReason: activityRepairReasonSchema.optional(),
+  predictionFirst: z.boolean().optional(),
 });
 export type SourceInputSchema = z.infer<typeof sourceInputSchema>;
 export const practiceAnswerEvaluationInputSchema = z

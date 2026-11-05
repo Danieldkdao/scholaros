@@ -312,6 +312,7 @@ export type LearningEffectHandlers = {
     context: AuthorizedContext,
     input: LearningEffectPersistenceInput & {
       objective: string;
+      predictionFirst?: boolean;
     },
   ) => Promise<{ artifactId: string; versionId: string; attemptId: string }>;
   offerPractice: (
