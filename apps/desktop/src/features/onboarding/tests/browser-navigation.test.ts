@@ -128,6 +128,53 @@ describe('shared browser navigation adapters', () => {
     },
   );
 
+  it.each([
+    ['_self', true],
+    ['_blank', false],
+    ['assignment-window', false],
+  ] as const)(
+    'handles approved same-course links with target %s without opening other windows',
+    async (linkTarget, allowed) => {
+      document.body.innerHTML = `<a id="assignments-link" href="${target.url}" target="${linkTarget}">Assignments</a>`;
+      vi.spyOn(HTMLElement.prototype, 'getClientRects').mockReturnValue([
+        { width: 100, height: 20 },
+      ] as never);
+      const page = createPage();
+      page.evaluate = vi.fn(
+        async (read: (argument: unknown) => unknown, argument: unknown) =>
+          read(argument),
+      ) as never;
+      const stagehand = {
+        observe: vi.fn(async () => ({ data: [action] })),
+        act: vi.fn(async () => {
+          page.url.mockResolvedValue(target.url);
+          return { data: { success: true } };
+        }),
+      };
+      const adapter = createBrowserNavigationAdapter('inout', {
+        page: page as never,
+        stagehand: stagehand as never,
+        hosts: ['canvas.school.edu'],
+        signal: new AbortController().signal,
+        isCurrent: () => true,
+        assertReadable: () => undefined,
+        courseScope,
+      });
+      try {
+        const choice = await adapter.choose({
+          goal: 'Find assignments',
+          notes: '',
+          pages: [pageEvidence],
+          targets: [target],
+        });
+        expect(choice?.operation).toBe(allowed ? 'NAVIGATE' : 'BLOCKED');
+        expect(stagehand.act).toHaveBeenCalledTimes(allowed ? 1 : 0);
+      } finally {
+        document.body.replaceChildren();
+      }
+    },
+  );
+
   it('uses the bounded decision response and shared resource validation', async () => {
     const signal = new AbortController().signal;
     const adapter = createBrowserNavigationAdapter('decision', {

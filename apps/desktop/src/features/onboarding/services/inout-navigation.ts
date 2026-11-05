@@ -57,7 +57,7 @@ const inspectLink = async (page: Page, selector: string) =>
         style.visibility === 'hidden' ||
         anchor.closest('form') ||
         anchor.hasAttribute('download') ||
-        !!anchor.target
+        (!!anchor.target && anchor.target.toLowerCase() !== '_self')
       )
         return null;
       return { url: anchor.href };
