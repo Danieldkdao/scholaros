@@ -87,6 +87,13 @@ const config: ForgeConfig = {
       stagehandExtensionArchive,
     ],
     protocols: [{ name: 'ScholarOS', schemes: [desktopScheme] }],
+    osxSign: {
+      identity: '-',
+      identityValidation: false,
+      preAutoEntitlements: false,
+      preEmbedProvisioningProfile: false,
+      optionsForFile: () => ({ timestamp: 'none' }),
+    },
   },
   rebuildConfig: {},
   hooks: {

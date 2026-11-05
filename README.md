@@ -139,7 +139,7 @@ On Apple Silicon, open the result with:
 open apps/desktop/out/scholaros-darwin-arm64/scholaros.app
 ```
 
-Keep the web service running. Local packages are development builds, not signed/notarized distribution releases. To use your own hosted backend, deploy `apps/web`, configure its server variables and production OAuth callbacks, then set the desktop API URL to that HTTPS origin **before rebuilding**.
+Keep the web service running. Local macOS packages are ad hoc signed for development and are not notarized distribution releases; open the packaged app from Finder when granting microphone or other macOS permissions. To use your own hosted backend, deploy `apps/web`, configure its server variables and production OAuth callbacks, then set the desktop API URL to that HTTPS origin **before rebuilding**.
 
 ## Checks and troubleshooting
 
