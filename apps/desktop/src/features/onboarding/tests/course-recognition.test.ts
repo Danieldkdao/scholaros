@@ -39,12 +39,20 @@ const course = (label: string, path: string, context?: string) => ({
 
 describe('course recognition from observed content', () => {
   it('recognizes courses whose paths match no known product url shape', () => {
+    const host = 'learning.example.edu';
     const entries = discoveryEntriesFromPage(
-      connection(),
-      page(`https://${schoology}/`, 'Courses', [
-        course('Biology 101', '/course/12345'),
-        course('World History B', '/course/67890', 'Current course'),
-        course('Algebra II - Period 3', '/sections/4321'),
+      connection({ host, url: `https://${host}/`, name: 'Learning portal' }),
+      page(`https://${host}/`, 'Courses', [
+        { label: 'Biology 101', url: `https://${host}/learning/item/12345` },
+        {
+          label: 'World History B',
+          url: `https://${host}/my-classes/history`,
+          context: 'Current course',
+        },
+        {
+          label: 'Algebra II - Period 3',
+          url: `https://${host}/sections/4321`,
+        },
       ]),
     );
     expect(
@@ -52,6 +60,19 @@ describe('course recognition from observed content', () => {
         .filter((entry) => entry.role === 'course')
         .map((entry) => entry.label),
     ).toEqual(['Biology 101', 'World History B', 'Algebra II - Period 3']);
+  });
+
+  it('does not treat an unsupported Schoology resource route as an enrollment', () => {
+    const entries = discoveryEntriesFromPage(
+      connection(),
+      page(`https://${schoology}/`, 'Courses', [
+        course('Algebra II - Period 3', '/sections/4321'),
+      ]),
+    );
+    expect(
+      entries.find(({ label }) => label === 'Algebra II - Period 3')?.role,
+    ).toBe('resource');
+    expect(entries.filter(({ role }) => role === 'course')).toEqual([]);
   });
 
   it('uses nearby context when the label alone is a title', () => {
