@@ -6,6 +6,7 @@
   "exports": {
     "./mailjet": "./src/mailjet/index.ts",
     "./mailjet/emails/verification-emails": "./src/mailjet/emails/verification-emails.ts",
+    "./ai/demo-tutor": "./src/ai/demo-tutor.ts",
     "./ai/academic": "./src/ai/academic.ts",
     "./ai/schemas": "./src/ai/schemas.ts",
     "./ai/dictation": "./src/ai/dictation.ts",
