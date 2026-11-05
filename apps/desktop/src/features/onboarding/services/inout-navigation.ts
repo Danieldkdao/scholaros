@@ -172,6 +172,10 @@ export const createInoutNavigationAdapter = ({
       signal.throwIfAborted();
       if (!isCurrent()) throw new Error('Your session changed; sign in again.');
       assertReadable();
+      // An approved empty observation means no offered read link fits the goal.
+      // Host collection evidence still decides whether the scan is complete.
+      if (observed.data.length === 0)
+        return { operation: 'DONE', target: null };
       const action: Action | undefined = observed.data[0];
       if (
         !action ||

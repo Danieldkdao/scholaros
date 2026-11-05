@@ -299,6 +299,43 @@ describe('shared browser navigation adapters', () => {
     );
   });
 
+  it.each([false, true])(
+    'treats an empty observation as finished only while the page stays current, changed=%s',
+    async (changed) => {
+      const page = createPage();
+      const stagehand = {
+        observe: vi.fn(async () => {
+          if (changed) page.url.mockResolvedValue(target.url);
+          return { data: [] };
+        }),
+        act: vi.fn(),
+      };
+      const adapter = createBrowserNavigationAdapter('inout', {
+        page: page as never,
+        stagehand: stagehand as never,
+        signal: new AbortController().signal,
+        isCurrent: () => true,
+        hosts: ['canvas.school.edu'],
+        assertReadable: () => undefined,
+        courseScope,
+      });
+
+      const selection = adapter.choose({
+        goal: 'Find assignments',
+        notes: '',
+        pages: [pageEvidence],
+        targets: [target],
+      });
+      if (changed) await expect(selection).rejects.toThrow(/page changed/i);
+      else
+        await expect(selection).resolves.toEqual({
+          operation: 'DONE',
+          target: null,
+        });
+      expect(stagehand.act).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([
     { ...action, method: 'type' },
     { ...action, arguments: ['secret'] },
