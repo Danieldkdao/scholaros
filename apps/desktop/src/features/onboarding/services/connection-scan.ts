@@ -17,7 +17,7 @@ import {
   outcomeFromError,
   outcomeFromExploration,
 } from '../lib/discovery-outcomes';
-import { readPage, revealCourseNavigation } from './page-content';
+import { readPage, readPageUrl, revealCourseNavigation } from './page-content';
 import {
   downloadPdfFromObservedLink,
   type PdfDownloadResult,
@@ -187,6 +187,7 @@ export const scanConnection = async <TFollowed = never>(
       signal,
       isCurrent,
       assertReadable: () => releaseProtection?.assertReadable?.(),
+      readCurrentUrl: () => readPageUrl(openedPage),
       courseScope: courseUrl
         ? { courseUrl, observedResourceRelationships: [] }
         : null,
@@ -233,7 +234,7 @@ export const scanConnection = async <TFollowed = never>(
         .catch(() => undefined);
       signal.throwIfAborted();
       releaseProtection?.assertReadable?.();
-      assertMissionNavigation(await openedPage.url(), hosts);
+      assertMissionNavigation(await readPageUrl(openedPage), hosts);
       const snapshot = await readPage(openedPage, true);
       if (snapshot.password)
         throw new Error('This resource needs you to sign in again.');
@@ -504,7 +505,7 @@ export const scanConnection = async <TFollowed = never>(
       revealContent: async (from) => {
         signal.throwIfAborted();
         releaseProtection?.assertReadable?.();
-        if ((await openedPage.url()) !== from.url)
+        if ((await readPageUrl(openedPage)) !== from.url)
           await navigatePage(openedPage, from.url, continuation);
         await missionTraffic.waitForTurn(from.url, signal);
         if (!isCurrent())

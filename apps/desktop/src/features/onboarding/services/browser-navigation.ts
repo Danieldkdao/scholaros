@@ -29,6 +29,7 @@ export type BrowserNavigationDependencies = {
   signal: AbortSignal;
   isCurrent: () => boolean;
   assertReadable: () => void;
+  readCurrentUrl?: () => Promise<string>;
   onWait?: (milliseconds: number) => void;
   courseScope?: CourseNavigationScope | null;
 };
@@ -60,6 +61,8 @@ export const createBrowserNavigationAdapter = (
   dependencies: BrowserNavigationDependencies,
 ): CourseScopedBrowserNavigationAdapter => {
   let courseScope = dependencies.courseScope ?? null;
+  const readCurrentUrl =
+    dependencies.readCurrentUrl ?? (() => dependencies.page.url());
   const adapter = (() => {
     switch (mode) {
       case 'decision':
@@ -70,7 +73,7 @@ export const createBrowserNavigationAdapter = (
   })();
   const assertCurrentPage = async (pages: AgentRequestSchema['pages']) => {
     const observedUrl = pages.at(-1)?.url;
-    const currentUrl = await dependencies.page.url();
+    const currentUrl = await readCurrentUrl();
     const observedIdentity = observedUrl
       ? academicPageIdentity(observedUrl)
       : null;
@@ -123,7 +126,7 @@ export const createBrowserNavigationAdapter = (
           ...input,
           targets,
         });
-        const currentAfter = await dependencies.page.url();
+        const currentAfter = await readCurrentUrl();
         if (
           academicPageIdentity(currentAfter) !==
           academicPageIdentity(currentUrl)
@@ -152,7 +155,7 @@ export const createBrowserNavigationAdapter = (
         const selected = targets.find((target) => target.id === choice.target);
         if (choice.operation === 'NAVIGATE' && !selected)
           return { operation: 'BLOCKED', target: null };
-        const currentAfter = await dependencies.page.url();
+        const currentAfter = await readCurrentUrl();
         if (
           choice.navigationHandled &&
           (!selected ||
@@ -182,7 +185,7 @@ export const createBrowserNavigationAdapter = (
       try {
         const scope = await assertCourseExtractionScope(request);
         const result = await adapter.extract(request);
-        const currentAfter = await dependencies.page.url();
+        const currentAfter = await readCurrentUrl();
         if (
           academicPageIdentity(currentAfter) !==
             academicPageIdentity(scope.currentUrl) ||

@@ -1,6 +1,6 @@
 import { configureBrowserPolicy } from '../lib/browser-policy';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { readPage } from '../services/page-content';
+import { readPage, readPageUrl } from '../services/page-content';
 
 const snapshotFor = (url: string) => ({
   evaluate: vi.fn(async () => ({
@@ -81,3 +81,37 @@ it('rejects a rate-limit page before it can be treated as academic evidence', as
 });
 
 beforeEach(() => configureBrowserPolicy(['logout']));
+
+it('reads the current DOM URL without consulting Stagehand cached metadata', async () => {
+  const page = {
+    evaluate: vi.fn(async () => 'https://school.example/home#/courses'),
+    url: vi.fn(async () => 'https://school.example/old'),
+    waitForLoadState: vi.fn(),
+  };
+  await expect(readPageUrl(page as never)).resolves.toBe(
+    'https://school.example/home#/courses',
+  );
+  expect(page.url).not.toHaveBeenCalled();
+});
+it('retries one transient document replacement after bounded DOM settling', async () => {
+  const page = {
+    evaluate: vi
+      .fn()
+      .mockRejectedValueOnce(new Error('Execution context destroyed'))
+      .mockResolvedValueOnce('https://school.example/home'),
+    waitForLoadState: vi.fn(async () => undefined),
+  };
+  await expect(readPageUrl(page as never)).resolves.toBe(
+    'https://school.example/home',
+  );
+  expect(page.evaluate).toHaveBeenCalledTimes(2);
+  expect(page.waitForLoadState).toHaveBeenCalledWith('domcontentloaded', 1500);
+});
+it('does not loop indefinitely when the live document remains unavailable', async () => {
+  const page = {
+    evaluate: vi.fn().mockRejectedValue(new Error('Page closed')),
+    waitForLoadState: vi.fn(async () => undefined),
+  };
+  await expect(readPageUrl(page as never)).rejects.toThrow('Page closed');
+  expect(page.evaluate).toHaveBeenCalledTimes(2);
+});

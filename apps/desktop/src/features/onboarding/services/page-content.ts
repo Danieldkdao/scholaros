@@ -3,6 +3,20 @@ import { readPageEvidence } from './page-evidence';
 import type { Page } from '@browserbasehq/stagehand';
 import { academicPageIdentity, isReadNavigation } from '../lib/browser-policy';
 
+// Stagehand's document URL can lag behind redirects and SPA navigation.
+// Read the same live location that supplies page evidence instead.
+export const readPageUrl = async (page: Page): Promise<string> => {
+  try {
+    return await page.evaluate(() => location.href);
+  } catch {
+    // A redirect can replace the execution context between these two reads.
+    await page
+      .waitForLoadState('domcontentloaded', 1500)
+      .catch(() => undefined);
+    return page.evaluate(() => location.href);
+  }
+};
+
 export const readPage = async (page: Page, fullContent = false) => {
   const snapshot = await page.evaluate((readAll: boolean) => {
     const content = readAll

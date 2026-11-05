@@ -407,6 +407,63 @@ describe('shared browser navigation adapters', () => {
     );
   });
 
+  it('uses the live document URL when Stagehand still caches the pre-redirect URL', async () => {
+    const page = createPage();
+    page.url.mockResolvedValue('https://canvas.school.edu/home#previous-shell');
+    const stagehand = {
+      observe: vi.fn(),
+      act: vi.fn(),
+      extract: vi.fn(async () => ({
+        data: { assignments: [], coverage: 'complete' },
+      })),
+    };
+    const readCurrentUrl = vi.fn(async () => pageEvidence.url);
+    const adapter = createBrowserNavigationAdapter('inout', {
+      page: page as never,
+      stagehand: stagehand as never,
+      signal: new AbortController().signal,
+      isCurrent: () => true,
+      hosts: ['canvas.school.edu'],
+      assertReadable: () => undefined,
+      courseScope,
+      readCurrentUrl,
+    });
+    await expect(
+      adapter.extract({
+        kind: 'assignments',
+        goal: 'Read assignments',
+        notes: '',
+        pages: [pageEvidence],
+      }),
+    ).resolves.toEqual({ assignments: [], coverage: 'complete' });
+    expect(stagehand.extract).toHaveBeenCalledOnce();
+    expect(readCurrentUrl).toHaveBeenCalledTimes(3);
+  });
+
+  it('still rejects when the live document genuinely changed even if Stagehand caches the old matching URL', async () => {
+    const page = createPage();
+    const stagehand = { observe: vi.fn(), act: vi.fn(), extract: vi.fn() };
+    const adapter = createBrowserNavigationAdapter('inout', {
+      page: page as never,
+      stagehand: stagehand as never,
+      signal: new AbortController().signal,
+      isCurrent: () => true,
+      hosts: ['canvas.school.edu'],
+      assertReadable: () => undefined,
+      courseScope,
+      readCurrentUrl: async () => 'https://canvas.school.edu/courses/2',
+    });
+    await expect(
+      adapter.extract({
+        kind: 'assignments',
+        goal: 'Read assignments',
+        notes: '',
+        pages: [pageEvidence],
+      }),
+    ).rejects.toThrow('The current page changed before browser inference.');
+    expect(stagehand.extract).not.toHaveBeenCalled();
+  });
+
   it('rejects extraction when the explicit page no longer matches its evidence', async () => {
     const page = createPage();
     page.url.mockReset();

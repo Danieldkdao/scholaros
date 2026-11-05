@@ -27,6 +27,7 @@ vi.mock('../services/background-page', () => ({
 }));
 vi.mock('../services/page-content', () => ({
   readPage: mocks.readPage,
+  readPageUrl: () => mocks.page.url(),
   revealCourseNavigation: vi.fn(async () => 'not-found'),
 }));
 vi.mock('../services/page-readiness', () => ({
@@ -137,13 +138,11 @@ beforeEach(() => {
 
 describe('one protected walk of a connected resource', () => {
   it('explains an inconclusive readable page without pretending an exception occurred', async () => {
-    mocks.readPage
-      .mockReset()
-      .mockResolvedValue({
-        ...listPage,
-        text: 'private student data',
-        links: [],
-      });
+    mocks.readPage.mockReset().mockResolvedValue({
+      ...listPage,
+      text: 'private student data',
+      links: [],
+    });
     mocks.accountRequest.mockResolvedValue({ courseTargetIds: [] });
     const result = await scan();
     expect(result.outcome).toBe('inconclusive');
