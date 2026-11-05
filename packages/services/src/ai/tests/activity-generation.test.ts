@@ -224,3 +224,20 @@ it('reports only the generation stage and bounded token metadata when output is 
     warn.mockRestore();
   }
 });
+
+it('requires the existing host SDK save and restore contract for generated controls', async () => {
+  await generateActivityCandidate(
+    { objective: 'Explore osmosis.', sourceReferences: [] },
+    new AbortController().signal,
+  );
+  const request = mocks.generateText.mock.calls[0]?.[0];
+  expect(request.instructions).toContain('ScholarActivity.onRestore');
+  expect(request.instructions).toContain('ScholarActivity.proposeState');
+  expect(request.instructions).toContain('ScholarActivity.readOnly');
+  expect(request.instructions).toContain(
+    'preserve valid zero and false values',
+  );
+  expect(request.instructions).toContain(
+    'Do not checkpoint defaults during restore',
+  );
+});

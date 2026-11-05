@@ -879,3 +879,81 @@ it('rejects malformed or oversized state and fingerprints the exact bundled byte
     createHash('sha256').update(activityRuntimeSdkSource, 'utf8').digest('hex'),
   );
 });
+
+it('restores a changed simulation control and visualization in a fresh runtime without checkpointing defaults', () => {
+  const mountControl = (runtime: ReturnType<typeof runSdk>) => {
+    const input = runtime.document.createElement('input');
+    input.type = 'range';
+    input.min = '0';
+    input.max = '10';
+    input.value = '0';
+    const output = runtime.document.createElement('output');
+    runtime.document.body.append(input, output);
+    const render = () => {
+      output.textContent = `External concentration ${input.value}`;
+    };
+    runtime.window.ScholarActivity.onRestore((state) => {
+      const saved = state as { inputs?: { outside?: number } } | null;
+      input.value = String(
+        typeof saved?.inputs?.outside === 'number' ? saved.inputs.outside : 0,
+      );
+      render();
+    });
+    input.addEventListener('input', () => {
+      render();
+      if (!runtime.window.ScholarActivity.readOnly)
+        runtime.window.ScholarActivity.proposeState(
+          runtime.window.JSON.parse(
+            JSON.stringify({
+              version: 1,
+              inputs: { outside: Number(input.value) },
+            }),
+          ),
+        );
+    });
+    return { input, output };
+  };
+  const first = runSdk();
+  sendHostMessage(first.window, {
+    kind: 'restore',
+    ...runIdentity,
+    sequence: 1,
+    stateRevision: 0,
+    contentDigest,
+    state: {},
+    theme: {},
+  });
+  const initialControl = mountControl(first);
+  initialControl.input.value = '8';
+  initialControl.input.dispatchEvent(new first.window.Event('input'));
+  const proposal = first.messages.at(-1)!;
+  expect(proposal).toMatchObject({
+    kind: 'state-proposed',
+    payload: { state: { version: 1, inputs: { outside: 8 } } },
+  });
+  sendHostMessage(first.window, {
+    kind: 'state-acknowledged',
+    ...runIdentity,
+    sequence: 2,
+    acknowledgedSequence: proposal.sequence,
+    stateRevision: 1,
+  });
+  expect(first.window.ScholarActivity.acknowledgedRevision).toBe(1);
+  const reopened = runSdk();
+  sendHostMessage(reopened.window, {
+    kind: 'restore',
+    ...runIdentity,
+    runId: 'run-2',
+    sequence: 1,
+    stateRevision: 1,
+    contentDigest,
+    state: (proposal.payload as { state: unknown }).state,
+    theme: {},
+  });
+  const resumedControl = mountControl(reopened);
+  expect(resumedControl.input.value).toBe('8');
+  expect(resumedControl.output.textContent).toBe('External concentration 8');
+  expect(
+    reopened.messages.filter((message) => message.kind === 'state-proposed'),
+  ).toHaveLength(0);
+});
