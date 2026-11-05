@@ -1,6 +1,6 @@
 # Windows package and hardware verification
 
-**Status:** source review only. No Windows device or VM was used for this packet; macOS results do not close Windows acceptance. Record every actual laptop run in `docs/release-verification.md`, with its Windows build, package hash, test profile, commands, result, and evidence path.
+**Status:** source review only. No Windows device or VM was used for this packet; macOS results do not close Windows acceptance. Record every actual laptop run with its Windows build, package hash, test profile, commands, result, and evidence path.
 
 ## Source-review baseline
 

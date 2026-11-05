@@ -4,7 +4,7 @@ A desktop study workspace that turns your course materials into focused, interac
 
 Built for the [Meta Global AI Developer Hackathon](https://cerebralvalley.ai/e/meta-ai-developer-hackathon).
 
-[Run locally](#run-locally) · [Try a study session](#try-a-study-session) · [Build the desktop app](#build-the-desktop-app)
+[Try the demo](#try-the-demo--no-account-needed) · [Full setup](#run-locally) · [Try a study session](#try-a-study-session) · [Build the desktop app](#build-the-desktop-app)
 
 ## Features
 
@@ -14,6 +14,31 @@ Built for the [Meta Global AI Developer Hackathon](https://cerebralvalley.ai/e/m
 - **Interactive learning:** generated simulations, graphs, quizzes, and practice exams alongside the conversation, with an expanded activity panel and saved history.
 - **Help that supports learning:** concept explanations and bounded hints for active coursework, with review of graded work only when current evidence permits it; ScholarOS never submits schoolwork.
 - **An adaptive workspace:** learning preferences, Today recommendations, optional grade context, editable microphone dictation, and configurable notifications.
+
+## Try the demo — no account needed
+
+Choose **Try demo** on the desktop sign-in screen, or open `/demo` on the web server. The guided walkthrough uses clearly labeled sample courses, editable temporary notes, a working Python exercise, and a quiz. No account, database URL, OAuth setup, or sign-in is required for the public walkthrough. Its sample content is separate from the optional live AI result.
+
+Use Node.js 24+ and pnpm 12.15.0, then clone and install:
+
+```sh
+git clone https://github.com/Danieldkdao/scholaros.git
+cd scholaros
+pnpm install --frozen-lockfile
+```
+
+Create `apps/web/.env.local` with the following values. The API key enables live sample tutoring; leave it out to explore the prepared activities without model calls:
+
+```dotenv
+DEMO_API_ENABLED=1
+META_API_KEY=your-meta-model-api-key
+META_MODEL=muse-spark-1.3
+META_DEMO_LOGGING=1
+```
+
+Start the web server with `pnpm dev:web` and visit `http://localhost:3000/demo`. The demo endpoint accepts only fixed sample lesson actions and has bounded requests, output, concurrency, and timeouts; it cannot read accounts, uploaded files, grades, or connected courses. Real account routes and personal AI features continue to require normal authentication. Leave `DEMO_API_ENABLED=0` when public sample inference is not wanted.
+
+With `META_DEMO_LOGGING=1`, the terminal prints `[Meta API]` records containing the actual endpoint, model, request ID, HTTP status, duration, and reported token counts. Prompts, responses, headers, credentials, and student content are excluded. A missing token count is reported as `null`. Restart the web server after changing these values; never put the API key in desktop or public client environment files.
 
 ## How it works
 
@@ -123,7 +148,7 @@ The explicit environment loader supplies the desktop API URL to both Electron an
 5. Ask: “Help me understand what changes a pendulum's period, then make an interactive comparison and a short practice quiz.” Explore the activity, expand it, and inspect its source references.
 6. Return to **Study** to revisit saved sessions. Add your own authorized LMS connection in **Connections** when you want course syncing; enable grade access, dictation, or notifications only when you want them.
 
-There is no published desktop download or hosted study demo at present; the local desktop is the reproducible way to try this version. [The longer demo runbook](docs/demo-script.md) includes a synthetic-data scenario and expected checks, not a claim that every native journey has been verified.
+The public walkthrough is available locally at [localhost:3000/demo](http://localhost:3000/demo); the full study workspace runs in the desktop app. There is no published installer or hosted demo URL. Use sample materials when recording; [the demo runbook](docs/demo-script.md) includes a synthetic-data scenario.
 
 ## Build the desktop app
 
@@ -141,7 +166,6 @@ open apps/desktop/out/scholaros-darwin-arm64/scholaros.app
 
 Keep the web service running. Local macOS packages are ad hoc signed for development and are not notarized distribution releases; open the packaged app from Finder when granting microphone or other macOS permissions. To use your own hosted backend, deploy `apps/web`, configure its server variables and production OAuth callbacks, then set the desktop API URL to that HTTPS origin **before rebuilding**.
 
-
 ### Temporary sign-in without Keychain
 
 For a temporary desktop session that avoids Keychain access, quit the running desktop and launch the **newly built package** explicitly:
@@ -154,22 +178,6 @@ Normal browser sign-in and server authorization still apply. Desktop credentials
 
 For UI development, `pnpm exec dotenv -e apps/desktop/.env -- pnpm dev:desktop:session` enables the same temporary mode. On macOS, complete browser sign-in in the packaged app: generic development `Electron.app` instances can share a URL-scheme identity with old worktrees, sending the callback to the wrong process. A callback must return to the same instance that started sign-in.
 
-## Judge demo and API-call recording
-
-Choose **Try demo** on the desktop sign-in screen, or open `/demo` on the web server. The guided walkthrough uses clearly labeled sample courses, editable temporary notes, a working Python exercise, and a quiz. No account, database URL, OAuth setup, or sign-in is required for the public walkthrough. Its sample content is separate from the optional live AI result.
-
-To enable real sample tutoring in the demo, the web server needs only these server-side values:
-
-```dotenv
-META_API_KEY=your-meta-model-api-key
-DEMO_API_ENABLED=1
-META_DEMO_LOGGING=1
-```
-
-Start the web server with `pnpm dev:web` and visit `http://localhost:3000/demo`. The demo endpoint accepts only fixed sample lesson actions and has bounded requests, output, concurrency, and timeouts; it cannot read accounts, uploaded files, grades, or connected courses. Real account routes and personal AI features continue to require normal authentication. Leave `DEMO_API_ENABLED=0` when public sample inference is not wanted.
-
-With `META_DEMO_LOGGING=1`, the terminal prints `[Meta API]` records containing the actual endpoint, model, request ID, HTTP status, duration, and reported token counts. Prompts, responses, headers, credentials, and student content are excluded. A missing token count is reported as `null`. Restart the web server after changing these values; never put the API key in desktop or public client environment files.
-
 ## Checks and troubleshooting
 
 ```sh
@@ -180,7 +188,7 @@ pnpm typecheck
 pnpm lint
 ```
 
-Ordinary tests use fixtures. Live-model, packaged-runtime, and hardware checks have separate opt-in requirements; see [release verification](docs/release-verification.md) for their scope and remaining manual checks.
+Ordinary tests use fixtures. Live-model and packaged-runtime checks require explicit opt-in; microphone, notifications, and Windows behavior also need device testing.
 
 | Problem                                             | Check                                                                                                                                                                                           |
 | --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -197,4 +205,4 @@ Ordinary tests use fixtures. Live-model, packaged-runtime, and hardware checks h
 - `packages/services` — Meta inference, learning contracts, and email services.
 - `packages/auth`, `packages/cloud-db`, `packages/env`, `packages/ui` — shared authentication, PostgreSQL schema, environment validation, and UI primitives.
 
-Read the [product specification](docs/SPEC.md), [master plan](docs/master-plan.md), and [verification record](docs/release-verification.md) for deeper context. This release is English-first and macOS-first; live LMS, signed-in native flows, microphone/notification delivery, and Windows still need the documented manual checks.
+Read the [product specification](docs/SPEC.md), [demo runbook](docs/demo-script.md), and [Windows checklist](docs/windows-verification.md) for deeper context. This release is English-first and macOS-first. Live LMS content varies by source; partially verified collections remain labeled, and native permissions and Windows need device-specific checks.

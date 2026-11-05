@@ -2,7 +2,7 @@
 
 ## Product purpose
 
-ScholarOS is a desktop learning workspace that uses a student's authorized course context to help them understand one course at a time. The web application provides authentication and the bounded inference API; it does not mirror the desktop product. This document states intended product behavior, not release verification; actual evidence and open gates belong in `docs/release-verification.md`.
+ScholarOS is a desktop learning workspace that uses a student's authorized course context to help them understand one course at a time. The web application provides authentication and the bounded inference API; it does not mirror the desktop product. This document states intended product behavior, not release verification; record observed behavior and remaining verification gaps with each release.
 
 ## Product surface
 
@@ -70,7 +70,7 @@ The product does not impose an age gate. That is a product choice, not a legal-c
 
 ## Platform and release boundaries
 
-macOS packaging must verify the actual app bundle, native SQLite migration/FTS, PDF.js and worker resources, Stagehand extension resources, SDK/worklet assets, runtime versions, actual fuse wire, signed/notarized state when required, and a reproducible test-owned demo profile. Windows requires a separate real-device checklist for paths, named pipes/ACLs, browser assets, native modules, installer/shortcuts, microphone, notifications, and package lifecycle; macOS verification cannot close it. See `docs/windows-verification.md` and `docs/release-verification.md` for evidence and gates.
+macOS packaging must verify the actual app bundle, native SQLite migration/FTS, PDF.js and worker resources, Stagehand extension resources, SDK/worklet assets, runtime versions, actual fuse wire, signed/notarized state when required, and a reproducible test-owned demo profile. Windows requires a separate real-device checklist for paths, named pipes/ACLs, browser assets, native modules, installer/shortcuts, microphone, notifications, and package lifecycle; macOS verification cannot close it. See `docs/windows-verification.md` for device-specific checks.
 
 Hackathon eligibility, waiver, video, repository visibility, source/asset/model rights, and submission rules must be checked against the organizer's current official materials before any external submission. Prepare demo materials only until the complete rules and required human approvals are available.
 

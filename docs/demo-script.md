@@ -1,6 +1,6 @@
 # Reproducible science learning demo
 
-**Status:** prepared runbook only; it has not been run against the combined product. Expected behavior below is an acceptance check, not an observed result. Record actual outcomes in `docs/release-verification.md` only after the integrated app and configured service are available.
+**Status:** prepared runbook only; it has not been run against the combined product. Expected behavior below is an acceptance check, not an observed result. Record actual outcomes only after testing the integrated app and configured service.
 
 ## Scenario
 
