@@ -35,16 +35,9 @@ import {
   PasswordInputStrengthChecker,
 } from '@scholaros/ui/components/password-input';
 
-export const AuthForm = ({
-  signup = false,
-  demoAccountEnabled = false,
-}: {
-  signup?: boolean;
-  demoAccountEnabled?: boolean;
-}) => {
+export const AuthForm = ({ signup = false }: { signup?: boolean }) => {
   const router = useRouter();
   const params = useSearchParams();
-  const [demoBusy, setDemoBusy] = useState(false);
   const [socialProvider, setSocialProvider] = useState<
     'google' | 'github' | null
   >(null);
@@ -61,10 +54,7 @@ export const AuthForm = ({
   });
   const { data: session, isPending } = authClient.useSession();
   const busy =
-    isPending ||
-    demoBusy ||
-    socialProvider !== null ||
-    form.formState.isSubmitting;
+    isPending || socialProvider !== null || form.formState.isSubmitting;
   const next = getAuthRedirect(params);
   const desktopQuery = getDesktopAuthQuery(params);
   const isDesktopRequest = desktopQuery !== null;
@@ -98,29 +88,6 @@ export const AuthForm = ({
       toast.error('We couldn’t reach account services. Please try again.');
     } finally {
       setSocialProvider(null);
-    }
-  };
-
-  const demoSignIn = async () => {
-    if (demoBusy) return;
-    setDemoBusy(true);
-    try {
-      const response = await fetch(`/api/demo/sign-in?${params.toString()}`, {
-        method: 'POST',
-        credentials: 'same-origin',
-      });
-      if (!response.ok) {
-        toast.error(
-          'Demo account sign-in is unavailable. You can still explore the public demo.',
-        );
-        return;
-      }
-      router.replace(next);
-      router.refresh();
-    } catch {
-      toast.error('We couldn’t reach account services. Please try again.');
-    } finally {
-      setDemoBusy(false);
     }
   };
 
@@ -232,24 +199,6 @@ export const AuthForm = ({
             </LoadingSwap>
           </Button>
         </div>
-        {!signup && demoAccountEnabled && (
-          <Button
-            type="button"
-            variant="secondary"
-            disabled={busy}
-            aria-busy={demoBusy}
-            className="mt-3 w-full"
-            onClick={() => void demoSignIn()}
-          >
-            <LoadingSwap isLoading={demoBusy}>Use demo account</LoadingSwap>
-          </Button>
-        )}
-        <Link
-          href="/demo"
-          className="mt-3 block text-center text-sm text-muted-foreground underline underline-offset-4"
-        >
-          Explore without an account
-        </Link>
         <div className="flex items-center gap-2 py-5">
           <Separator className="h-px flex-1" />
           <span className="shrink-0 text-base text-muted-foreground">
