@@ -241,3 +241,45 @@ it('requires the existing host SDK save and restore contract for generated contr
     'Do not checkpoint defaults during restore',
   );
 });
+
+it('withholds current-scenario outcomes until a learner predicts when the host requests prediction-first teaching', async () => {
+  await generateActivityCandidate(
+    {
+      objective: 'Explore osmosis.',
+      sourceReferences: [],
+      predictionFirst: true,
+    },
+    new AbortController().signal,
+  );
+  const request = mocks.generateText.mock.calls[0]?.[0];
+  expect(request.instructions).toContain(
+    'Require an explicit learner prediction before enabling Reveal',
+  );
+  expect(request.instructions).toContain(
+    'accessibleExplanation must describe only the controls and the prediction question',
+  );
+  expect(request.instructions).toContain(
+    'Do not place unrevealed outcomes in initial HTML',
+  );
+  expect(request.instructions).toContain(
+    'Reset prediction and reveal state when scenario inputs change',
+  );
+  expect(request.instructions).toContain('Persist prediction and reveal state');
+});
+
+it('does not impose prediction-first gating when the host has not requested it', async () => {
+  await generateActivityCandidate(
+    { objective: 'Explore osmosis.', sourceReferences: [] },
+    new AbortController().signal,
+  );
+  const request = mocks.generateText.mock.calls[0]?.[0];
+  expect(request.instructions).not.toContain(
+    'Require an explicit learner prediction before enabling Reveal',
+  );
+  expect(request.instructions).toContain(
+    'Use var(--muted) only for background surfaces',
+  );
+  expect(request.instructions).toContain(
+    'var(--muted-foreground) for secondary text',
+  );
+});
