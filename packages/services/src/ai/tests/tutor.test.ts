@@ -1363,6 +1363,10 @@ it('sends remembered teaching preferences to Meta with style-only authority and 
   expect(body.messages[0].content).toContain(
     'wait for the next student reply before revealing the answer',
   );
+  expect(body.messages[0].content).toContain(
+    'verify that any directional arrow actually points in the direction described',
+  );
+  expect(body.messages[0].content).toContain('avoid a redundant ASCII diagram');
   expect(body.messages[0].content).toContain('never grant permission');
   expect(body.messages[0].content).toContain(
     'do not provide the assigned answer',
