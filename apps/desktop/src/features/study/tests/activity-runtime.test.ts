@@ -355,3 +355,23 @@ describe('activity renderer termination', () => {
     expect(canForcefullyTerminateActivityRenderer(17, [23])).toBe(true);
   });
 });
+
+it('seeds activity backgrounds and semantic tokens from the trusted host palette without accepting CSS injection', async () => {
+  const { createActivityThemeCss, readActivityTheme } =
+    await import('../services/activity-runtime');
+  const executeJavaScript = async () => ({
+    background: 'rgb(20, 21, 22)',
+    foreground: 'rgb(240, 241, 242)',
+    primary: 'oklch(0.7 0.1 120)',
+    border: 'red; background:url(https://invalid.test)',
+    colorScheme: 'dark',
+  });
+  const theme = await readActivityTheme({ executeJavaScript } as never);
+  const css = createActivityThemeCss(theme);
+  expect(css).toContain('--background:rgb(20, 21, 22)');
+  expect(css).toContain('background:var(--background)!important');
+  expect(css).toContain('color:var(--foreground)!important');
+  expect(css).toContain('color-scheme:dark');
+  expect(css).not.toContain('invalid.test');
+  expect(theme.border).toBeUndefined();
+});

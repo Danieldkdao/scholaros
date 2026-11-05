@@ -23,6 +23,80 @@ import {
 
 export { createActivityContentDigest, registerActivitySchemeBeforeReady };
 
+type ActivityTheme = {
+  background?: string;
+  foreground?: string;
+  muted?: string;
+  mutedForeground?: string;
+  primary?: string;
+  accent?: string;
+  border?: string;
+  colorScheme?: 'light' | 'dark';
+};
+
+const activityThemeProperties = [
+  ['background', 'background'],
+  ['foreground', 'foreground'],
+  ['muted', 'muted'],
+  ['mutedForeground', 'muted-foreground'],
+  ['primary', 'primary'],
+  ['accent', 'accent'],
+  ['border', 'border'],
+] as const;
+
+export const readActivityTheme = async (
+  host: WebContents,
+): Promise<ActivityTheme> => {
+  try {
+    const value: unknown = await withTimeout(
+      host.executeJavaScript(`(() => {
+      const style = getComputedStyle(document.documentElement);
+      const color = (token) => style.getPropertyValue('--' + token).trim();
+      return {
+        background: color('background'), foreground: color('foreground'),
+        muted: color('muted'), mutedForeground: color('muted-foreground'),
+        primary: color('primary'), accent: color('accent'), border: color('border'),
+        colorScheme: document.documentElement.classList.contains('dark') ? 'dark' : 'light'
+      };
+    })()`),
+      1000,
+    );
+    if (!value || typeof value !== 'object') return {};
+    const source = value as Record<string, unknown>;
+    const theme: ActivityTheme = {};
+    for (const [key] of activityThemeProperties) {
+      const color = source[key];
+      if (
+        typeof color === 'string' &&
+        color.length <= 100 &&
+        /^(?:#[a-f\d]{3,8}|(?:rgba?|hsla?|oklch|oklab|lab|lch|color)\([a-z\d .,/%+-]+\))$/i.test(
+          color,
+        )
+      )
+        theme[key] = color;
+    }
+    if (source.colorScheme === 'light' || source.colorScheme === 'dark')
+      theme.colorScheme = source.colorScheme;
+    return theme;
+  } catch {
+    return {};
+  }
+};
+
+export const createActivityThemeCss = (theme: ActivityTheme) => {
+  const properties = activityThemeProperties.flatMap(([key, token]) =>
+    theme[key] ? [`--${token}:${theme[key]}`] : [],
+  );
+  if (theme.colorScheme) properties.push(`color-scheme:${theme.colorScheme}`);
+  const surface = [
+    theme.background ? 'background:var(--background)!important' : '',
+    theme.foreground ? 'color:var(--foreground)!important' : '',
+  ]
+    .filter(Boolean)
+    .join(';');
+  return `:root{${properties.join(';')}}html,body,#activity-root{${surface}}`;
+};
+
 export type ActivityMountInput = {
   hostWindow: BrowserWindow;
   sessionId: string;
@@ -926,6 +1000,8 @@ export const createActivityManager = (
     let activitySession: Session | null = null;
     let instance: RuntimeInstance | null = null;
     try {
+      const theme = await readActivityTheme(input.hostWindow.webContents);
+      const themeCss = createActivityThemeCss(theme);
       const nonce = randomBytes(32).toString('hex');
       const activityHost = randomUUID();
       const url = `${activityScheme}://${activityHost}/document`;
@@ -1052,6 +1128,10 @@ export const createActivityManager = (
       input.hostWindow.contentView.addChildView(view);
 
       await withTimeout(view.webContents.loadURL(url), bootstrapTimeoutMs);
+      await withTimeout(
+        view.webContents.insertCSS(themeCss),
+        mailboxPollTimeoutMs,
+      );
       if (!counters.connectionPolicyHeaderVerified)
         throw new Error(
           'The activity connection allowlist header was not verified.',
@@ -1132,9 +1212,9 @@ export const createActivityManager = (
         contentDigest: authorizedRun.contentDigest,
         stateRevision: authorizedRun.stateRevision,
         initialState: authorizedRun.initialState,
-        theme: {},
+        theme,
         readOnly: input.readOnly,
-        css: authorizedRun.css,
+        css: `${authorizedRun.css}\n${themeCss}`,
         sdk: authorizedRun.sdk,
         javascript: authorizedRun.javascript,
       });
