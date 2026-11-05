@@ -1,3 +1,4 @@
+import { missionTraffic } from '../services/mission-traffic';
 import { afterEach, expect, it, vi } from 'vitest';
 import { protectMissionPage } from '../services/mission-request-guard';
 import { createAccountContinuation } from '../services/account-continuation';
@@ -309,3 +310,44 @@ it('stops on a rate-limited academic data response and preserves Retry-After', a
     await release();
   }
 });
+
+it.each([403, 429])(
+  'tags actual school HTTP response provenance without treating %s as an inferred rate limit',
+  async (status) => {
+    const record = vi
+      .spyOn(missionTraffic, 'recordRateLimit')
+      .mockReturnValue(new Error('School cooldown'));
+    const { release, socket } = await setup();
+    try {
+      socket.dispatchEvent(
+        new MessageEvent('message', {
+          data: JSON.stringify({
+            method: 'Network.responseReceived',
+            params: {
+              type: 'XHR',
+              response: {
+                url: 'https://school.example/course/12345/materials',
+                status,
+                headers: { 'retry-after': '10' },
+              },
+            },
+          }),
+        }),
+      );
+      if (status === 429) {
+        expect(record).toHaveBeenCalledWith(
+          'https://school.example/course/12345/materials',
+          '10',
+          { source: 'network-response', status: 429, resourceType: 'XHR' },
+        );
+        expect(() => release.assertReadable()).toThrow('cooldown');
+      } else {
+        expect(record).not.toHaveBeenCalled();
+        expect(() => release.assertReadable()).not.toThrow();
+      }
+    } finally {
+      record.mockRestore();
+      await release();
+    }
+  },
+);

@@ -242,3 +242,32 @@ it('keeps the host reserved through slow validation before a click is dispatched
   await Promise.all([first, second]);
   expect(starts).toEqual([0, 1000]);
 });
+
+it.each([
+  'navigation-response',
+  'network-response',
+  'visible-rate-page-text',
+] as const)(
+  'reports only bounded rate-limit provenance without URL or body data: %s',
+  (source) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const { traffic } = setup();
+      traffic.recordRateLimit(
+        'https://school.example/private-course?token=PRIVATE_TOKEN',
+        '10',
+        { source, status: 429, resourceType: 'XHR' },
+      );
+      expect(warn).toHaveBeenCalledWith('[school-rate-limit] observed', {
+        source,
+        status: 429,
+        resourceType: 'XHR',
+        retryAfterSeconds: 10,
+      });
+      expect(JSON.stringify(warn.mock.calls)).not.toContain('PRIVATE_TOKEN');
+      expect(JSON.stringify(warn.mock.calls)).not.toContain('school.example');
+    } finally {
+      warn.mockRestore();
+    }
+  },
+);

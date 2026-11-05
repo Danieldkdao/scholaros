@@ -303,6 +303,14 @@ export const protectMissionPage = async (
             protectionFailure ??= missionTraffic.recordRateLimit(
               response.url,
               typeof retryAfter === 'string' ? retryAfter : null,
+              {
+                source: 'network-response',
+                status: response.status,
+                resourceType:
+                  typeof message.params.type === 'string'
+                    ? message.params.type
+                    : undefined,
+              },
             );
         }
       } else if (message.method === 'Fetch.requestPaused') {

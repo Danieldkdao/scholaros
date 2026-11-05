@@ -6,6 +6,12 @@ type TrafficOptions = {
   intervalMs?: number;
 };
 
+export type RateLimitEvidence = {
+  source: 'navigation-response' | 'network-response' | 'visible-rate-page-text';
+  status?: number;
+  resourceType?: string;
+};
+
 type HostTrafficState = {
   cooldownUntil: number;
   lastStartedAt: number | null;
@@ -36,7 +42,11 @@ export const createMissionTrafficController = ({
     new Error(
       `Your school asked us to slow down. Wait about ${Math.max(1, Math.ceil((until - now()) / 1000))} seconds before trying again.`,
     );
-  const recordRateLimit = (url: string, retryAfter?: string | null) => {
+  const recordRateLimit = (
+    url: string,
+    retryAfter?: string | null,
+    evidence?: RateLimitEvidence,
+  ) => {
     const seconds =
       retryAfter &&
       /^\d+$/.test(retryAfter.trim()) &&
@@ -56,6 +66,43 @@ export const createMissionTrafficController = ({
       requestedUntil,
       now() + 5000,
     );
+    const sources = [
+      'navigation-response',
+      'network-response',
+      'visible-rate-page-text',
+    ];
+    const resourceTypes = [
+      'Document',
+      'XHR',
+      'Fetch',
+      'Script',
+      'Stylesheet',
+      'Image',
+      'Font',
+      'Media',
+      'Other',
+    ];
+    console.warn('[school-rate-limit] observed', {
+      source:
+        evidence && sources.includes(evidence.source)
+          ? evidence.source
+          : 'unspecified',
+      status:
+        evidence &&
+        Number.isInteger(evidence.status) &&
+        evidence.status! >= 400 &&
+        evidence.status! <= 599
+          ? evidence.status
+          : null,
+      resourceType:
+        evidence?.resourceType && resourceTypes.includes(evidence.resourceType)
+          ? evidence.resourceType
+          : null,
+      retryAfterSeconds: Math.min(
+        86400,
+        Math.max(0, Math.ceil((state.cooldownUntil - now()) / 1000)),
+      ),
+    });
     return cooldownError(state.cooldownUntil);
   };
   const runTurn = async <T>(
@@ -127,7 +174,9 @@ export const createMissionTrafficController = ({
         text,
       )
     )
-      throw recordRateLimit(url);
+      throw recordRateLimit(url, undefined, {
+        source: 'visible-rate-page-text',
+      });
   };
   const setIntervalSeconds = (seconds: number) => {
     if (!Number.isFinite(seconds) || seconds < 0.5 || seconds > 5)
