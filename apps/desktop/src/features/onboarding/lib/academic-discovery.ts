@@ -12,6 +12,30 @@ export type ObservedPage = {
   linksTruncated?: boolean;
 };
 
+// Schoology publishes enrollment links under numeric course or section roots.
+// Lesson pages, meeting links and resources do not become courses by their label.
+export const isEnrolledCourseDestination = (
+  connection: AcademicConnection,
+  value: string,
+) => {
+  const schoology =
+    connection.host.toLowerCase() === 'schoology.com' ||
+    connection.host.toLowerCase().endsWith('.schoology.com');
+  if (!schoology) return true;
+  try {
+    const url = new URL(value);
+    return (
+      url.hostname.toLowerCase() === connection.host.toLowerCase() &&
+      /^\/(?:course|section)\/\d+(?:\/(?:materials|updates|info|members|calendar|grades))?\/?$/.test(
+        url.pathname,
+      ) &&
+      !url.searchParams.has('f')
+    );
+  } catch {
+    return false;
+  }
+};
+
 const courseListWords = [
   'course',
   'courses',
@@ -151,7 +175,11 @@ export const discoveryEntriesFromPage = (
     // so they never enter the course map even as a plain entry point.
     if (notEnrollmentPattern.test(`${label} ${normalize(link.context ?? '')}`))
       continue;
-    const role = looksLikeCourse(link, page) ? 'course' : 'resource';
+    const role =
+      isEnrolledCourseDestination(connection, url) &&
+      looksLikeCourse(link, page)
+        ? 'course'
+        : 'resource';
     const existing = entries.get(url);
     if (existing) {
       // A course signal anywhere beats a weaker one for the same destination.

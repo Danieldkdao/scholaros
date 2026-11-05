@@ -1,5 +1,6 @@
 import {
   discoveryEntriesFromPage,
+  isEnrolledCourseDestination,
   onlyObservedDestinations,
   nextCourseListTarget,
   pagePresentsCourseList,
@@ -83,6 +84,7 @@ export const exploreForCourses = async ({
       for (const link of observed.links) {
         if (
           !selected.has(link.url) ||
+          !isEnrolledCourseDestination(connection, link.url) ||
           !isReadNavigation(link.url, [connection.host])
         )
           continue;

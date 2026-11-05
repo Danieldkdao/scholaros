@@ -68,6 +68,43 @@ const sequenceRead = (pages: Array<typeof homePage>) => {
   });
 };
 
+describe('Schoology course admission', () => {
+  it('rejects a live-class resource even when the classifier chooses its offered link', async () => {
+    const course = link('Biology 101', '/course/12345/materials');
+    const live = link('English 9 Live Class', '/page/54321');
+    const setup = fixtures({
+      read: vi.fn(async () => ({ ...listPage, links: [course, live] })),
+      classify: vi.fn(async () => [course.url, live.url]),
+    });
+    const result = await exploreForCourses(setup);
+    expect(
+      result.entries
+        .filter(({ role }) => role === 'course')
+        .map(({ url }) => url),
+    ).toEqual([course.url]);
+  });
+
+  it('preserves generic enrolled course routes for other learning platforms', async () => {
+    const url = 'https://portal.example.edu/learning/biology';
+    const result = await exploreForCourses({
+      ...fixtures(),
+      connection: connection({
+        host: 'portal.example.edu',
+        url: 'https://portal.example.edu/',
+      }),
+      read: vi.fn(async () => ({
+        url: 'https://portal.example.edu/',
+        title: 'Courses',
+        links: [{ label: 'Biology', url }],
+      })),
+      classify: vi.fn(async () => [url]),
+    });
+    expect(result.entries).toContainEqual(
+      expect.objectContaining({ url, role: 'course' }),
+    );
+  });
+});
+
 describe('bounded course exploration', () => {
   it('opens the course menu after a dashboard redirect restores the sign-in fragment', async () => {
     const url = `https://${schoology}/home/course-dashboard#identifier=`;
@@ -336,12 +373,12 @@ it('uses semantic recognition only for destinations actually observed', async ()
   const observed = {
     ...homePage,
     text: 'My classes include World History B',
-    links: [link('World History B', '/section?view=9')],
+    links: [link('World History B', '/section/9')],
   };
   const result = await exploreForCourses({
     ...fixtures({ read: vi.fn(async () => observed) }),
     classify: async () => [
-      `https://${schoology}/section?view=9`,
+      `https://${schoology}/section/9`,
       `https://${schoology}/invented`,
     ],
   });
@@ -349,7 +386,7 @@ it('uses semantic recognition only for destinations actually observed', async ()
     result.entries
       .filter((entry) => entry.role === 'course')
       .map((entry) => entry.url),
-  ).toEqual([`https://${schoology}/section?view=9`]);
+  ).toEqual([`https://${schoology}/section/9`]);
 });
 
 it('does not mistake an empty catalog search for no enrolled courses', async () => {
