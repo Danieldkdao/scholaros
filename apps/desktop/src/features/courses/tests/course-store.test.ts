@@ -2478,3 +2478,51 @@ it('preserves separate manual assignments with identical titles', async () => {
     });
   expect(getCourseDetail(student, courseId)?.assignments).toHaveLength(2);
 });
+
+it('persists uncertain assignments as protected visible work without marking them submitted', () => {
+  const assignment = child('Observed work', {
+    url: assignmentsUrl,
+    content: {
+      title: 'Observed work',
+      description: null,
+      kind: 'assignment',
+      state: 'unknown',
+      due: null,
+      availableFrom: null,
+      availableUntil: null,
+      pointsPossible: null,
+      url: assignmentsUrl,
+      sourceId: 'uncertain-1',
+      resources: [],
+      evidence: {
+        sourceUrl: biologyUrl,
+        excerpts: ['Observed work'],
+        targetIds: [],
+      },
+    },
+  });
+  applyCourseRefresh(student, [
+    sourceScan({
+      courses: [
+        observedCourse({
+          assignments: { status: 'partial', items: [assignment] },
+        }),
+      ],
+    }),
+  ]);
+
+  expect(detailOf().assignments).toEqual([
+    expect.objectContaining({
+      active: true,
+      title: 'Observed work',
+      content: expect.objectContaining({ state: 'unknown' }),
+    }),
+  ]);
+  expect(onlyCourse().assignmentsStatus).toBe('partial');
+  expect(savedCourses(other)).toHaveLength(0);
+  expect(db.select().from(CourseAssignmentTable).get()).toMatchObject({
+    userId: student,
+    active: true,
+    content: { state: 'unknown' },
+  });
+});

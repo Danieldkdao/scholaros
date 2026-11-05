@@ -610,7 +610,7 @@ describe('deep course content scanning', () => {
     expect(openFrom).toHaveBeenCalledTimes(15);
   });
 
-  it('keeps only explicitly active and unsubmitted work, including overdue work still open', async () => {
+  it('keeps active and uncertain work visible while separating submitted and inactive work', async () => {
     const request = vi.fn(async () => ({
       coverage: 'complete',
       assignments: [
@@ -623,6 +623,7 @@ describe('deep course content scanning', () => {
     const { result } = run(request, new Map([[root, page(root)]]));
     expect((await result).items.map((item) => item.title)).toEqual([
       'Open overdue',
+      'Unknown',
     ]);
     expect((await result).status).toBe('partial');
   });
@@ -824,7 +825,7 @@ describe('deep course content scanning', () => {
         ]),
       );
       expect((await result).items.map((item) => item.title)).toEqual(
-        state === 'active-unsubmitted'
+        state === 'active-unsubmitted' || state === 'unknown'
           ? ['Open overdue', 'Unknown work']
           : ['Open overdue'],
       );
@@ -1098,8 +1099,35 @@ describe('deep course content scanning', () => {
 
     expect(await result).toMatchObject({
       status: 'partial',
-      items: [],
+      items: [
+        expect.objectContaining({
+          title: 'Unknown work',
+          content: expect.objectContaining({ state: 'unknown' }),
+        }),
+      ],
+      hostCoverage: { gaps: { invalidRecords: true } },
     });
+  });
+
+  it('does not save an unknown assignment without matching source evidence', async () => {
+    const { result } = run(
+      async () => ({
+        coverage: 'complete',
+        assignments: [
+          {
+            ...card('Invented work', root, 'unknown'),
+            evidence: {
+              sourceUrl: root,
+              excerpts: ['Invented work'],
+              targetIds: [],
+            },
+          },
+        ],
+      }),
+      new Map([[root, page(root, [], 'Only the course overview is present')]]),
+    );
+
+    expect(await result).toMatchObject({ status: 'partial', items: [] });
   });
 
   it('keeps an unvisited pagination target unresolved after DONE', async () => {
@@ -1179,7 +1207,12 @@ it('reports explicitly inactive assignments separately even when another item is
   );
   expect(await result).toMatchObject({
     status: 'partial',
-    items: [],
+    items: [
+      expect.objectContaining({
+        title: 'Unknown work',
+        content: expect.objectContaining({ state: 'unknown' }),
+      }),
+    ],
     inactiveItems: [expect.objectContaining({ title: 'Submitted essay' })],
   });
 });
@@ -1484,7 +1517,16 @@ it.each([true, false])(
     );
     expect(await result).toMatchObject({
       status: 'partial',
-      items: [{ url: secondUrl }],
+      items: [
+        expect.objectContaining({
+          url: firstUrl,
+          content: expect.objectContaining({ state: 'unknown' }),
+        }),
+        expect.objectContaining({
+          url: secondUrl,
+          content: expect.objectContaining({ state: 'active-unsubmitted' }),
+        }),
+      ],
     });
     expect(openFrom).toHaveBeenCalledWith(expect.anything(), firstUrl);
   },

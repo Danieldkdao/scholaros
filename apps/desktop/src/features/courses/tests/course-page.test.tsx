@@ -296,6 +296,42 @@ it('keeps the source wording for a date it could not place', async () => {
   expect(text()).toContain('Due Friday');
 });
 
+it('keeps source-verified assignments visible while their submission status is uncertain', async () => {
+  detail = course({
+    assignmentsStatus: 'partial',
+    assignments: [
+      child('uncertain', {
+        title: 'Observed assignment',
+        content: {
+          title: 'Observed assignment',
+          description: null,
+          kind: 'assignment',
+          state: 'unknown',
+          due: null,
+          availableFrom: null,
+          availableUntil: null,
+          pointsPossible: null,
+          url: null,
+          sourceId: null,
+          resources: [],
+          evidence: {
+            sourceUrl: 'https://canvas.school.edu/courses/1',
+            excerpts: ['Observed assignment'],
+            targetIds: [],
+          },
+        },
+      }),
+    ],
+  });
+  await open();
+  await openTab('Assignments');
+  expect(text()).toContain('Observed assignment');
+  expect(
+    document.querySelector('[aria-label="Submission status unverified"]'),
+  ).not.toBeNull();
+  expect(text()).not.toContain('Completed');
+});
+
 it('gives every collection state its own wording', async () => {
   const wording = async (overrides: Partial<CourseDetail>) => {
     detail = course(overrides);

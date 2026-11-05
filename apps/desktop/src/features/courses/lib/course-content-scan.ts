@@ -939,7 +939,13 @@ export const scanCourseCollection = async ({
               items.delete(key);
               inactiveItems.set(key, item);
             }
-            if (record.state !== 'active-unsubmitted') continue;
+            // Unknown completion keeps the work protected, not invisible.
+            // The unresolved-state gap still prevents a complete collection receipt.
+            if (
+              record.state !== 'active-unsubmitted' &&
+              record.state !== 'unknown'
+            )
+              continue;
           }
           if (!inactiveItems.has(key)) items.set(key, item);
         }

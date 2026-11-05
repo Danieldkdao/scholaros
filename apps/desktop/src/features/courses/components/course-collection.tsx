@@ -17,6 +17,7 @@ import { Separator } from '@scholaros/ui/components/separator';
 import { formatObservedAt } from '../../onboarding/lib/formatters';
 import {
   formatCollectionState,
+  formatAssignmentState,
   formatCourseDate,
   formatAcademicDateResolution,
   formatCourseScanStatus,
@@ -144,6 +145,13 @@ export const CourseCollection = ({
             ? item.content.description
             : item.content.body
           : item.body;
+        const uncertainStatus =
+          kind === 'assignments' &&
+          item.content &&
+          'state' in item.content &&
+          item.content.state === 'unknown'
+            ? formatAssignmentState(item.content.state)
+            : null;
         const dateLabel = formatCourseDate(item);
         const date = academicDateFor(item);
         const resolution = formatAcademicDateResolution(date);
@@ -161,6 +169,21 @@ export const CourseCollection = ({
                       className="mt-1 size-4 shrink-0 text-muted-foreground"
                     />
                     {item.title}
+                    {uncertainStatus && (
+                      <TooltipWrapper content={uncertainStatus.label}>
+                        <span
+                          tabIndex={0}
+                          role="img"
+                          aria-label={uncertainStatus.label}
+                          className="flex shrink-0 items-center text-muted-foreground"
+                        >
+                          <uncertainStatus.Icon
+                            aria-hidden="true"
+                            className="size-4"
+                          />
+                        </span>
+                      </TooltipWrapper>
+                    )}
                   </p>
                   {(dateLabel || past) && (
                     <div className="flex flex-wrap items-center gap-2 text-muted-foreground">

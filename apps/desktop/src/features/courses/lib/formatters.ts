@@ -24,6 +24,7 @@ import {
 import { academicDateFor } from './dates';
 import type {
   ResourceKind,
+  AssignmentState,
   AcademicDateSchema,
 } from '@scholaros/services/ai/resources/shared';
 import type { CourseChildItem } from '../types';
@@ -52,6 +53,19 @@ export const formatCourseRecordKind = (kind: ResourceKind) => {
       return 'assignment';
     case 'announcements':
       return 'announcement';
+  }
+};
+
+export const formatAssignmentState = (state: AssignmentState) => {
+  switch (state) {
+    case 'active-unsubmitted':
+      return { label: 'Not submitted', Icon: CircleDashed };
+    case 'submitted':
+      return { label: 'Submitted', Icon: CircleCheck };
+    case 'inactive':
+      return { label: 'Inactive', Icon: CircleOff };
+    case 'unknown':
+      return { label: 'Submission status unverified', Icon: CircleHelp };
   }
 };
 
