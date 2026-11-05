@@ -89,6 +89,7 @@ import {
 import type { ActivityRuntimeChange } from './features/study/hooks/use-activity-host';
 
 const serviceMode = app.commandLine.hasSwitch('academic-service');
+const stopServiceMode = app.commandLine.hasSwitch('stop-academic-service');
 if (serviceMode) {
   // Separate the Chromium session and singleton lease while preserving existing data paths.
   const userData = app.getPath('userData');
@@ -1304,7 +1305,12 @@ if (started) {
   app.quit();
 }
 
-if (!started && !serviceMode && !app.commandLine.hasSwitch('migrate-db')) {
+if (
+  !started &&
+  !serviceMode &&
+  !stopServiceMode &&
+  !app.commandLine.hasSwitch('migrate-db')
+) {
   // Better Auth's error bridge targets the globally focused WebContents.
   installTrustedFocusedWebContentsGuard(webContents);
   setupAuthMain({
@@ -1412,6 +1418,12 @@ const createWindow = (routePath?: string) => {
 app
   .whenReady()
   .then(async () => {
+    if (stopServiceMode) {
+      await stopAcademicService();
+      console.log('Academic service stopped safely.');
+      app.quit();
+      return;
+    }
     if (serviceMode) {
       const { runAcademicService } =
         await import('./services/academic/runtime');
@@ -1484,7 +1496,7 @@ app
 let quitting = false;
 let keepService = false;
 app.on('before-quit', (event) => {
-  if (serviceMode || quitting) return;
+  if (serviceMode || stopServiceMode || quitting) return;
   event.preventDefault();
   quitting = true;
   void (async () => {
@@ -1499,7 +1511,7 @@ app.on('before-quit', (event) => {
 });
 
 app.on('window-all-closed', () => {
-  if (serviceMode || quitting) return;
+  if (serviceMode || stopServiceMode || quitting) return;
   void disposeNativeOwners()
     .then(() => requestAcademicService('getState'))
     .then((state) => {

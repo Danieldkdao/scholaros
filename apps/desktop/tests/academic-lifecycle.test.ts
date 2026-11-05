@@ -10,6 +10,7 @@ import type { NotificationHostAdapterDependencies } from '../src/services/academ
 import type { AcademicClientLifecycle } from '../src/services/academic/client';
 const mocks = vi.hoisted(() => ({
   serviceMode: false,
+  stopServiceMode: false,
   authCookie: 'test-session-a',
   windows: 0,
   hostWindows: [] as {
@@ -95,7 +96,8 @@ vi.mock('electron', () => ({
   app: {
     commandLine: {
       hasSwitch: (name: string) =>
-        name === 'academic-service' && mocks.serviceMode,
+        (name === 'academic-service' && mocks.serviceMode) ||
+        (name === 'stop-academic-service' && mocks.stopServiceMode),
       getSwitchValue: () => '',
     },
     getPath: () => '/tmp/scholaros-lifecycle',
@@ -323,6 +325,7 @@ beforeEach(() => {
   mocks.closeActivity.mockResolvedValue(undefined);
   mocks.retryActivity.mockResolvedValue(undefined);
   mocks.serviceMode = false;
+  mocks.stopServiceMode = false;
   mocks.authCookie = 'test-session-a';
   mocks.ready.mockResolvedValue(undefined);
   mocks.register.mockResolvedValue(undefined);
@@ -1560,6 +1563,17 @@ it('does not return file tickets after the account changes during registration',
   });
 
   await expect(pendingSelection).rejects.toThrow('Your session changed');
+});
+
+it('stops the detached academic service without opening a window or initializing authentication', async () => {
+  mocks.stopServiceMode = true;
+  await import('../src/main');
+  await vi.waitFor(() => expect(mocks.stop).toHaveBeenCalledOnce());
+  expect(mocks.setupAuthMain).not.toHaveBeenCalled();
+  expect(mocks.register).not.toHaveBeenCalled();
+  expect(mocks.request).not.toHaveBeenCalled();
+  expect(mocks.windows).toBe(0);
+  expect(mocks.quit).toHaveBeenCalledOnce();
 });
 
 it('opens microphone settings from a trusted window even without an active study session', async () => {
