@@ -116,7 +116,7 @@ it('shows one persisted expiry summary with Finish, custom Extend, and untimed a
   expect(node.textContent).toContain('Your planned study time has ended.');
   expect(node.textContent).toContain('Finish session');
   expect(node.textContent).toContain('Extend session');
-  expect(node.textContent).toContain('Continue indefinitely');
+  expect(node.textContent).toContain('Continue without timer');
 
   await changeNumber(
     node.querySelector<HTMLInputElement>(
@@ -164,7 +164,7 @@ it('keeps the expiry summary and actions available after a command fails', async
   await act(async () =>
     node
       .querySelector<HTMLButtonElement>(
-        'button[aria-label="Continue indefinitely"]',
+        'button[aria-label="Continue without timer"]',
       )!
       .click(),
   );
@@ -216,7 +216,7 @@ it('shows the expiry summary but blocks every timer mutation in host read-only m
     'button[aria-label="Extend session"]',
   )!;
   const untimed = node.querySelector<HTMLButtonElement>(
-    'button[aria-label="Continue indefinitely"]',
+    'button[aria-label="Continue without timer"]',
   )!;
 
   expect(node.textContent).toContain('Your planned study time has ended.');
@@ -233,4 +233,32 @@ it('shows the expiry summary but blocks every timer mutation in host read-only m
   expect(timerActions.finish).not.toHaveBeenCalled();
   expect(timerActions.extend).not.toHaveBeenCalled();
   expect(timerActions.continueUntimed).not.toHaveBeenCalled();
+});
+
+it('uses a compact transparent resolution with an inline extension and one primary continuation', async () => {
+  const node = await mount(
+    createElement(StudyTimerResolution, {
+      timer: makeTimer({ expiredRevision: 2 }),
+      summary: 'Keep learning when you are ready.',
+      actions: actions(),
+    }),
+  );
+  const panel = node.querySelector('[data-slot="study-timer-expiry-summary"]')!;
+  expect(panel.querySelector('[data-slot="card"]')).toBeNull();
+  expect(panel.className).not.toContain('bg-');
+  expect(panel.className).not.toContain('border');
+  const extension = panel.querySelector('[data-slot="study-timer-extension"]')!;
+  expect(extension.className).toContain('items-center');
+  expect(extension.querySelector('input')?.className).toContain('w-20');
+  expect(
+    extension.querySelector('button[aria-label="Extend session"]'),
+  ).not.toBeNull();
+  const primary = panel.querySelector(
+    'button[aria-label="Continue without timer"]',
+  )!;
+  expect(primary.className).toContain('bg-primary');
+  const finish = [...panel.querySelectorAll('button')].find((button) =>
+    button.textContent?.includes('Finish session'),
+  )!;
+  expect(finish.className).toContain('bg-secondary');
 });

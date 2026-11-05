@@ -617,7 +617,7 @@ export const StudyDocument = ({
       </section>
       <div className="sticky bottom-0 z-10 shrink-0 border-t border-border bg-background">
         {timerExpired && (
-          <div className="max-h-[45dvh] overflow-y-auto px-4 pt-3">
+          <div className="max-h-[45dvh] overflow-y-auto px-4">
             <StudyTimerResolution
               timer={session.timer}
               summary="Your study time ended. Extend the session or continue without a timer to send more messages."
@@ -626,30 +626,36 @@ export const StudyDocument = ({
             />
           </div>
         )}
-        <StudyComposer
-          key={`${accountId}:${sessionId}:composer`}
-          sessionId={sessionId}
-          initialDraft={session.draft}
-          offline={study.offline}
-          readOnly={readOnly}
-          timerExpired={timerExpired}
-          activeTurn={snapshot.activeTurn}
-          failedTurnId={failedTurnMessage?.turnId ?? null}
-          attachmentRevision={study.attachmentRevision}
-          onSend={study.sendTurn}
-          onStop={async () => {
-            if (snapshot.activeTurn)
-              await study.stopTurn(snapshot.activeTurn.id);
-          }}
-          onRetry={study.retryTurn}
-          onAddAttachments={study.addAttachments}
-          onRefreshAttachment={study.refreshAttachment}
-          renderDictation={
-            DictationControl
-              ? (props) => <DictationControl {...props} />
-              : undefined
-          }
-        />
+        <div
+          data-slot="study-composer-region"
+          hidden={timerExpired}
+          inert={timerExpired}
+        >
+          <StudyComposer
+            key={`${accountId}:${sessionId}:composer`}
+            sessionId={sessionId}
+            initialDraft={session.draft}
+            offline={study.offline}
+            readOnly={readOnly}
+            timerExpired={timerExpired}
+            activeTurn={snapshot.activeTurn}
+            failedTurnId={failedTurnMessage?.turnId ?? null}
+            attachmentRevision={study.attachmentRevision}
+            onSend={study.sendTurn}
+            onStop={async () => {
+              if (snapshot.activeTurn)
+                await study.stopTurn(snapshot.activeTurn.id);
+            }}
+            onRetry={study.retryTurn}
+            onAddAttachments={study.addAttachments}
+            onRefreshAttachment={study.refreshAttachment}
+            renderDictation={
+              DictationControl
+                ? (props) => <DictationControl {...props} />
+                : undefined
+            }
+          />
+        </div>
       </div>
       <StudySourcePanel
         key={`${accountId}:${sessionId}:source-panel`}

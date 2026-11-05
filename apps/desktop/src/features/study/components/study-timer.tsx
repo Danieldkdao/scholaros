@@ -9,13 +9,6 @@ import {
 } from 'lucide-react';
 import type { StudyTimerDTO } from '@scholaros/services/learning/study-contracts';
 import { Button } from '@scholaros/ui/components/button';
-import {
-  Card,
-  CardContent,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from '@scholaros/ui/components/card';
 import { Input } from '@scholaros/ui/components/input';
 import { LoadingSwap } from '@scholaros/ui/components/loading-swap';
 import { toast } from '@scholaros/ui/components/toast';
@@ -283,53 +276,53 @@ export const StudyTimerResolution = ({
   };
 
   return (
-    <Card
+    <section
       data-slot="study-timer-expiry-summary"
-      className="gap-3 border-border bg-muted/30"
+      aria-label="Study time ended"
+      className="mx-auto flex w-full max-w-4xl flex-col gap-3 py-4"
     >
-      <CardHeader className="px-0">
-        <CardTitle className="flex items-center gap-2 text-base">
-          <CalendarClockIcon aria-hidden="true" className="size-4" />
+      <div className="flex flex-col gap-1">
+        <h2 className="flex items-center gap-2 text-base font-medium text-balance">
+          <CalendarClockIcon aria-hidden="true" className="size-4 shrink-0" />
           Study time ended
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="gap-3 px-0">
-        <p className="text-base">{summary}</p>
-        {error && (
-          <p
-            className="flex items-center gap-2 text-base text-destructive"
-            role="alert"
-          >
-            <AlertCircleIcon aria-hidden="true" className="size-4 shrink-0" />
-            {error}
-          </p>
-        )}
-        <div className="flex flex-wrap items-end gap-3">
-          <div className="flex min-w-40 flex-1 flex-col gap-2">
-            <label htmlFor="study-extension-minutes" className="text-base">
-              Extend by minutes
-            </label>
-            <Input
-              id="study-extension-minutes"
-              aria-label="Extension in minutes"
-              aria-invalid={!validDuration}
-              aria-describedby="study-extension-help"
-              className="w-full text-base"
-              type="number"
-              min={1}
-              max={240}
-              step={1}
-              value={durationText}
-              disabled={readOnly}
-              onChange={(event) => setDurationText(event.target.value)}
-            />
-            <span
-              id="study-extension-help"
-              className="text-base text-muted-foreground"
-            >
-              Choose 1 to 240 minutes.
-            </span>
-          </div>
+        </h2>
+        <p className="text-base text-pretty text-muted-foreground">{summary}</p>
+      </div>
+      {error && (
+        <p
+          className="flex items-center gap-2 text-base text-destructive"
+          role="alert"
+        >
+          <AlertCircleIcon aria-hidden="true" className="size-4 shrink-0" />
+          {error}
+        </p>
+      )}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div
+          className="flex items-center gap-2"
+          data-slot="study-timer-extension"
+        >
+          <label htmlFor="study-extension-minutes" className="sr-only">
+            Extension in minutes
+          </label>
+          <Input
+            id="study-extension-minutes"
+            aria-label="Extension in minutes"
+            aria-invalid={!validDuration}
+            aria-describedby="study-extension-help"
+            className="w-20 text-base tabular-nums"
+            type="number"
+            min={1}
+            max={240}
+            step={1}
+            value={durationText}
+            disabled={readOnly || busy}
+            onChange={(event) => setDurationText(event.target.value)}
+          />
+          <span className="text-base text-muted-foreground">min</span>
+          <span id="study-extension-help" className="sr-only">
+            Choose 1 to 240 minutes.
+          </span>
           <Button
             type="button"
             variant="outline"
@@ -345,32 +338,32 @@ export const StudyTimerResolution = ({
             </LoadingSwap>
           </Button>
         </div>
-      </CardContent>
-      <CardFooter className="flex flex-wrap gap-2 px-0">
-        <Button
-          type="button"
-          variant="default"
-          aria-busy={activeAction === 'finish'}
-          disabled={readOnly || busy}
-          onClick={() => void run('finish', actions.finish)}
-        >
-          <LoadingSwap isLoading={activeAction === 'finish'}>
-            Finish session
-          </LoadingSwap>
-        </Button>
-        <Button
-          type="button"
-          variant="outline"
-          aria-label="Continue indefinitely"
-          aria-busy={activeAction === 'untimed'}
-          disabled={readOnly || busy}
-          onClick={() => void run('untimed', actions.continueUntimed)}
-        >
-          <LoadingSwap isLoading={activeAction === 'untimed'}>
-            Continue indefinitely
-          </LoadingSwap>
-        </Button>
-      </CardFooter>
-    </Card>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            type="button"
+            variant="default"
+            aria-label="Continue without timer"
+            aria-busy={activeAction === 'untimed'}
+            disabled={readOnly || busy}
+            onClick={() => void run('untimed', actions.continueUntimed)}
+          >
+            <LoadingSwap isLoading={activeAction === 'untimed'}>
+              Continue without timer
+            </LoadingSwap>
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            aria-busy={activeAction === 'finish'}
+            disabled={readOnly || busy}
+            onClick={() => void run('finish', actions.finish)}
+          >
+            <LoadingSwap isLoading={activeAction === 'finish'}>
+              Finish session
+            </LoadingSwap>
+          </Button>
+        </div>
+      </div>
+    </section>
   );
 };

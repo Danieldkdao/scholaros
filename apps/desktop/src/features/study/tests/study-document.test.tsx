@@ -2028,7 +2028,7 @@ it('keeps expired timer actions beside the composer even without a loaded expiry
     'Extend the session or continue without a timer',
   );
   const continueButton = container.querySelector<HTMLButtonElement>(
-    'button[aria-label="Continue indefinitely"]',
+    'button[aria-label="Continue without timer"]',
   );
   await click(continueButton!);
   await vi.waitFor(() =>
@@ -2049,3 +2049,84 @@ it('keeps expired timer actions beside the composer even without a loaded expiry
   ).toBe(false);
   expect(currentBridge.sendStudyTurn).not.toHaveBeenCalled();
 });
+
+it.each(['extend', 'untimed'] as const)(
+  'replaces the composer on expiry and restores the same unsent text after %s',
+  async (resolution) => {
+    let currentTimer: StudyTimerDTO = {
+      ...timer,
+      deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+      revision: 1,
+    };
+    const currentBridge = bridge(
+      vi.fn(async () =>
+        snapshot({ session: session({ timer: currentTimer }) }),
+      ),
+    );
+    const resolveTimer = async () => {
+      currentTimer = {
+        ...currentTimer,
+        revision: 3,
+        resolvedExpiredRevision: 2,
+        deadlineAt:
+          resolution === 'untimed'
+            ? null
+            : new Date(Date.now() + 900_000).toISOString(),
+      };
+      return currentTimer;
+    };
+    currentBridge.extendStudySession = vi.fn(resolveTimer);
+    currentBridge.continueStudyUntimed = vi.fn(resolveTimer);
+    const { container } = await mountDocument({}, currentBridge);
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea')!;
+    const region = container.querySelector<HTMLElement>(
+      '[data-slot="study-composer-region"]',
+    )!;
+    const setter = Object.getOwnPropertyDescriptor(
+      HTMLTextAreaElement.prototype,
+      'value',
+    )!.set!;
+    await act(async () => {
+      setter.call(textarea, 'Keep my unsent question and attachments.');
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    currentTimer = {
+      ...currentTimer,
+      revision: 2,
+      expiredRevision: 2,
+      deadlineAt: new Date(Date.now() - 1_000).toISOString(),
+    };
+    await act(async () => {
+      eventListener?.({
+        version: 1,
+        accountId: 'student-a',
+        resource: 'study',
+        targetId: 'session-1',
+        revision: 2,
+      });
+      await drain();
+    });
+    expect(region.hidden).toBe(true);
+    expect(region.hasAttribute('inert')).toBe(true);
+    expect(textarea.closest('[hidden]')).toBe(region);
+    expect(container.querySelector('textarea')).toBe(textarea);
+    expect(
+      container.querySelectorAll('[data-slot="study-timer-expiry-summary"]'),
+    ).toHaveLength(1);
+    await click(
+      container.querySelector<HTMLButtonElement>(
+        resolution === 'extend'
+          ? 'button[aria-label="Extend session"]'
+          : 'button[aria-label="Continue without timer"]',
+      )!,
+    );
+    await vi.waitFor(() => expect(region.hidden).toBe(false));
+    expect(region.hasAttribute('inert')).toBe(false);
+    expect(container.querySelector('textarea')).toBe(textarea);
+    expect(textarea.value).toBe('Keep my unsent question and attachments.');
+    expect(
+      container.querySelector('[data-slot="study-timer-expiry-summary"]'),
+    ).toBeNull();
+    expect(currentBridge.sendStudyTurn).not.toHaveBeenCalled();
+  },
+);
