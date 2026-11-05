@@ -115,3 +115,42 @@ it('does not loop indefinitely when the live document remains unavailable', asyn
   await expect(readPageUrl(page as never)).rejects.toThrow('Page closed');
   expect(page.evaluate).toHaveBeenCalledTimes(2);
 });
+
+it('retries one destroyed execution context while reading the complete page snapshot', async () => {
+  const page = {
+    ...snapshotFor('https://school.example/course/1/materials'),
+    waitForLoadState: vi.fn(async () => undefined),
+  };
+  page.evaluate.mockRejectedValueOnce(
+    new Error('CDP response failed: Cannot find context with specified id'),
+  );
+  await expect(readPage(page as never, true)).resolves.toMatchObject({
+    url: 'https://school.example/course/1/materials',
+    text: 'Biology 101 sections',
+  });
+  expect(page.evaluate).toHaveBeenCalledTimes(2);
+  expect(page.waitForLoadState).toHaveBeenCalledWith('domcontentloaded', 1500);
+});
+
+it('keeps persistent context failures bounded and never substitutes a cached snapshot', async () => {
+  const page = {
+    evaluate: vi
+      .fn()
+      .mockRejectedValue(new Error('Cannot find context with specified id')),
+    waitForLoadState: vi.fn(async () => undefined),
+  };
+  await expect(readPage(page as never, true)).rejects.toThrow(
+    'Cannot find context',
+  );
+  expect(page.evaluate).toHaveBeenCalledTimes(2);
+});
+
+it('does not retry closed-page failures during snapshot extraction', async () => {
+  const page = {
+    evaluate: vi.fn().mockRejectedValue(new Error('Page closed')),
+    waitForLoadState: vi.fn(),
+  };
+  await expect(readPage(page as never, true)).rejects.toThrow('Page closed');
+  expect(page.evaluate).toHaveBeenCalledOnce();
+  expect(page.waitForLoadState).not.toHaveBeenCalled();
+});

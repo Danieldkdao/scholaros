@@ -3,6 +3,29 @@ import { readPageEvidence } from './page-evidence';
 import type { Page } from '@browserbasehq/stagehand';
 import { academicPageIdentity, isReadNavigation } from '../lib/browser-policy';
 
+const readCurrentDocument = async <T>(
+  page: Page,
+  read: () => Promise<T>,
+): Promise<T> => {
+  try {
+    return await read();
+  } catch (error) {
+    if (
+      !(error instanceof Error) ||
+      !/Cannot find (?:execution )?context(?: with specified id)?|Execution context (?:was )?destroyed/i.test(
+        error.message,
+      )
+    )
+      throw error;
+    // Navigation can replace a CDP context after readiness but before evaluation.
+    // Retry only this transient condition, once, with fresh DOM evidence.
+    await page
+      .waitForLoadState('domcontentloaded', 1500)
+      .catch(() => undefined);
+    return read();
+  }
+};
+
 // Stagehand's document URL can lag behind redirects and SPA navigation.
 // Read the same live location that supplies page evidence instead.
 export const readPageUrl = async (page: Page): Promise<string> => {
@@ -18,47 +41,49 @@ export const readPageUrl = async (page: Page): Promise<string> => {
 };
 
 export const readPage = async (page: Page, fullContent = false) => {
-  const snapshot = await page.evaluate((readAll: boolean) => {
-    const content = readAll
-      ? document.body
-      : ([
-          ...document.querySelectorAll<HTMLElement>(
-            'main, [role="main"], #content',
-          ),
-        ].find((element) => (element.innerText ?? '').trim().length > 0) ??
-        document.body);
-    return {
-      url: location.href,
-      title: document.title,
-      locale: document.documentElement.lang || null,
-      // innerText keeps hidden and script content out of model context.
-      text: readAll
-        ? content.innerText.replace(/\s+/g, ' ').trim()
-        : content.innerText.replace(/\s+/g, ' ').trim().slice(0, 16000),
-      links: [...document.querySelectorAll<HTMLAnchorElement>('a[href]')]
-        .filter((anchor) => !!anchor.getClientRects().length)
-        .map((anchor) => ({
-          label: (anchor.innerText || anchor.getAttribute('aria-label') || '')
-            .trim()
-            .slice(0, 300),
-          url: anchor.href,
-          // Nearby list or card text distinguishes a course from a menu item.
-          context: (
-            anchor.closest<HTMLElement>(
-              'li, tr, [role="listitem"], [aria-label]',
-            )?.innerText ?? ''
-          )
-            .replace(/\s+/g, ' ')
-            .trim()
-            .slice(0, 200),
-        }))
-        .filter((link) => link.label),
-      password: !!document.querySelector('input[type="password"]'),
-      error: !!document.querySelector(
-        '#main-frame-error, #sub-frame-error, .neterror',
-      ),
-    };
-  }, fullContent);
+  const snapshot = await readCurrentDocument(page, () =>
+    page.evaluate((readAll: boolean) => {
+      const content = readAll
+        ? document.body
+        : ([
+            ...document.querySelectorAll<HTMLElement>(
+              'main, [role="main"], #content',
+            ),
+          ].find((element) => (element.innerText ?? '').trim().length > 0) ??
+          document.body);
+      return {
+        url: location.href,
+        title: document.title,
+        locale: document.documentElement.lang || null,
+        // innerText keeps hidden and script content out of model context.
+        text: readAll
+          ? content.innerText.replace(/\s+/g, ' ').trim()
+          : content.innerText.replace(/\s+/g, ' ').trim().slice(0, 16000),
+        links: [...document.querySelectorAll<HTMLAnchorElement>('a[href]')]
+          .filter((anchor) => !!anchor.getClientRects().length)
+          .map((anchor) => ({
+            label: (anchor.innerText || anchor.getAttribute('aria-label') || '')
+              .trim()
+              .slice(0, 300),
+            url: anchor.href,
+            // Nearby list or card text distinguishes a course from a menu item.
+            context: (
+              anchor.closest<HTMLElement>(
+                'li, tr, [role="listitem"], [aria-label]',
+              )?.innerText ?? ''
+            )
+              .replace(/\s+/g, ' ')
+              .trim()
+              .slice(0, 200),
+          }))
+          .filter((link) => link.label),
+        password: !!document.querySelector('input[type="password"]'),
+        error: !!document.querySelector(
+          '#main-frame-error, #sub-frame-error, .neterror',
+        ),
+      };
+    }, fullContent),
+  );
   // Identity is sanitized here, outside the page, so evidence, source checks,
   // and persistence all agree on which page was observed.
   const identity = academicPageIdentity(snapshot.url);
