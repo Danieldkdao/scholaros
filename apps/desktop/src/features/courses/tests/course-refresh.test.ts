@@ -1963,3 +1963,27 @@ it('reports why a readable collection remained partial without an exception', as
     activity?.events.some((event) => event.includes('Refresh detail:')),
   ).toBe(true);
 });
+
+it('preserves a sanitized initial single-course failure instead of replacing it with a generic message', async () => {
+  insertConnection('lms', host);
+  fixtures.set('lms', listFixture());
+  await startCourseRefresh(student);
+  const courseId = savedCourses()[0]!.id;
+  mocks.scan.mockResolvedValueOnce({
+    outcome: 'blocked',
+    entries: [],
+    observed: null,
+    notesOmitted: false,
+    followed: null,
+    truncated: false,
+    message: 'Cannot find context with specified id PRIVATE_STUDENT_TEXT',
+  });
+  await refreshSingleCourse(student, courseId);
+  const activity = academicTasks
+    .getActivity(student)
+    .find((run) => run.key === courseId);
+  expect(activity?.events).toContain(
+    'The study browser changed while reading this page. Retry the refresh.',
+  );
+  expect(activity?.events.join(' ')).not.toContain('PRIVATE_STUDENT_TEXT');
+});

@@ -114,6 +114,14 @@ const refreshReadFailureMessage = (error: unknown) => {
         : '';
   const diagnostic = safeScanDiagnostic(message);
   if (diagnostic) return diagnostic;
+  if (
+    /Cannot find (?:execution )?context|Execution context (?:was )?destroyed/i.test(
+      message,
+    )
+  )
+    return 'The study browser changed while reading this page. Retry the refresh.';
+  if (/didn.t finish loading|did not finish loading/i.test(message))
+    return 'The course page did not finish loading. Open it in your study browser, then retry.';
   if (/your school asked us to slow down/i.test(message))
     return 'Your school asked us to slow down. Wait briefly before refreshing again.';
   if (/the browser model request is unsupported/i.test(message))
@@ -1300,7 +1308,7 @@ const runSingleCourseRefresh = (
           else if (scan.message)
             academicTasks.report(
               signal,
-              'The course page could not be read.',
+              refreshReadFailureMessage(scan.message),
               true,
             );
           const status = outcomeFromError(

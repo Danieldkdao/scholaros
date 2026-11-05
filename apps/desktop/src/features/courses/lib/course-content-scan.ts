@@ -1,3 +1,4 @@
+import { scanFailureReason } from '../../onboarding/lib/scan-diagnostics';
 import { validateResourceExtraction } from '@scholaros/services/ai/resources/validation';
 import {
   reconcileResourceIdentities,
@@ -134,37 +135,6 @@ const interruptionCategory = (
     case 'unknown':
       return 'navigation-changed';
   }
-};
-
-const collectionFailureReason = (error: unknown) => {
-  const message = error instanceof Error ? error.message : '';
-  if (
-    /Cannot find (?:execution )?context|Execution context (?:was )?destroyed/i.test(
-      message,
-    )
-  )
-    return 'document-context-replaced';
-  if (/page changed|unexpected.*page|changed during navigation/i.test(message))
-    return 'document-changed';
-  if (
-    /schema|unsupported browser response|unreadable course data/i.test(
-      message,
-    ) ||
-    (error instanceof Error && error.name === 'ZodError')
-  )
-    return 'invalid-model-output';
-  if (/scope|approved course|course membership/i.test(message))
-    return 'course-scope-unverified';
-  if (
-    /not found|no longer.*(?:link|visible)|could not.*(?:open|load)/i.test(
-      message,
-    )
-  )
-    return 'destination-unavailable';
-  if (/sign in|password/i.test(message)) return 'sign-in-required';
-  if (/rate.?limit|quota|429|slow down/i.test(message)) return 'rate-limited';
-  if (/timeout|timed out/i.test(message)) return 'timed-out';
-  return 'unknown';
 };
 
 type VerifiedCourseLocation = {
@@ -1316,7 +1286,7 @@ export const scanCourseCollection = async ({
         : extractionFailures.has(currentIdentity)
           ? 'extraction'
           : 'verification',
-      reason: collectionFailureReason(error),
+      reason: scanFailureReason(error),
       pagesVisited: visitedPages.size,
       modelCalls: calls,
       candidates: extractedCandidateCount,

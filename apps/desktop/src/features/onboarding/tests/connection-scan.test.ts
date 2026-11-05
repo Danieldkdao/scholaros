@@ -137,6 +137,37 @@ beforeEach(() => {
 });
 
 describe('one protected walk of a connected resource', () => {
+  it('reports a safe initial read phase before collection callbacks begin', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    mocks.readPage
+      .mockReset()
+      .mockRejectedValue(
+        new Error('Cannot find context with specified id PRIVATE_STUDENT_TEXT'),
+      );
+    const follow = vi.fn();
+    try {
+      expect(await scan(follow)).toMatchObject({
+        outcome: 'blocked',
+        followed: null,
+      });
+      expect(follow).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(
+        '[course-refresh] connection interrupted',
+        expect.objectContaining({
+          phase: 'reading-content',
+          reason: 'document-context-replaced',
+          snapshotsRead: 0,
+        }),
+      );
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(
+        'PRIVATE_STUDENT_TEXT',
+      );
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(host);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('explains an inconclusive readable page without pretending an exception occurred', async () => {
     mocks.readPage.mockReset().mockResolvedValue({
       ...listPage,

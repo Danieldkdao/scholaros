@@ -1,5 +1,42 @@
 import type { HostCourseCollectionCoverageEvidence } from '../../courses/types';
 
+export const scanFailureReason = (error: unknown) => {
+  const message = error instanceof Error ? error.message : '';
+  if (
+    /Cannot find (?:execution )?context|Execution context (?:was )?destroyed/i.test(
+      message,
+    )
+  )
+    return 'document-context-replaced';
+  if (/didn.t finish loading|did not finish loading/i.test(message))
+    return 'document-not-ready';
+  if (/background study tab could not be opened/i.test(message))
+    return 'background-tab-unavailable';
+  if (/requested course could not be verified/i.test(message))
+    return 'course-route-unverified';
+  if (/page changed|unexpected.*page|changed during navigation/i.test(message))
+    return 'document-changed';
+  if (
+    /schema|unsupported browser response|unreadable course data/i.test(
+      message,
+    ) ||
+    (error instanceof Error && error.name === 'ZodError')
+  )
+    return 'invalid-model-output';
+  if (/scope|approved course|course membership/i.test(message))
+    return 'course-scope-unverified';
+  if (
+    /not found|no longer.*(?:link|visible)|could not.*(?:open|load)/i.test(
+      message,
+    )
+  )
+    return 'destination-unavailable';
+  if (/sign in|password/i.test(message)) return 'sign-in-required';
+  if (/rate.?limit|quota|429|slow down/i.test(message)) return 'rate-limited';
+  if (/timeout|timed out/i.test(message)) return 'timed-out';
+  return 'unknown';
+};
+
 export const scanDiagnosticMessages = {
   noCourseLinks:
     'Refresh detail: the connected page exposed no readable course links. Open your course list in the study browser, then retry.',

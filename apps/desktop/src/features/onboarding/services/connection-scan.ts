@@ -1,4 +1,7 @@
-import { scanDiagnosticMessages } from '../lib/scan-diagnostics';
+import {
+  scanDiagnosticMessages,
+  scanFailureReason,
+} from '../lib/scan-diagnostics';
 import { openBackgroundPage } from './background-page';
 import { composeAgentNotes } from '../lib/agent-notes';
 import { exploreForCourses } from '../lib/course-exploration';
@@ -144,6 +147,8 @@ export const scanConnection = async <TFollowed = never>(
   let notesOmitted = false;
   let truncated = false;
   let following = false;
+  let phase = 'opening-tab';
+  let snapshotsRead = 0;
   const observedResourceRelationships = new Map<
     string,
     { parentUrl: string; targetUrl: string }
@@ -161,6 +166,7 @@ export const scanConnection = async <TFollowed = never>(
     page = await openBackgroundPage(workspace, signal);
     signal.throwIfAborted();
     const openedPage = page;
+    phase = 'installing-scope';
     releaseProtection = await protectMissionPage(
       openedPage,
       workspace.cdpUrl,
@@ -217,29 +223,37 @@ export const scanConnection = async <TFollowed = never>(
         ],
       });
     };
+    phase = 'opening-course';
     await navigatePage(openedPage, courseUrl ?? entry.url, continuation);
     let observed: ObservedPage | null = null;
     const observedPages: ObservedPage[] = [];
     const readSnapshot = async (): Promise<ObservedPage> => {
+      phase = 'continuing-account';
       await continuation.resume(openedPage, signal, isCurrent);
+      phase = 'waiting-for-page';
       await waitForMissionPage(openedPage, connection.kind, signal, {
         assertReadable: () => releaseProtection?.assertReadable?.(),
       });
       signal.throwIfAborted();
       if (!isCurrent()) throw new Error('Your session changed; sign in again.');
       await continuation.resume(openedPage, signal, isCurrent);
+      phase = 'waiting-for-network';
       // Schoology loads upcoming work after the course shell is readable.
       await openedPage
         .waitForLoadState('networkidle', 6000)
         .catch(() => undefined);
       signal.throwIfAborted();
       releaseProtection?.assertReadable?.();
+      phase = 'reading-url';
       assertMissionNavigation(await readPageUrl(openedPage), hosts);
+      phase = 'reading-content';
       const snapshot = await readPage(openedPage, true);
       if (snapshot.password)
         throw new Error('This resource needs you to sign in again.');
       if (snapshot.error) throw new Error('The page could not be loaded.');
       assertMissionNavigation(snapshot.url, hosts);
+      snapshotsRead += 1;
+      phase = 'verifying-course';
       observed = snapshot;
       observedPages.push(snapshot);
       updateCourseNavigationScope(snapshot);
@@ -541,6 +555,13 @@ export const scanConnection = async <TFollowed = never>(
     };
   } catch (error) {
     if (following || signal.aborted || !isCurrent()) throw error;
+    console.warn('[course-refresh] connection interrupted', {
+      phase,
+      reason: scanFailureReason(error),
+      snapshotsRead,
+      blockedRequiredData,
+      blockedHostCount: blockedHosts.size,
+    });
     return {
       outcome: sawSignInWall ? 'needs-sign-in' : outcomeFromError(error),
       entries: [],
