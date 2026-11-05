@@ -157,10 +157,8 @@ export const ResourcesStep = ({
                 Already have your course dashboard open?
               </h3>
               <p className="text-muted-foreground text-base max-w-250">
-                Click the button below to open a new window in the agent's
-                browser profile. Then navigate to an educational website you use
-                and sign in. Come back here and click the same button below
-                again to add that website as a resource for the agent to use.
+                Open the study browser, sign in to your school website, then
+                return here to connect the current page.
               </p>
             </div>
             <Button
@@ -169,6 +167,10 @@ export const ResourcesStep = ({
               disabled={busy}
               onClick={() =>
                 void act('capture', async () => {
+                  if (!preview) {
+                    await window.scholar.openStudyBrowser();
+                    return;
+                  }
                   const connection = await window.scholar.captureResource();
                   update(await window.scholar.getState());
                   setAddedSite(connection);

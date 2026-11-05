@@ -86,6 +86,7 @@ import {
   cancelWorkspaceReplacement,
   createWorkspace,
   openAcademicPage,
+  openStudyBrowser,
   waitForWorkspaceStops,
   getWorkspace,
 } from './browser-workspace';
@@ -1223,6 +1224,13 @@ export const registerAcademicActions = async (service: {
     return withBrowserWorkStopped(async () => {
       if (!isCurrent()) throw new Error('Your session changed; sign in again.');
       await openAcademicPage(userId, resource.url, isCurrent);
+    });
+  });
+  handle('openStudyBrowser', ({ userId, isCurrent }) => {
+    requireConsent(userId);
+    return withBrowserWorkStopped(async () => {
+      if (!isCurrent()) throw new Error('Your session changed; sign in again.');
+      await openStudyBrowser(userId, isCurrent);
     });
   });
   handle('captureResource', ({ userId, isCurrent }) => {

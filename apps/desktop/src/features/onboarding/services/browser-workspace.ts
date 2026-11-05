@@ -759,6 +759,22 @@ export const withMissionStagehand = <T>(
   return result;
 };
 
+export const openStudyBrowser = async (
+  userId: string,
+  isCurrent: () => boolean = () => true,
+) => {
+  const workspace = await getWorkspace(userId, isCurrent);
+  if (!isCurrent()) throw new Error('Your session changed; sign in again.');
+  await workspace.browser.context.setDomainPolicy(null);
+  if (!isCurrent()) throw new Error('Your session changed; sign in again.');
+  const page = await workspace.browser.context.newPage();
+  if (!isCurrent()) {
+    await page.close();
+    throw new Error('Your session changed; sign in again.');
+  }
+  await workspace.browser.context.setActivePage(page);
+};
+
 export const openAcademicPage = async (
   userId: string,
   url: string,

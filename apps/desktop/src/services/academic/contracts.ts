@@ -118,6 +118,7 @@ export const legacyRendererMethods = [
   'resumeConnectRun',
   'cancelConnectRun',
   'openResource',
+  'openStudyBrowser',
   'captureResource',
   'previewResource',
   'saveConnectionNotes',

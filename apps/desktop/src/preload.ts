@@ -155,6 +155,7 @@ const bridge: ScholarBridge = {
     ipcRenderer.on('scholar:connectChange', handler);
     return () => ipcRenderer.removeListener('scholar:connectChange', handler);
   },
+  openStudyBrowser: () => ipcRenderer.invoke('scholar:openStudyBrowser'),
   getState: () => ipcRenderer.invoke('scholar:getState'),
   getWatchSettings: () => ipcRenderer.invoke('scholar:getWatchSettings'),
   saveWatchSettings: (settings) =>

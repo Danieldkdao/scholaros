@@ -266,6 +266,7 @@ export type ScholarBridge = LearningBridge & {
   chooseBrowser: () => Promise<BrowserInstallation | null>;
   createWorkspace: (installationId: string) => Promise<OnboardingState>;
   openResource: (resourceId: string) => Promise<void>;
+  openStudyBrowser: () => Promise<void>;
   captureResource: () => Promise<AcademicConnection>;
   previewResource: () => Promise<PreviewedConnection | null>;
   saveConnectionNotes: (
