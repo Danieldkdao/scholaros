@@ -141,6 +141,14 @@ open apps/desktop/out/scholaros-darwin-arm64/scholaros.app
 
 Keep the web service running. Local macOS packages are ad hoc signed for development and are not notarized distribution releases; open the packaged app from Finder when granting microphone or other macOS permissions. To use your own hosted backend, deploy `apps/web`, configure its server variables and production OAuth callbacks, then set the desktop API URL to that HTTPS origin **before rebuilding**.
 
+## Judge demo and API-call recording
+
+Choose **Try demo** on the desktop sign-in screen, or open `/demo` on the web server. The guided walkthrough uses clearly labeled sample courses, editable temporary notes, a working Python exercise, and a quiz. It requires no account and makes no AI calls; leaving the walkthrough clears its temporary state.
+
+To record genuine Meta requests, set `META_DEMO_LOGGING=1` in the web server environment and restart it. The terminal prints `[Meta API]` records with the actual endpoint, model, request ID, HTTP status, duration, and reported token counts. Prompts, responses, headers, credentials, and student content are excluded. A missing token count is reported as `null`.
+
+For an optional real demo-account sign-in button, configure `DEMO_AUTH_ENABLED=1`, `DEMO_ACCOUNT_EMAIL`, and `DEMO_ACCOUNT_PASSWORD` on the server. Provision that separate account through the existing authentication system first. The button uses normal authentication and preserves desktop sign-in handoff; it never exposes the account password to the browser. Account onboarding follows the account's saved onboarding flag. These variables never belong in desktop or public client environment files.
+
 ## Checks and troubleshooting
 
 ```sh
