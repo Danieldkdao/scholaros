@@ -29,6 +29,46 @@ export type ExplorationResult = {
 
 const defaultMaxPages = 4;
 
+const isSchoology = (connection: AcademicConnection) =>
+  connection.host.toLowerCase() === 'schoology.com' ||
+  connection.host.toLowerCase().endsWith('.schoology.com');
+
+const entryIdentity = (
+  connection: AcademicConnection,
+  entry: AcademicContextEntryDraft,
+) => {
+  if (
+    entry.role !== 'course' ||
+    !isSchoology(connection) ||
+    !isEnrolledCourseDestination(connection, entry.url)
+  )
+    return entry.url;
+  const url = new URL(entry.url);
+  const [, marker, id] = url.pathname.split('/');
+  return `enrollment:${url.origin}/${marker}/${id}`;
+};
+
+const observedSchoologyRoster = (
+  connection: AcademicConnection,
+  page: ObservedPage,
+  seen: Set<string>,
+) => {
+  if (!isSchoology(connection)) return null;
+  return (
+    page.links.find((link) => {
+      if (
+        !/^(?:(?:view|show|open)\s+)?(?:(?:my|all|your|current|active)\s+)?courses$/iu.test(
+          link.label.trim(),
+        ) ||
+        !isReadNavigation(link.url, [connection.host]) ||
+        seen.has(link.url)
+      )
+        return false;
+      return /^\/courses\/?$/u.test(new URL(link.url).pathname);
+    }) ?? null
+  );
+};
+
 const abortError = () => new DOMException('Aborted', 'AbortError');
 
 // A bounded walk from the connected page toward a course list. Destinations
@@ -103,20 +143,38 @@ export const exploreForCourses = async ({
       }
     }
     for (const entry of observedEntries) {
-      const existing = entries.get(entry.url);
-      if (existing?.role === 'course') continue;
-      entries.set(entry.url, entry);
+      const identity = entryIdentity(connection, entry);
+      const existing = entries.get(identity);
+      if (existing?.role === 'course') {
+        if (entry.role !== 'course') continue;
+        // Prefer the actually observed enrollment root over a preview tab alias.
+        if (
+          new URL(existing.url).pathname.split('/').filter(Boolean).length <
+          new URL(entry.url).pathname.split('/').filter(Boolean).length
+        )
+          continue;
+      }
+      entries.set(identity, entry);
       if (entry.role === 'course') foundCourses = true;
     }
     if (sawExplicitEmptyList || step + 1 >= maxPages) break;
     if (foundCourses) {
-      const pagination = observed.links.find(
-        (link) =>
-          /^(?:next|more|load more|show more|[›»>])/i.test(link.label.trim()) &&
-          isReadNavigation(link.url, [connection.host]) &&
-          !visited.includes(link.url) &&
-          !requested.has(link.url),
+      const roster = observedSchoologyRoster(
+        connection,
+        observed,
+        new Set([...visited, ...requested]),
       );
+      const pagination =
+        roster ??
+        observed.links.find(
+          (link) =>
+            /^(?:next|more|load more|show more|[›»>])/i.test(
+              link.label.trim(),
+            ) &&
+            isReadNavigation(link.url, [connection.host]) &&
+            !visited.includes(link.url) &&
+            !requested.has(link.url),
+        );
       if (!pagination) break;
       requested.add(pagination.url);
       await navigate(pagination.url);

@@ -425,3 +425,62 @@ it('retains every observed course and follows list pagination in a deep refresh'
   ).toHaveLength(36);
   expect(result.visited).toHaveLength(2);
 });
+
+it('continues from twelve Schoology preview courses to the observed fifteen-course roster without duplicating tab aliases', async () => {
+  const names = Array.from({ length: 15 }, (_, index) =>
+    index < 2 ? 'Biology 101' : `Subject ${100 + index}`,
+  );
+  const preview = {
+    ...homePage,
+    links: [
+      ...names
+        .slice(0, 12)
+        .map((name, index) => link(name, `/course/${1000 + index}/materials`)),
+      link('My Courses', '/courses'),
+    ],
+  };
+  const roster = {
+    ...listPage,
+    links: names.map((name, index) => ({
+      ...link(name, `/course/${1000 + index}`),
+      context: `Current course. Section ${index + 1}.`,
+    })),
+  };
+  const setup = fixtures({ read: sequenceRead([preview, roster]) });
+  const result = await exploreForCourses(setup);
+  const courses = result.entries.filter(({ role }) => role === 'course');
+  expect(setup.navigate).toHaveBeenCalledExactlyOnceWith(
+    `https://${schoology}/courses`,
+  );
+  expect(courses).toHaveLength(15);
+  expect(
+    courses.every(
+      ({ url, evidenceUrl }) =>
+        !url.endsWith('/materials') && evidenceUrl === roster.url,
+    ),
+  ).toBe(true);
+  expect(courses.filter(({ label }) => label === 'Biology 101')).toHaveLength(
+    2,
+  );
+  expect(result.visited).toEqual([preview.url, roster.url]);
+});
+
+it('does not invent or follow a foreign Schoology roster after a course preview', async () => {
+  const navigate = vi.fn(async () => undefined);
+  const result = await exploreForCourses(
+    fixtures({
+      navigate,
+      read: vi.fn(async () => ({
+        ...homePage,
+        links: [
+          link('Biology 101', '/course/123/materials'),
+          { label: 'My Courses', url: 'https://foreign.schoology.com/courses' },
+        ],
+      })),
+    }),
+  );
+  expect(result.entries.filter(({ role }) => role === 'course')).toHaveLength(
+    1,
+  );
+  expect(navigate).not.toHaveBeenCalled();
+});
