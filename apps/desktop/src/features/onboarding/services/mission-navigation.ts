@@ -18,14 +18,12 @@ type PolicyContext = {
 
 type MissionNavigationOptions = {
   scopeId?: string;
+  renderingCacheOwner?: object;
   onNavigate?: (url: string) => void;
   onPageOpened?: (url: string) => void;
   onWait?: (milliseconds: number) => void;
 };
-const browserRenderingCaches = new WeakMap<
-  PolicyContext,
-  Map<string, Set<string>>
->();
+const browserRenderingCaches = new WeakMap<object, Map<string, Set<string>>>();
 
 // Stagehand applies its domain policy to subresources too. Learn only observed
 // rendering origins; the mission guard retains the original navigation hosts.
@@ -62,11 +60,13 @@ export const createMissionNavigator = (
       return navigator(page, url, continuation);
     };
   }
-  // A relaunched browser must bootstrap its own rendering dependencies.
-  let renderingCache = browserRenderingCaches.get(context);
+  // RPC contexts change between missions; only the same live browser may reuse assets.
+  // A new browser object starts cold, and scope/account plus allowed hosts remain isolated.
+  const cacheOwner = options.renderingCacheOwner ?? context;
+  let renderingCache = browserRenderingCaches.get(cacheOwner);
   if (!renderingCache) {
     renderingCache = new Map();
-    browserRenderingCaches.set(context, renderingCache);
+    browserRenderingCaches.set(cacheOwner, renderingCache);
   }
   const cacheKey = options.scopeId
     ? JSON.stringify([options.scopeId, [...hosts].sort()])
@@ -196,7 +196,11 @@ export const createMissionNavigator = (
           response.status() === 429 ||
           (response.status() === 503 && retryAfter)
         )
-          throw missionTraffic.recordRateLimit(destination, retryAfter);
+          throw missionTraffic.recordRateLimit(destination, retryAfter, {
+            source: 'navigation-response',
+            status: response.status(),
+            resourceType: 'Document',
+          });
       }
       options.onPageOpened?.(await readPageUrl(page));
     };

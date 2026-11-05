@@ -268,6 +268,7 @@ it('stops on a 429 response before dependency reloads', async () => {
   expect(missionTraffic.recordRateLimit).toHaveBeenCalledWith(
     'https://limited.example/',
     '120',
+    { source: 'navigation-response', status: 429, resourceType: 'Document' },
   );
   expect(page.evaluate).not.toHaveBeenCalled();
   expect(onPageOpened).not.toHaveBeenCalled();
@@ -431,15 +432,13 @@ it.each([true, false])(
       'waitForMainLoadState(domcontentloaded) timed out after 11989ms',
     );
     fallback.ready.mockReset().mockResolvedValue(undefined);
-    fallback.read
-      .mockReset()
-      .mockResolvedValue({
-        url,
-        text: 'Verified current course materials and assignments',
-        links: [],
-        error: false,
-        password: false,
-      });
+    fallback.read.mockReset().mockResolvedValue({
+      url,
+      text: 'Verified current course materials and assignments',
+      links: [],
+      error: false,
+      password: false,
+    });
     const page = {
       goto: vi.fn(async () => undefined),
       reload: vi.fn(async () => {
@@ -462,5 +461,75 @@ it.each([true, false])(
     else await expect(result).rejects.toThrow('waitForMainLoadState');
     expect(page.reload).toHaveBeenCalledOnce();
     expect(page.evaluate).toHaveBeenCalledTimes(replaced ? 4 : 3);
+  },
+);
+
+it('retains warm rendering assets across RPC context replacement in the same browser without widening navigation', async () => {
+  const owner = {};
+  const first = { setDomainPolicy: vi.fn(async () => undefined) };
+  const replacement = { setDomainPolicy: vi.fn(async () => undefined) };
+  let context = first;
+  const page = {
+    goto: vi.fn(async () => undefined),
+    reload: vi.fn(async () => undefined),
+    url: async () => 'https://warm.school.edu/courses',
+    evaluate: vi.fn(async () => ['https://warm-assets.example.net']),
+  };
+  const navigate = createMissionNavigator(
+    () => context,
+    ['warm.school.edu'],
+    new AbortController().signal,
+    undefined,
+    { scopeId: 'warm-student', renderingCacheOwner: owner },
+  );
+  await navigate(page as never, 'https://warm.school.edu/courses');
+  expect(page.reload).toHaveBeenCalledOnce();
+  const originalCalls = first.setDomainPolicy.mock.calls.length;
+  context = replacement;
+  page.reload.mockClear();
+  page.goto.mockClear();
+  await navigate(page as never, 'https://warm.school.edu/courses');
+  expect(page.reload).not.toHaveBeenCalled();
+  expect(first.setDomainPolicy).toHaveBeenCalledTimes(originalCalls);
+  expect(replacement.setDomainPolicy).toHaveBeenCalledWith({
+    allowedDomains: ['warm.school.edu', 'warm-assets.example.net'],
+    blockedDomains: [],
+  });
+  expect(replacement.setDomainPolicy.mock.invocationCallOrder[0]).toBeLessThan(
+    page.goto.mock.invocationCallOrder[0]!,
+  );
+  await expect(
+    navigate(page as never, 'https://warm-assets.example.net/'),
+  ).rejects.toThrow('outside your connected academic resources');
+});
+
+it.each(['account', 'allowed-hosts', 'browser'] as const)(
+  'does not reuse rendering assets across a changed %s scope',
+  async (changed) => {
+    const originalOwner = {};
+    const page = {
+      goto: vi.fn(async () => undefined),
+      reload: vi.fn(async () => undefined),
+      url: async () => 'https://isolated.school.edu/courses',
+      evaluate: vi.fn(async () => ['https://isolated-assets.example.net']),
+    };
+    const run = (owner: object, account: string, hosts: string[]) =>
+      createMissionNavigator(
+        { setDomainPolicy: vi.fn(async () => undefined) },
+        hosts,
+        new AbortController().signal,
+        undefined,
+        { scopeId: account, renderingCacheOwner: owner },
+      )(page as never, 'https://isolated.school.edu/courses');
+    await run(originalOwner, 'student-a', ['isolated.school.edu']);
+    page.reload.mockClear();
+    await run(
+      changed === 'browser' ? {} : originalOwner,
+      changed === 'account' ? 'student-b' : 'student-a',
+      changed === 'allowed-hosts'
+        ? ['isolated.school.edu', 'another.school.edu']
+        : ['isolated.school.edu'],
+    );
+    expect(page.reload).toHaveBeenCalledOnce();
   },
 );

@@ -51,7 +51,7 @@ const performAcademicDiscovery = async (
       hosts,
       signal,
       isCurrent,
-      { scopeId: userId },
+      { scopeId: userId, renderingCacheOwner: workspace.browser },
     );
     try {
       for (const connection of connections) {

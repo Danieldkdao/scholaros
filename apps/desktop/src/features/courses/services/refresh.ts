@@ -775,6 +775,7 @@ const performCourseRefresh = async (
       isCurrent,
       {
         scopeId: userId,
+        renderingCacheOwner: workspace.browser,
         onPageOpened: () => academicTasks.recordMetric(signal, 'pagesOpened'),
         onNavigate: () =>
           academicTasks.report(signal, 'Opening a connected academic page'),
@@ -1068,6 +1069,7 @@ const runSingleCourseRefresh = (
         isCurrent,
         {
           scopeId: userId,
+          renderingCacheOwner: workspace.browser,
           onPageOpened: () => academicTasks.recordMetric(signal, 'pagesOpened'),
           onNavigate: () =>
             academicTasks.report(signal, 'Opening a connected academic page'),

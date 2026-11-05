@@ -390,7 +390,10 @@ const collectPage = async (
       [source.connectionHost],
       signal,
       isCurrent,
-      { scopeId: `grade:${source.courseId}:${source.assignmentId}` },
+      {
+        scopeId: `grade:${context.userId}:${source.courseId}:${source.assignmentId}`,
+        renderingCacheOwner: workspace.browser,
+      },
     );
     await navigate(page, source.assignmentUrl);
     signal.throwIfAborted();

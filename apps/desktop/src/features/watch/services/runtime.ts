@@ -162,7 +162,7 @@ export const createWatchRuntime = ({ onStatus }: WatchRuntimeOptions) => {
         [connection.host],
         signal,
         isCurrent,
-        { scopeId: target.userId },
+        { scopeId: target.userId, renderingCacheOwner: workspace.browser },
       );
       await navigate(page, url);
     },

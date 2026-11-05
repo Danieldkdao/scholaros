@@ -167,7 +167,11 @@ const runPreview = async (
     hosts,
     signal,
     () => isActive(),
-    { scopeId: userId, onWait: () => addActivity({ type: 'waiting' }) },
+    {
+      scopeId: userId,
+      renderingCacheOwner: workspace.browser,
+      onWait: () => addActivity({ type: 'waiting' }),
+    },
   );
   let page: Page | null = null;
   let releaseProtection: MissionProtection | null = null;
