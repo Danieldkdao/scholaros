@@ -337,6 +337,7 @@ export type ScholarBridge = LearningBridge & {
   ) => Promise<{ acceptedSequence: number }>;
   stopDictation: (input: { operationId: string }) => Promise<void>;
   cancelDictation: (input: { operationId: string }) => Promise<void>;
+  openMicrophoneSettings: () => Promise<void>;
   requestMicrophonePermission: (input: { sessionId: string }) => Promise<{
     state: 'granted' | 'denied' | 'unsupported';
   }>;

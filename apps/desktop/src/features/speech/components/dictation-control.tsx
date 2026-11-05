@@ -39,6 +39,7 @@ export const DictationControl = ({
 }: DictationControlProps) => {
   const [isDisclosureOpen, setDisclosureOpen] = useState(false);
   const [online, setOnline] = useState(() => navigator.onLine);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
   useEffect(() => {
     const update = () => setOnline(navigator.onLine);
     window.addEventListener('online', update);
@@ -127,14 +128,24 @@ export const DictationControl = ({
         <Button
           variant="link"
           size="sm"
-          onClick={() =>
-            void window.scholar
-              .requestMicrophonePermission({ sessionId })
-              .catch(() => undefined)
-          }
+          onClick={async () => {
+            setSettingsError(null);
+            try {
+              await window.scholar.openMicrophoneSettings();
+            } catch {
+              setSettingsError(
+                'Could not open settings. Open System Settings → Privacy & Security → Microphone.',
+              );
+            }
+          }}
         >
           Open microphone settings
         </Button>
+      )}
+      {settingsError && (
+        <span role="alert" className="text-base text-destructive">
+          {settingsError}
+        </span>
       )}
       {isActive && (
         <TooltipWrapper content="Cancel dictation">

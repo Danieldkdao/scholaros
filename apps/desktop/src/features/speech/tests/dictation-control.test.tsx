@@ -196,6 +196,7 @@ const installDictationBridge = (
     },
   );
   const bridge = {
+    openMicrophoneSettings: vi.fn(async () => undefined),
     requestMicrophonePermission,
     startDictation,
     appendDictationAudio,
@@ -228,7 +229,24 @@ it('explains transmission before requesting microphone permission', async () => 
   });
   expect(container.textContent).toContain('Privacy & Security → Microphone');
   await clickButton('Open microphone settings');
-  expect(bridge.requestMicrophonePermission).toHaveBeenCalledTimes(2);
+  expect(bridge.openMicrophoneSettings).toHaveBeenCalledOnce();
+  expect(bridge.requestMicrophonePermission).toHaveBeenCalledOnce();
+});
+
+it('shows a useful settings failure without requesting capture again', async () => {
+  const { bridge } = installDictationBridge('denied');
+  const { container } = await mountControl();
+  await clickButton('Start dictation');
+  await clickButton('Start recording');
+  bridge.openMicrophoneSettings.mockRejectedValueOnce(
+    new Error('private detail'),
+  );
+  await clickButton('Open microphone settings');
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+    'Open System Settings',
+  );
+  expect(container.textContent).not.toContain('private detail');
+  expect(bridge.requestMicrophonePermission).toHaveBeenCalledOnce();
 });
 
 it('disables dictation while offline without requesting microphone access', async () => {

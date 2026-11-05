@@ -306,6 +306,8 @@ const bridge: ScholarBridge = {
     ipcRenderer.invoke('scholar:native:stopDictation', input),
   cancelDictation: (input) =>
     ipcRenderer.invoke('scholar:native:cancelDictation', input),
+  openMicrophoneSettings: () =>
+    ipcRenderer.invoke('scholar:native:openMicrophoneSettings'),
   requestMicrophonePermission: (input) =>
     ipcRenderer.invoke('scholar:native:requestMicrophonePermission', input),
   requestNotificationPermission: (input) =>

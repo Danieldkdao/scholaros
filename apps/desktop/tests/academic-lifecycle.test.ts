@@ -1562,6 +1562,25 @@ it('does not return file tickets after the account changes during registration',
   await expect(pendingSelection).rejects.toThrow('Your session changed');
 });
 
+it('opens microphone settings from a trusted window even without an active study session', async () => {
+  await import('../src/main');
+  await vi.waitFor(() => expect(mocks.windows).toBe(1));
+  const openSettings = mocks.ipcHandlers.get(
+    'scholar:native:openMicrophoneSettings',
+  );
+  const initialRequests = mocks.request.mock.calls.length;
+  await expect(openSettings?.({ trusted: true })).resolves.toBeUndefined();
+  expect(mocks.request.mock.calls.length).toBe(initialRequests);
+  expect(mocks.askForMicrophone).not.toHaveBeenCalled();
+  if (process.platform === 'darwin')
+    expect(mocks.openExternal).toHaveBeenCalledWith(
+      'x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone',
+    );
+  mocks.openExternal.mockClear();
+  await expect(openSettings?.({ trusted: false })).rejects.toThrow('Untrusted');
+  expect(mocks.openExternal).not.toHaveBeenCalled();
+});
+
 it('requests microphone access only for a trusted active study session', async () => {
   mocks.request.mockImplementation(async (method) =>
     method === 'getCurrentUser'

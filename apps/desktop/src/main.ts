@@ -1231,6 +1231,16 @@ const registerTrustedNativeIpc = () => {
       await requireActiveStudySession(event, user, selection.sessionId);
     return contextFileSelectionResultSchema.parse(result);
   });
+  ipcMain.handle('scholar:native:openMicrophoneSettings', async (event) => {
+    requireTrustedSender(event);
+    assertNativeAdmission();
+    // Opening a fixed settings pane does not start capture and must remain
+    // available after a study timer expires or the service disconnects.
+    await openSystemPermissionSettings('microphone', process.platform, (url) =>
+      shell.openExternal(url),
+    );
+    requireTrustedSender(event);
+  });
   ipcMain.handle(
     'scholar:native:requestMicrophonePermission',
     async (event, input) => {
