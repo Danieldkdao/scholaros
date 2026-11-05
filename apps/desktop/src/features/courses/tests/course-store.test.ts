@@ -2590,6 +2590,7 @@ it('adopts an observed Schoology course root alias without replacing saved ident
 it.each([
   ['different ID', '/course/67890', 'Fall'],
   ['different marker', '/section/12345', 'Fall'],
+  ['conflicting explicit query ID', '/course/12345?course_id=67890', 'Fall'],
   ['different term', '/course/12345', 'Spring'],
   ['different host', 'https://other.schoology.com/course/12345', 'Fall'],
 ] as const)(

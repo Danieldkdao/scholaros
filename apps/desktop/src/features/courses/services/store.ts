@@ -30,6 +30,7 @@ import {
 } from '../../../db/schema';
 import {
   academicPageIdentity,
+  isCourseNavigationTarget,
   isReadNavigation,
 } from '../../onboarding/lib/browser-policy';
 import {
@@ -218,7 +219,14 @@ const schoologyCourseAlias = (
     return null;
   const url = new URL(value);
   const [, marker, id] = url.pathname.split('/');
-  return `${url.origin}/${marker}/${id}`;
+  const alias = `${url.origin}/${marker}/${id}`;
+  return isCourseNavigationTarget(
+    value,
+    { courseUrl: alias, observedResourceRelationships: [] },
+    [connection.host],
+  )
+    ? alias
+    : null;
 };
 
 const courseIdentityCompatible = (
